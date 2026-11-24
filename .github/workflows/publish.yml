@@ -1,4 +1,6 @@
-name: Publish to PyPI
+name: Publish to PyPI (upstream only)
+# This is an upstream-maintained release workflow. The public xantic21 fork
+# never creates package tags or publishes the upstream PyPI package.
 
 on:
   push:
@@ -6,6 +8,7 @@ on:
 
 jobs:
   check-version:
+    if: github.repository == 'drkostas/hevy2garmin'
     runs-on: ubuntu-latest
     outputs:
       should_publish: ${{ steps.check.outputs.changed }}
@@ -35,7 +38,7 @@ jobs:
 
   publish:
     needs: check-version
-    if: needs.check-version.outputs.should_publish == 'true'
+    if: github.repository == 'drkostas/hevy2garmin' && needs.check-version.outputs.should_publish == 'true'
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
