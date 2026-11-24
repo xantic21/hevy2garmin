@@ -1,6 +1,6 @@
 <p align="center"><img src="docs/brand/hero.svg" alt="hevy2garmin — a community strength-training integration" width="100%"></p>
 
-<p align="center"><img src="src/hevy2garmin/static/favicon.svg" alt="Original hevy2garmin project icon" width="74"></p>
+<p align="center"><img src="docs/brand/icon.svg" alt="xantic21 hevy2garmin portfolio illustration — strength training and synchronization" width="74"></p>
 
 <p align="center"><strong>Strength training, connected to Garmin.</strong></p>
 
@@ -27,12 +27,13 @@ For requirements, setup, available deployments, maintenance and security guidanc
 
 ## Design
 
-This fork has a restrained xantic21 portfolio header for visual consistency, while preserving the upstream project's own icon and authorship. No upstream branding or application behavior has been changed as part of this presentation update.
+The mint xantic21 **portfolio illustration** is used only in GitHub-facing presentation material and matches the icons of the other personal projects. It is **not** the original upstream app icon and does not imply original authorship. The upstream favicon at `src/hevy2garmin/static/favicon.svg`, application code, upstream copyright, licensing and behavior remain unchanged.
 
 ## Technical reference
 
 - [Archived fork README](docs/brand/UPSTREAM_README_SNAPSHOT_20261122.md) — historical documentation; verify installation details with upstream.
 - [Code and project structure](src/hevy2garmin/) — actual fork source.
+- [Portfolio icon and attribution](docs/brand/ICON_PROVENANCE.md) — visual contract for GitHub-facing artwork; original app icon preserved.
 - [Shared portfolio design standard](https://github.com/xantic21/henning-hub/blob/main/docs/GITHUB_BRAND_README_STANDARD_20261122.md) — presentation rules only.
 
 ---
