@@ -33,6 +33,7 @@ The mint xantic21 **portfolio illustration** is used only in GitHub-facing prese
 
 - [Archived fork README](docs/brand/UPSTREAM_README_SNAPSHOT_20261122.md) — historical documentation; verify installation details with upstream.
 - [Code and project structure](src/hevy2garmin/) — actual fork source.
+- [Portfolio icon and attribution](docs/brand/ICON_PROVENANCE.md) — visual contract for GitHub-facing artwork; original app icon preserved.
 - [Shared portfolio design standard](https://github.com/xantic21/henning-hub/blob/main/docs/GITHUB_BRAND_README_STANDARD_20261122.md) — presentation rules only.
 
 ---
