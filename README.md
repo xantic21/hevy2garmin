@@ -39,8 +39,13 @@ The mint portfolio icon follows the xantform [Design System 2.0](https://github.
 - [Code and project structure](src/hevy2garmin/) — actual fork source.
 - [Portfolio icon and attribution](docs/brand/ICON_PROVENANCE.md) — visual contract for GitHub-facing artwork; original app icon preserved.
 - [Fork publication policy](docs/brand/PYPI_FORK_PUBLISH_POLICY_20261124.md) — inherited upstream PyPI release workflow disabled for this fork.
+- [Security policy](.github/SECURITY.md) — how to report issues to upstream or to the fork owner.
 - [Shared portfolio design standard](https://github.com/xantic21/henning-hub/blob/main/docs/GITHUB_BRAND_README_STANDARD_20261122.md) — presentation rules only.
 - [xantform Design System 2.0](https://github.com/xantic21/henning-hub/blob/main/docs/brand/xantform/README.md) — names, palettes, icon variants and verification.
+
+## License
+
+The upstream project is licensed under the [MIT License](LICENSE) (copyright Konstantinos Georgiou). This fork keeps the license, attribution and upstream authorship unchanged; the xantform presentation files in `docs/brand/` are original portfolio artwork.
 
 ---
 
