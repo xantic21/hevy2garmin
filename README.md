@@ -17,7 +17,7 @@
 
 ## Project and attribution
 
-This repository is an **independently held fork**, not an original xantic21 product and not a replacement for the upstream maintainer's instructions. The original application icon, upstream copyright and project license are preserved.
+This repository is an **independently held fork**, not an original xantform product and not a replacement for the upstream maintainer's instructions. The original application icon, upstream copyright and project license are preserved.
 
 [Upstream project](https://github.com/drkostas/hevy2garmin) · [Original license](LICENSE) · [Project screenshots](docs/screenshots/)
 
@@ -31,7 +31,7 @@ For requirements, setup, available deployments, maintenance and security guidanc
 | :---: | :---: |
 | <img src="docs/brand/icon.svg" width="76" alt="hevy2garmin portfolio icon: dumbbell with a synchronization arrow"> | <img src="docs/brand/icon-dark.svg" width="76" alt="hevy2garmin portfolio icon, tonal dark variant"> |
 
-The mint portfolio icon follows the xantform [Design System 2.0](https://github.com/xantic21/henning-hub/blob/main/docs/brand/xantform/README.md) (palette: light `#E6F3EE` · medium `#A4C7B7` · ink `#1F5A4D` · dark `#253F38`) and is used only in GitHub-facing presentation material. It is **not** the original upstream app icon and does not imply original authorship. The upstream favicon at `src/hevy2garmin/static/favicon.svg`, the upstream copyright and the license are unchanged.
+The mint portfolio icon follows the xantform [Design System 2.0](https://github.com/xantic21/xantic21/blob/main/docs/xantform/DESIGN_SYSTEM.md) (palette: light `#E6F3EE` · medium `#A4C7B7` · ink `#1F5A4D` · dark `#253F38`) and is used only in GitHub-facing presentation material. It is **not** the original upstream app icon and does not imply original authorship. The upstream favicon at `src/hevy2garmin/static/favicon.svg`, the upstream copyright and the license are unchanged.
 
 ## Technical reference
 
@@ -39,8 +39,13 @@ The mint portfolio icon follows the xantform [Design System 2.0](https://github.
 - [Code and project structure](src/hevy2garmin/) — actual fork source.
 - [Portfolio icon and attribution](docs/brand/ICON_PROVENANCE.md) — visual contract for GitHub-facing artwork; original app icon preserved.
 - [Fork publication policy](docs/brand/PYPI_FORK_PUBLISH_POLICY_20261124.md) — inherited upstream PyPI release workflow disabled for this fork.
-- [Shared portfolio design standard](https://github.com/xantic21/henning-hub/blob/main/docs/GITHUB_BRAND_README_STANDARD_20261122.md) — presentation rules only.
-- [xantform Design System 2.0](https://github.com/xantic21/henning-hub/blob/main/docs/brand/xantform/README.md) — names, palettes, icon variants and verification.
+- [Security policy](.github/SECURITY.md) — how to report issues to upstream or to the fork owner.
+- [xantform README standard](https://github.com/xantic21/xantic21/blob/main/docs/xantform/README_STANDARD.md) — presentation rules only.
+- [xantform Design System 2.0](https://github.com/xantic21/xantic21/blob/main/docs/xantform/DESIGN_SYSTEM.md) — names, palettes, icon variants and verification.
+
+## License
+
+The upstream project is licensed under the [MIT License](LICENSE) (copyright Konstantinos Georgiou). This fork keeps the license, attribution and upstream authorship unchanged; the xantform presentation files in `docs/brand/` are original portfolio artwork.
 
 ---
 
