@@ -1,6 +1,6 @@
 <p align="center"><img src="docs/brand/hero.svg" alt="hevy2garmin — a community strength-training integration" width="100%"></p>
 
-<p align="center"><img src="docs/brand/icon.svg" alt="hevy2garmin portfolio icon: strength training and synchronization" width="76"></p>
+<p align="center"><img src="docs/brand/icon.svg" alt="hevy2garmin portfolio icon: dumbbell with a synchronization arrow" width="76"></p>
 
 <p align="center"><strong>Strength training, connected to Garmin.</strong></p>
 
@@ -27,7 +27,11 @@ For requirements, setup, available deployments, maintenance and security guidanc
 
 ## Design
 
-The mint xantic21 **portfolio illustration** is used only in GitHub-facing presentation material and matches the icons of the other personal projects. It is **not** the original upstream app icon and does not imply original authorship. The upstream favicon at `src/hevy2garmin/static/favicon.svg`, application code, upstream copyright, licensing and behavior remain unchanged.
+| Tonal light | Tonal dark |
+| :---: | :---: |
+| <img src="docs/brand/icon.svg" width="76" alt="hevy2garmin portfolio icon: dumbbell with a synchronization arrow"> | <img src="docs/brand/icon-dark.svg" width="76" alt="hevy2garmin portfolio icon, tonal dark variant"> |
+
+The mint portfolio icon follows the xantform [Design System 2.0](https://github.com/xantic21/henning-hub/blob/main/docs/brand/xantform/README.md) (palette: light `#E6F3EE` · medium `#A4C7B7` · ink `#1F5A4D` · dark `#253F38`) and is used only in GitHub-facing presentation material. It is **not** the original upstream app icon and does not imply original authorship. The upstream favicon at `src/hevy2garmin/static/favicon.svg`, the upstream copyright and the license are unchanged.
 
 ## Technical reference
 
@@ -36,6 +40,7 @@ The mint xantic21 **portfolio illustration** is used only in GitHub-facing prese
 - [Portfolio icon and attribution](docs/brand/ICON_PROVENANCE.md) — visual contract for GitHub-facing artwork; original app icon preserved.
 - [Fork publication policy](docs/brand/PYPI_FORK_PUBLISH_POLICY_20261124.md) — inherited upstream PyPI release workflow disabled for this fork.
 - [Shared portfolio design standard](https://github.com/xantic21/henning-hub/blob/main/docs/GITHUB_BRAND_README_STANDARD_20261122.md) — presentation rules only.
+- [xantform Design System 2.0](https://github.com/xantic21/henning-hub/blob/main/docs/brand/xantform/README.md) — names, palettes, icon variants and verification.
 
 ---
 
