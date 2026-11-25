@@ -1,6 +1,6 @@
 <p align="center"><img src="docs/brand/hero.svg" alt="hevy2garmin — a community strength-training integration" width="100%"></p>
 
-<p align="center"><img src="docs/brand/icon.svg" alt="xantic21 hevy2garmin portfolio illustration — strength training and synchronization" width="74"></p>
+<p align="center"><img src="docs/brand/icon.svg" alt="hevy2garmin portfolio icon: strength training and synchronization" width="76"></p>
 
 <p align="center"><strong>Strength training, connected to Garmin.</strong></p>
 
