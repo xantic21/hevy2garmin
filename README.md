@@ -21,6 +21,8 @@ This repository is an **independently held fork**, not an original xantform prod
 
 [Upstream project](https://github.com/drkostas/hevy2garmin) · [Original license](LICENSE) · [Project screenshots](docs/screenshots/)
 
+**Code status:** the application code in this fork is an older upstream snapshot (package version 0.5.17), kept for reference and attribution; it is **not maintained for deployment** and does not receive upstream fixes. To use hevy2garmin, install a current [upstream release](https://github.com/drkostas/hevy2garmin/releases).
+
 ## Getting started
 
 For requirements, setup, available deployments, maintenance and security guidance, start with the **current [upstream documentation](https://github.com/drkostas/hevy2garmin#readme)**. An older snapshot of this fork's previous detailed README is retained for historical reference below. Do not rely on its legacy instructions for indefinitely valid broad-scope GitHub tokens; prefer current least-privilege, expiring credentials.
