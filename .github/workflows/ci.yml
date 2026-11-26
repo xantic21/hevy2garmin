@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
 
+
+# PES-10 (fork maintenance): least privilege by default; jobs that need more declare it themselves.
+permissions:
+  contents: read
+
 jobs:
   check-sqlite:
     name: Tests (SQLite, Python ${{ matrix.python-version }})
