@@ -10,4 +10,4 @@ hevy2garmin here is a **public fork** of [drkostas/hevy2garmin](https://github.c
 
 ## Supported versions
 
-Only the current upstream release and this fork's `main` branch. The fork does not publish packages; the inherited PyPI workflow runs only in the upstream repository.
+Only the current upstream release. This fork's application code is an older upstream snapshot kept for reference (not maintained for deployment); fork-specific reports cover its presentation files and maintenance workflows. The fork does not publish packages; the inherited PyPI workflow runs only in the upstream repository.
