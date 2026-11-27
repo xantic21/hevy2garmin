@@ -452,6 +452,20 @@ M = [
         "",
         ("web", ["npx", "vitest", "run", "deploy-quarantine.test.ts"]),
     ),
+    (
+        "E01 staging accepts an intervals.icu key (gate E audit)",
+        "web/lib/deploy-quarantine.ts",
+        '  "INTERVALS_API_KEY",\n',
+        "",
+        ("web", ["npx", "vitest", "run", "deploy-quarantine.test.ts"]),
+    ),
+    (
+        "E02 drift guard: a credential read by the dashboard is on neither list",
+        "web/lib/deploy-quarantine.ts",
+        '"H2G_PASSWORD_HASH", "H2G_SECRET", ',
+        '"H2G_PASSWORD_HASH", ',
+        ("web", ["npx", "vitest", "run", "deploy-quarantine.test.ts"]),
+    ),
 ]
 
 

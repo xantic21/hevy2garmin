@@ -24,8 +24,19 @@ export const STAGING_FORBIDDEN_ENV = [
   "H2G_CREDENTIALS_KEYS_PREVIOUS",
   "COLLECTOR_URL",
   "COLLECTOR_TOKEN",
+  "INTERVALS_API_KEY",
+  "INTERVALS_ATHLETE_ID",
   "H2G_STRICT_AUTOMATIC",
 ] as const;
+
+/**
+ * Secrets that belong to the dashboard itself (sign-in and session seed, cron
+ * bearer). Staging sets its own, staging-only values; they unlock nothing
+ * outside the deployment. Every other credential-like variable the dashboard
+ * reads must be in STAGING_FORBIDDEN_ENV (deploy-quarantine.test.ts checks
+ * the source for drift).
+ */
+export const STAGING_OWN_SECRETS = ["H2G_PASSWORD", "H2G_PASSWORD_HASH", "H2G_SECRET", "HEVY2GARMIN_SECRET", "CRON_SECRET"] as const;
 
 /** Why this process must not serve, or null. */
 export function quarantineViolation(env: Env = process.env): string | null {
