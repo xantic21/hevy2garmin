@@ -49,10 +49,10 @@ deliberately, and a missing or misspelled one keeps the safe state.
 | Gate | State | Evidence / what remains |
 | --- | --- | --- |
 | A snapshot and quarantine | done | `vercel.json` (both roots) deployment off, `next.config.ts` refuses Vercel builds, no publish path, `typescript/` private with `prepublishOnly` refusal |
-| B end-to-end strict mode | done (synthetic) | engine 590 tests, web 963 tests incl. real Postgres, e2e through firewall + Postgres, 59 negative controls (STRICT_REAUDIT_ROUND2.md) |
+| B end-to-end strict mode | done (synthetic) | engine 590 tests, web 964 tests incl. real Postgres, e2e through firewall + Postgres, 61 negative controls (STRICT_REAUDIT_ROUND2.md) |
 | C synthetic migration and full CI | done | `web/lib/db-qualification.db.test.ts` (fresh DB, previous fork-main schema, pg_dump/restore); all CI jobs |
 | D independent review | done: round 1 9/9 closed (`docs/STRICT_REAUDIT.md`); round 2 owner findings 1–7 and independent re-audit #2 closed (`docs/STRICT_REAUDIT_ROUND2.md`) | no upload/delete path found |
-| E isolated staging | **done (synthetic, on Vercel)**: separate project `hevy2garmin-staging` with its own Neon project, protected preview of 37c16b1, rehearsal 38/38, isolation verified independently, production project unchanged | §7a; the owner may click through the preview (§7 step 5) |
+| E isolated staging | **done (synthetic, on Vercel)**: separate project `hevy2garmin-staging` with its own Neon project, protected preview of the final candidate 0a32304, rehearsal 38/38, isolation verified independently, production project unchanged | §7a; the owner may click through the preview (§7 step 5) |
 | F one owner-accepted real activity | **owner** | procedure §8 |
 | G production activation | **owner** | set `H2G_STRICT_AUTOMATIC` only after F; keep stop switches documented |
 
@@ -224,18 +224,19 @@ Garmin or Hevy, and the production project and its database were not changed.
 | --- | --- |
 | `dpl_6boDf6wGSETyLveAmsaRJYeXMoB4` | Vercel creates the *first* deployment of a project without a Git link as **production**, whatever the request says. The Ignored Build Step refused it (`[quarantine] build skipped … VERCEL_ENV=production, H2G_STAGING=unset`): canceled after about a second, nothing built, nothing served. Proof that the build quarantine works on Vercel itself |
 | `dpl_BBHBisAVcjvfw8gDCYdD99dN9B3N` | preview of 37c16b1 built before the database was connected; READY, not used |
-| `dpl_4JR3unrcMBQjGdngW2VLdFGyKQUr` | **the qualified preview**: commit 37c16b1 (code = candidate 73e134a), target preview, build log `[quarantine] synthetic staging preview: building`, engine digest `ea30e153…4cbe3c`, "Engine identity verified"; branch alias `hevy2garmin-staging-git-migration-str-9ef2d5-xantic21s-projects.vercel.app` |
+| `dpl_4JR3unrcMBQjGdngW2VLdFGyKQUr` | preview of 37c16b1 (code = candidate 73e134a) with the database: build log `[quarantine] synthetic staging preview: building`, engine digest `ea30e153…4cbe3c`, "Engine identity verified"; rehearsal 38/38 |
+| `dpl_CQ5z44kWf9gLa35rM4RPLLQUVWsp` | **the qualified preview of the final candidate 0a32304** (adds the deny-list fix from the independent audit): target preview, `/api/version` reports commit 0a32304; rehearsal 38/38. Branch alias `hevy2garmin-staging-git-migration-str-9ef2d5-xantic21s-projects.vercel.app` points here |
 
 **Results.**
 
 | Check | Result |
 | --- | --- |
 | Without Vercel sign-in | `/`, `/api/staging/status`, `/api/session-epoch`, `/api/strict/credentials`, `/api/cron/sync` and `POST /api/staging/seed` all end at Vercel Authentication (302 to the SSO page); the app is never reached. The revoked bypass token also gets 302 |
-| Rehearsal (`staging-rehearsal.mjs`, temporary automation bypass) | **38/38**: credential routes 423 (POST and GET), destructive routes 423, every scenario, outage → uncertain → reconcile without a write, mismatch → freeze → restore, read-only duplicate audit |
+| Rehearsal (`staging-rehearsal.mjs`, temporary automation bypass, one per run, each revoked right after) | **38/38** on 37c16b1 and again on 0a32304 (same staging database, marker unchanged): credential routes 423 (POST and GET), destructive routes 423, every scenario, outage → uncertain → reconcile without a write, mismatch → freeze → restore, read-only duplicate audit |
 | Database was empty and is staging-only | the guard accepted it only because it held no row in any app table, and marked it at the first request (`2026-11-27T21:42:30Z`); 0 credential rows; automatic sync off |
 | Network | 90 simulated requests, only to the in-process `api.hevyapp.com` / `connectapi.garmin.com`; 0 to any other host; every write a sets or name/description PUT on a synthetic activity 91000xx |
 | Firewall | enforcement self-test passes through the global `fetch`. It reports `outermost: false` on Vercel: Next.js 16 patches the global `fetch` once per process after instrumentation installed the firewall, so the firewall sits inside Next's wrapper (still on every request's path); `ensureStrictFirewall` wraps once more on top before any Garmin client is built. Expected, no action |
-| Independent isolation check | separate read-only audit, see `docs/STRICT_REAUDIT_ROUND2.md` §5 |
+| Independent isolation check | separate read-only agent: staging isolated, production unchanged; 15/16 claims confirmed from Vercel's records, the 16th (no bypass left) verified directly. One LOW finding fixed (0a32304), one MEDIUM production-configuration finding left to the owner (below). Details `docs/STRICT_REAUDIT_ROUND2.md` §5 |
 
 **Owner notes.**
 
@@ -250,6 +251,12 @@ Garmin or Hevy, and the production project and its database were not changed.
   unlike its other secrets (Sensitive). Not changed here (production
   untouched); the owner may re-create it as Sensitive. The dashboard never
   reads it (staging only names it, to refuse it).
+- **Recommended (production, owner)**: the production project hands
+  `HEVY_API_KEY`, `GARMIN_*`, `GITHUB_PAT` and the production database to
+  **Preview** builds too, so every branch of main gets a preview with real
+  credentials. This branch is kept out only by its root `vercel.json`
+  (pinned by a test). Scope those variables to Production only, or turn
+  preview deployments off in that project.
 - When gate E is no longer needed, delete the staging project and its Neon
   store; nothing else depends on them.
 

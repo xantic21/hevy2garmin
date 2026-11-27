@@ -58,6 +58,7 @@ file. Result on the final candidate: see section 4.
 | R5 dry run | R5a, R5b | token-row rewrite, rotated tokens lost |
 | R6 staging/build | R6a–R6h | transport, guard, proxy, vault, token store, both build gates, firewall transport |
 | A re-audit #2 | A01–A21 | every fix of section 2 |
+| E gate E audit | E01, E02 | intervals.icu key accepted in staging; drift guard (section 5) |
 
 Equivalent mutants (kept on the list, expected to survive): **R1e** (the
 dashboard's restore check is redundant to the engine's, which R1b proves).
@@ -89,9 +90,36 @@ enabled.
 Setup, deployments and full evidence: [STRICT_OPERATIONS.md §7a](STRICT_OPERATIONS.md#7a-gate-e-as-set-up-and-qualified-on-vercel-2026-11-27).
 In short: a separate Vercel Hobby project `hevy2garmin-staging` without a Git
 link, Preview-only variables, its own Neon project `green-smoke-61642188`
-connected to it alone; the protected preview of 37c16b1 passed the rehearsal
-38/38; unauthenticated requests never reach the app; the production project
-and its Neon store are unchanged against the baseline taken beforehand.
+connected to it alone; the protected previews of 37c16b1 and of the final
+candidate 0a32304 passed the rehearsal 38/38; unauthenticated requests never
+reach the app; the production project and its Neon store are unchanged
+against the baseline taken beforehand.
 
-Independent read-only isolation check (separate agent, no writes, no
-decryption): in progress; its result is recorded here when complete.
+**Independent read-only isolation check** (separate agent; only read tools,
+no decryption, no writes). Verdict: *staging is isolated and production is
+unchanged.* 15 of 16 claims confirmed from Vercel's own records (production
+`updatedAt`, latest deployment, protection and all 22 variable ids and
+timestamps unchanged, no deployment of this branch there; staging on Hobby,
+no Git link, Vercel Authentication on, 23 variables all Preview-only, none
+from production; each Neon store connected to its own project alone; the
+accidental production deployment canceled by the ignore step with no build
+and no alias; both previews READY through the quarantine gate). The 16th —
+no automation bypass left — is not visible to read tools; it was verified
+directly (the revoke call returned an empty bypass list, the revoked token is
+answered 302). Its code review found no path from staging to the production
+database, a real credential, a real Garmin/Hevy host, or production serving.
+
+| Finding | Severity | Disposition |
+| --- | --- | --- |
+| The production project gives its real credentials and production database variables to **Preview** builds as well; for this branch only its root `vercel.json` (`git.deploymentEnabled: false`, `ignoreCommand: "exit 0"`) prevents a build there, and main has neither | MEDIUM (production configuration, pre-existing) | Not changed: production stays untouched. The root `vercel.json` is pinned by `deploy-quarantine.test.ts` ("vercel.json files"), so a merge or rebase cannot drop it silently. **Owner recommendation**: in the production project scope `HEVY_API_KEY`, `GARMIN_*`, `GITHUB_PAT` and the Neon variables to Production only (today every other branch of main gets a preview with them, e.g. `dpl_FfK8R3qyoNBh6rHs5KAwSN4jkCrU` of `chore/pin-comment-versions`), or turn preview deployments off there |
+| The staging guard connects and runs existence and row-count queries before it refuses; it looks only at the `public` schema; a database whose app tables are empty is accepted and receives the additive tables and the marker | LOW–MEDIUM | Accepted and documented: the queries read no content; the app (dashboard and Python package) keeps all its data in `public` and creates no other schema, so a database without rows there holds no app data to protect. The actual barrier is the connection string: staging's comes from a separate Neon project whose roles cannot reach production |
+| `INTERVALS_API_KEY` (read by `lib/sync-one.ts`) missing from the staging deny list | LOW | **Fixed** in 0a32304 together with `INTERVALS_ATHLETE_ID`; new drift guard: every credential-like variable the dashboard's source reads must be on the deny list or among the dashboard's own secrets. Negative controls E01, E02 (caught) |
+| Hevy/GitHub call sites rely on the firewall installed at server start | LOW | By design: `instrumentation.ts` installs it before the first request; staging holds no key for either; the rehearsal shows 0 requests to other hosts |
+| Production `GARMIN_PASSWORD` stored as readable type; static `_next/static` files served while quarantined | INFO | Owner note in STRICT_OPERATIONS.md §7a; static files carry no data |
+
+Requalification of the final candidate **0a32304** (change: the deny list,
+its test, two negative controls; engine and Python untouched): engine
+identity verified; web tsc, eslint clean; web vitest 964/964 (106 files, real
+Postgres and pg_dump); negative controls A17, A18, A21, E01, E02 all caught;
+GitHub Actions CI and the Vercel preview rehearsal as recorded in
+STRICT_OPERATIONS.md §7a.
