@@ -25,6 +25,10 @@ export async function GET(request: Request) {
         FROM staging_garmin_activities ORDER BY activity_id`) as unknown[];
       const requests = (await sql`SELECT at, method, host, path, status, note FROM staging_requests ORDER BY id DESC LIMIT 40`) as unknown[];
       const refused = (await sql`SELECT count(*)::int AS n FROM staging_requests WHERE note = 'refused'`) as Array<{ n: number }>;
+      // Over EVERY logged request, not only the recent ones shown below.
+      const hosts = ((await sql`SELECT DISTINCT host FROM staging_requests ORDER BY host`) as Array<{ host: string }>).map((r) => r.host);
+      const writes = (await sql`SELECT method, path, count(*)::int AS n FROM staging_requests WHERE method <> 'GET' GROUP BY method, path ORDER BY path`) as Array<{ method: string; path: string; n: number }>;
+      const total = (await sql`SELECT count(*)::int AS n FROM staging_requests`) as Array<{ n: number }>;
       return {
         staging: {
           marker: marker[0]?.value ?? null,
@@ -32,6 +36,9 @@ export async function GET(request: Request) {
           scenarios: STAGING_SCENARIOS.map((s) => ({ hevyId: s.hevyId, title: s.title, activities: s.activities.map((a) => a.id), expect: s.expect })),
           activities,
           refusedRequests: refused[0]?.n ?? 0,
+          totalRequests: total[0]?.n ?? 0,
+          hosts,
+          writes,
           requests,
         },
       };

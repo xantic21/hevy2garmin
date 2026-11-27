@@ -230,9 +230,17 @@ const numEq = (tol: number) => (a: unknown, b: unknown) => {
  * all of them; for ACTIVE sets also the step index, reps, weight and EVERY
  * exercise entry (category, name, probability). A value the intended state
  * has that the read-back lacks is a mismatch, never a pass. With
- * `activityId`, the read-back must name that activity.
+ * `activityId`, the read-back must name that activity. With
+ * `absentMeansNull` (a restore), a field the intended state does not have
+ * must not hold a value on Garmin either: nothing of the overwritten state
+ * may be left behind.
  */
-export function compareSetSequences(intended: unknown, readback: unknown, opts: { activityId?: number } = {}): SetMismatch[] {
+export function compareSetSequences(
+  intended: unknown,
+  readback: unknown,
+  opts: { activityId?: number; absentMeansNull?: boolean } = {},
+): SetMismatch[] {
+  const v = (o: Record<string, unknown>, k: string): unknown => (o[k] === undefined && opts.absentMeansNull ? null : o[k]);
   const out: SetMismatch[] = [];
   if (opts.activityId !== undefined) {
     const got = (readback as { activityId?: unknown } | null)?.activityId;
@@ -247,19 +255,23 @@ export function compareSetSequences(intended: unknown, readback: unknown, opts: 
     const x = a[i] ?? {};
     const y = b[i] ?? {};
     compareValue(out, i, "setType", x.setType ?? null, y, "setType");
-    compareValue(out, i, "startTime", x.startTime, y, "startTime", (p, q) => {
+    compareValue(out, i, "startTime", v(x, "startTime"), y, "startTime", (p, q) => {
       const s = instantMs(p);
       const t = instantMs(q);
       return s !== null && t !== null && Math.abs(s - t) <= TIMING_TOLERANCE.startMs;
     });
-    compareValue(out, i, "duration", x.duration, y, "duration", numEq(TIMING_TOLERANCE.durationS));
+    compareValue(out, i, "duration", v(x, "duration"), y, "duration", numEq(TIMING_TOLERANCE.durationS));
     if (x.setType !== "ACTIVE") continue;
-    compareValue(out, i, "wktStepIndex", x.wktStepIndex, y, "wktStepIndex", numEq(0));
-    compareValue(out, i, "reps", x.repetitionCount, y, "repetitionCount", numEq(0));
-    compareValue(out, i, "weight", x.weight, y, "weight", numEq(1));
+    compareValue(out, i, "wktStepIndex", v(x, "wktStepIndex"), y, "wktStepIndex", numEq(0));
+    compareValue(out, i, "reps", v(x, "repetitionCount"), y, "repetitionCount", numEq(0));
+    compareValue(out, i, "weight", v(x, "weight"), y, "weight", numEq(1));
     const ex = Array.isArray(x.exercises) ? (x.exercises as Array<Record<string, unknown>>) : null;
     const ey = Array.isArray(y.exercises) ? (y.exercises as Array<Record<string, unknown>>) : null;
-    if (ex === null) continue;
+    if (ex === null) {
+      // No exercises intended: under absentMeansNull, Garmin must hold none either.
+      if (opts.absentMeansNull && ey !== null && ey.length > 0) out.push({ index: i, field: "exercises", expected: 0, actual: ey.length });
+      continue;
+    }
     if (ey === null || ex.length !== ey.length) {
       out.push({ index: i, field: "exercises", expected: ex.length, actual: ey === null ? "(missing)" : ey.length });
       continue;
@@ -267,7 +279,7 @@ export function compareSetSequences(intended: unknown, readback: unknown, opts: 
     for (let j = 0; j < ex.length; j++) {
       compareValue(out, i, "category", ex[j]?.category ?? null, ey[j] ?? {}, "category");
       compareValue(out, i, "name", ex[j]?.name ?? null, ey[j] ?? {}, "name");
-      compareValue(out, i, "probability", ex[j]?.probability, ey[j] ?? {}, "probability", numEq(0));
+      compareValue(out, i, "probability", v(ex[j] ?? {}, "probability"), ey[j] ?? {}, "probability", numEq(0));
     }
   }
   return out;

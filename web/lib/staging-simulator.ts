@@ -137,7 +137,8 @@ async function garmin(sql: Sql, method: string, url: URL, body: string | null): 
 export function createStagingTransport(getSql: () => Sql = getDb, network: typeof fetch = fetch): typeof fetch {
   return (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     const { url, effective, host, body } = requestParts(input, init);
-    if (ownHost(host)) return network(input, init);
+    // This deployment's own origin, for the one request the proxy makes there (the session epoch), and nothing else.
+    if (ownHost(host) && effective === "GET" && /\/api\/session-epoch\/?$/.test(url.pathname)) return network(input, init);
     let res: Response;
     let note: string | undefined;
     const sql = getSql();

@@ -19,6 +19,10 @@ import { runStrictSync, type StrictRouteOptions } from "./strict-sync";
 type Sql = ReturnType<typeof getDb>;
 
 /** Session cookie (with the sign-out-everywhere epoch) or the CRON_SECRET bearer. */
+
+/** Time after which a live batch request starts no further workout (one sync stays within 60 s). */
+export const STRICT_BATCH_BUDGET_MS = 20_000;
+
 export async function strictAuthorized(request: Request, opts: { allowCron: boolean }): Promise<boolean> {
   const cron = process.env.CRON_SECRET ?? "";
   if (opts.allowCron && cron && bearerMatches(request.headers.get("authorization"), cron)) return true;
@@ -160,14 +164,31 @@ export async function strictBatchRoute(request: Request): Promise<NextResponse> 
       });
     }
     const runs: StrictSyncResult[] = [];
-    const tried: string[] = [];
+    // Workouts an earlier request of the same "Sync all" already tried (the client sends them back).
+    const earlier = Array.isArray(body.exclude) ? body.exclude.filter((x): x is string => typeof x === "string").slice(0, 1000) : [];
+    const tried: string[] = [...earlier];
+    // One request stays well inside the function limit (maxDuration 60 s): a new
+    // workout starts only while the budget lasts, and the client calls again
+    // for the rest. A run cut off mid-write by the platform would leave the
+    // deployment blocked until someone reconciles it.
+    const budgetMs = Math.max(1_000, Number(process.env.H2G_BATCH_BUDGET_MS) || STRICT_BATCH_BUDGET_MS);
+    const started = Date.now();
+    let more = false;
+    let stopped = false;
     for (let i = 0; i < 50; i++) {
-      const r = await runStrictSync(sql, { dryRun: false, trigger: "batch", excludeHevyIds: tried });
+      if (Date.now() - started > budgetMs) {
+        more = true;
+        break;
+      }
+      const r = await runStrictSync(sql, { dryRun: false, trigger: "batch", excludeHevyIds: [...tried] });
       if (r.status === "none") break;
       runs.push(r);
       if (r.hevyId) tried.push(r.hevyId);
       // A global stop (freeze, unreconciled write, uncertain outcome) ends the batch.
-      if (r.status === "blocked" || r.status === "uncertain" || (r.status === "needs_review" && r.writes > 0)) break;
+      if (r.status === "blocked" || r.status === "uncertain" || (r.status === "needs_review" && r.writes > 0)) {
+        stopped = true;
+        break;
+      }
     }
     const count = (s: StrictSyncResult["status"]) => runs.filter((r) => r.status === s).length;
     return NextResponse.json({
@@ -175,6 +196,9 @@ export async function strictBatchRoute(request: Request): Promise<NextResponse> 
       mode: "inline",
       strict: true,
       runs: runs.map((r) => strictView(r)),
+      // More candidates may remain: the client calls again with `exclude: tried`.
+      more: more && !stopped,
+      tried,
       totalSynced: count("synced"),
       totalSkipped: count("already_synced") + count("pending"),
       totalDeferred: count("blocked") + count("needs_review"),

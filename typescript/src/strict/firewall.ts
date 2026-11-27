@@ -217,7 +217,10 @@ export function firewallStats(): { blocked: number; recent: FirewallEvent[] } {
  * stops syncing but deliberately allows an operator's verified recovery.)
  */
 export function strictHardStopActive(env: Record<string, string | undefined> = process.env): boolean {
-  return /^(1|true|yes|on)$/i.test((env.H2G_STRICT_STOP ?? "").trim());
+  // Fail closed: any value except an explicit "off" stops writes, so a typo
+  // ("enabled", "stop", "y") can never leave them running.
+  const v = (env.H2G_STRICT_STOP ?? "").trim();
+  return v !== "" && !/^(0|false|no|off)$/i.test(v);
 }
 
 /** True for a StrictModeViolation from ANY copy of this module (instanceof is per copy). */

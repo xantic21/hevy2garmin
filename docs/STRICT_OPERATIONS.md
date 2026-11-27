@@ -14,6 +14,7 @@ Hevy data. Each of those needs the owner's separate approval (gates E–G).
 | Only sets and name/description of ONE activity, only inside a capability scope for that id | firewall classifier + AsyncLocalStorage scope shared process-wide | firewall tests incl. two engine copies in one process |
 | One unambiguous native original; defer otherwise | `selectStrictMergeMatch` + reverse match against other Hevy workouts + listing-truncation check + detail re-check | `tests/strict/strict-sync.test.ts` "matching" |
 | Exclusive durable binding, atomic claims | `strict_bindings` (both ids UNIQUE), single-statement claim, leases | ledger contract on memory and Postgres |
+| One operation per activity, uninterrupted (sync, restore, reconcile) | `strict_activity_locks`; under the lock the binding and the activity are re-read and must equal what was planned from; every write first renews the lock only if held without interruption (fencing); one in-flight journal entry per activity (partial unique index); a writer's release never lifts a review | ledger contract (fencing), `tests/strict/review-round2b.test.ts`, `strict-e2e` (3 concurrent restores → 1 PUT); STRICT_REAUDIT_ROUND2.md |
 | Immutable original backup, verified before any write | `strict_backups` insert-only triggers, one `original` per activity, SHA-256 read back before the PUT | contract + DB tests (UPDATE/DELETE/TRUNCATE refused, also after restore) |
 | Write-ahead journal; uncertain ⇒ blocked; no blind retry | `put_sent` durable before the request; read-back decides `verified` / `not_applied` / `needs_review` (+ freeze) | strict-sync tests: lost response, timeout, partial read-back, crash after `put_sent`, concurrent runs |
 | Native timing, HR and metrics preserved; user notes kept; no estimated HR/kcal in text | payload overlays watch timing when set counts match; 19 native metric paths compared after every write; description block appended between markers | model tests, e2e test |
@@ -32,14 +33,16 @@ deliberately, and a missing or misspelled one keeps the safe state.
 | --- | --- |
 | *(none)* | strict in-place merge, firewall on, automatic runs locked |
 | `H2G_STRICT_AUTOMATIC=enabled-by-owner` | gate G: cron and webhook may run the strict merge |
-| `H2G_STRICT_STOP=1` | stop switch at deployment level: every live strict write refused before DB, Hevy or Garmin are touched |
+| `H2G_STRICT_STOP=1` | stop switch at deployment level: every live strict write and every restore refused; a live sync before DB, Hevy or Garmin are touched. Fail-closed: any value except empty/`0`/`false`/`no`/`off` counts as set. It stops Garmin **writes**; sign-in and token refresh (authentication, not activity data) are not writes and are not stopped |
 | `H2G_SYNC_MODE=legacy_upstream` **and** `H2G_LEGACY_UPSTREAM_ACK=uploads-and-deletes-allowed` | upstream behaviour (uploads, replace = delete). Both, exactly. Never for this deployment |
 | `H2G_DIRECT_GARMIN_LOGIN=1` or `GARMIN_LOGIN_WORKER_URL=<your own Worker>` | how Garmin sign-in runs. With neither, sign-in is refused; credentials are never sent to the shared upstream Worker |
 | `H2G_UPDATE_CHECK=off` | recommended: no calls to the GitHub API for the update banner (the banner is hidden in strict mode anyway) |
 | `H2G_CREDENTIALS_KEY` | **required in strict mode** to store or use a Garmin token, Hevy key or GitHub token: base64 of 32 random bytes (`openssl rand -base64 32`). Its own secret: equal to `HEVY2GARMIN_SECRET`, `H2G_SECRET`, `CRON_SECRET`, `H2G_PASSWORD` or `H2G_BACKUP_KEY` is refused. One key per environment (staging ≠ production) |
 | `H2G_CREDENTIALS_KEYS_PREVIOUS` | comma-separated previous keys, decrypt only, during a rotation (§13) |
 | `H2G_BACKUP_KEY` | **not a deployment variable**: lives on the operator's machine / password manager and encrypts database backups (§5) |
-| `H2G_STAGING=synthetic` | gate E only: synthetic staging (§7). Hevy and Garmin simulated in-process, no external network, no credential accepted or stored, refuses a database with real data; refuses to start as a Vercel production deployment |
+| `H2G_STAGING=synthetic` | gate E only: synthetic staging (§7). Hevy and Garmin simulated in-process, no external network, no credential accepted or stored, refuses a database with any real data; refuses to run as a Vercel production deployment or with a real-credential variable set |
+| `H2G_PRODUCTION_CUTOVER=approved-by-owner` | the owner's approved cutover. Without it a Vercel **production** deployment of this candidate refuses every request (runtime quarantine, §4) |
+| `H2G_BATCH_BUDGET_MS` | optional, default 20000: a live "Sync all" request starts no new workout after this long; the dashboard calls again for the rest |
 
 ## 3. Gates (contract § Gates)
 
@@ -66,12 +69,19 @@ already exists:
 | Scheduler (after gate G only) | GitHub Actions `schedule` or a Cloudflare Worker cron trigger calling `/api/cron/sync` with `CRON_SECRET` | free | Vercel Hobby crons are limited, and automatic runs stay off until gate G anyway |
 | Backups | operator machine: `pg_dump … \| backup-crypt.mjs encrypt` (§5) | free | before every gate and monthly |
 
-**What Vercel may build.** Exactly one thing until the cutover: a *preview*
-deployment with `H2G_STAGING=synthetic`. Enforced twice:
-`web/scripts/vercel-ignore.mjs` (Ignored Build Step: anything else is skipped)
-and `web/next.config.ts` (anything else fails the build). Production builds stay
-refused; the quarantine is lifted only in a separate, reviewed cutover after
-gate F. Long routes declare `maxDuration = 60` (within every plan).
+**What Vercel may build and run.** Exactly one thing until the cutover: a
+*preview* deployment with `H2G_STAGING=synthetic`. Enforced at build time
+twice — `web/scripts/vercel-ignore.mjs` (Ignored Build Step) and
+`web/next.config.ts` — and at **runtime** twice, because a build gate can be
+bypassed (`vercel build` without `VERCEL_ENV`, then `vercel deploy --prebuilt
+--prod`): `web/lib/deploy-quarantine.ts` stops the server at start
+(`instrumentation.ts`) and answers 503 to every request (`proxy.ts`) for a
+production deployment without `H2G_PRODUCTION_CUTOVER=approved-by-owner` and
+for any preview that is not synthetic staging. The quarantine is lifted only
+in a separate, reviewed cutover after gate F. Long routes declare
+`maxDuration = 60`; a live "Sync all" is split into requests that each start
+no new workout after 20 s (`H2G_BATCH_BUDGET_MS`), so the platform never cuts
+a write off mid-flight.
 
 **Container (self-hosting alternative).** `docker build -f web/Dockerfile -t
 hevy2garmin-web .` from the repository root; the image compiles the engine and
@@ -82,21 +92,28 @@ must report `firewall.installed: true`, `schema.ready: true`,
 
 ## 5. Database
 
-- Additive bootstrap (`web/lib/schema.ts`): four strict tables, two
-  insert-only triggers, one partial unique index. Idempotent; never drops or
-  alters an upstream table. Live strict writes are blocked unless
-  `strictSchemaReady` confirms tables, triggers and index.
+- Additive bootstrap (`web/lib/schema.ts`): five strict tables
+  (`strict_bindings`, `strict_backups`, `strict_journal`,
+  `strict_activity_locks`, `strict_control`), two insert-only triggers on
+  `strict_backups`, and two partial unique indexes (one `original` backup per
+  activity; one in-flight journal entry per activity). Idempotent; never drops
+  or alters an upstream table. Live strict writes are blocked unless
+  `strictSchemaReady` confirms the tables, the triggers and both indexes.
 - **Backup, encrypted** (from the operator's machine, client tools of the
   **same major version as the server** — CI found that pg_dump 18 output
   cannot be restored into Postgres 16):
 
   ```bash
-  pg_dump --format=custom --no-owner "$DATABASE_URL" | node web/scripts/backup-crypt.mjs encrypt - "h2g-$(date +%F).dump.h2gbak"
+  set -o pipefail; F="h2g-$(date +%F).dump.h2gbak"; pg_dump --format=custom --no-owner "$DATABASE_URL" | node web/scripts/backup-crypt.mjs encrypt - "$F" || { rm -f "$F"; echo "BACKUP FAILED"; }
   ```
 
   AES-256-GCM with `H2G_BACKUP_KEY`; magic and header are authenticated
-  (AAD), the tag is checked before the output exists. `verify` checks a file
-  without writing anything. Credentials inside the dump are additionally
+  (AAD), the 128-bit tag is checked before the output exists. The tool
+  refuses an empty input and anything that is not a pg_dump custom archive
+  (`PGDMP`; `--raw` for other files); `pipefail` matters because a pg_dump
+  that fails part-way still produced a valid-looking prefix. `verify` checks a
+  file without writing anything, including that a pg_dump archive is inside;
+  `pg_restore --list` on the decrypted file is the final check. Credentials inside the dump are additionally
   sealed with `H2G_CREDENTIALS_KEY`, so a leaked backup needs both keys.
 - **Restore** into an empty database:
 
@@ -133,11 +150,16 @@ must report `firewall.installed: true`, `schema.ready: true`,
 dashboard; Hevy and Garmin Connect simulated in-process at the HTTP level
 (`web/lib/staging-simulator.ts`), installed as the firewall's transport so
 every request meets the production firewall first and nothing leaves the
-process. Credential routes answer 423 before reading the body, the vault
-refuses every write, and the database guard (`web/lib/staging-guard.ts`)
-refuses — before even the schema bootstrap — any database holding a
-credential or non-synthetic history. A banner on every page says it is
-synthetic.
+process. Credential routes answer 423 for every method (a key can travel in a
+GET query) before anything is read, the vault refuses every write, staging
+refuses to run with any real-credential variable set (`HEVY_API_KEY`,
+`GITHUB_PAT`, `GARMIN_*`, `GARMIN_LOGIN_WORKER_URL`, `H2G_CREDENTIALS_KEY`,
+`COLLECTOR_*`, `H2G_STRICT_AUTOMATIC`), and the database guard
+(`web/lib/staging-guard.ts`) refuses — before even the schema bootstrap — a
+database that holds a credential, or, unless it is already marked as staging,
+any row at all; a marked staging database may only ever hold synthetic
+(`syn-…`) workouts. Its own-origin passthrough is limited to the proxy's
+session-epoch read. A banner on every page says it is synthetic.
 
 **Scenarios** (`web/lib/staging-fixtures.ts`, ids `syn-*`, activities 9100001–9100010):
 clean merge · read-back mismatch → needs review → restore · lost response →
@@ -155,8 +177,13 @@ tripwire that no request reaches).
 
 **On Vercel** (no new resources):
 
-1. Neon: create an empty database for staging (or any other free, empty
-   Postgres). Not a branch of production.
+1. Neon: an empty database for staging that the staging connection string
+   **cannot** reach production with: ideally a separate Neon project; within
+   the same project, a dedicated role that can connect only to the staging
+   database (`CREATE ROLE h2g_staging LOGIN PASSWORD …; GRANT CONNECT,
+   CREATE ON DATABASE h2g_staging TO h2g_staging; REVOKE CONNECT ON DATABASE
+   <production> FROM PUBLIC;` and grant production only to its own role).
+   Never the default owner role, never a branch of production.
 2. Vercel project (Root Directory `web`): environment variables scoped to
    **Preview**, ideally to the branch `migration/strict-inplace-20261127`:
    `H2G_STAGING=synthetic`, `DATABASE_URL=<staging database>`,
@@ -236,8 +263,8 @@ status). It is **not** free of every side effect:
 | --- | --- | --- | --- |
 | Schema bootstrap DDL (`web/lib/schema.ts`) | first query of every process | `CREATE … IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`, `CREATE OR REPLACE FUNCTION strict_backups_refuse_change` (rewrites the same definition in the catalog). On a complete schema no row changes; on an empty or older database the missing tables/columns are created — a migration, so run it deliberately (deploy step) before the first preview | none (additive, idempotent; migration test) |
 | Garmin token check | when the Garmin client is built (once per process) | `GET /userprofile-service/socialProfile` (read); on a 401 a `POST diauth.garmin.com` token grant | none (authentication, not activity data) |
-| Garmin token row write | only if Garmin **rotated** the tokens during the run (refresh after a 401) | Garmin invalidates the old refresh token; not saving would lose the login | the credential row (sealed) |
-| Garmin token row delete | only if Garmin **rejected** the tokens | upstream garmin-auth behaviour: a rejected token is stale | the credential row; re-login needed |
+| Garmin token row write | (a) Garmin **rotated** the tokens during the run (refresh after a 401); (b) the row's `status` is not `active` (it is set back to `active`, with new ciphertext and `connected_at`). Unchanged tokens on an active row — nested or in the legacy flat shape — are never rewritten | (a) Garmin invalidates the old refresh token; not saving would lose the login. (b) upstream garmin-auth restores the status so a working login is not reported as disconnected | the credential row (sealed) |
+| Garmin token row delete | when garmin-auth classifies the answer to its token check as a rejection: an authentication error with status 400, 401, 403 or none (`isTokenRejection`). A 403 can also come from a CDN or bot block rather than from Garmin's token check | upstream garmin-auth behaviour: a rejected token is treated as stale | the credential row; re-login needed |
 
 Closed in round 2: unchanged tokens are no longer re-saved (`EncryptedTokenStore.save`
 compares first; previously every client build rewrote the row and
@@ -299,9 +326,17 @@ key, never workout data.
 (sign-in, Hevy key and ticket routes answer 503 before anything is sent) nor
 used. A key that opens no row ("Cannot open"): the previous key is missing
 from `H2G_CREDENTIALS_KEYS_PREVIOUS`. A malformed key or one equal to another
-secret: the vault refuses to start rather than guess.
+secret (compared as text and as decoded key bytes, base64 and base64url
+alike, previous keys and `H2G_PASSWORD_HASH` included): every use of the
+vault throws rather than guess. Envelopes with a non-96-bit IV or a tag
+shorter than 128 bits are refused. Migration seals only the credential
+platforms (`hevy`, `garmin`, `garmin_tokens`, `github`); other rows (the Python
+package's `auto_sync` settings) stay as they are, and a credential row that is
+not an object is reported as unsupported, never replaced.
 
-**Python package.** It has no access to the key by design. It recognises the
+**Python package.** It is not part of this deployment and must not run
+against its database: its token store would overwrite a sealed
+`garmin_tokens` row with plaintext. It has no access to the key by design. It recognises the
 envelope, never mistakes it for a credential, and falls back to
 `HEVY_API_KEY` / `GITHUB_PAT` (`credentials_sealed` in `config.py`). The
 Python dashboard is not part of this deployment.

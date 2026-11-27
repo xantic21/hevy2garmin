@@ -13,12 +13,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const h = vi.hoisted(() => ({
   workerLogin: vi.fn(),
   workerLoginMfa: vi.fn(),
+  exchangeTicket: vi.fn(),
   fetchWorkoutCount: vi.fn(),
   writes: [] as Array<{ q: string; values: unknown[] }>,
   authorized: true,
 }));
 
-vi.mock("@/lib/garmin-login-worker", async (orig) => ({ ...(await orig<object>()), workerLogin: h.workerLogin, workerLoginMfa: h.workerLoginMfa }));
+vi.mock("@/lib/garmin-login-worker", async (orig) => ({ ...(await orig<object>()), workerLogin: h.workerLogin, workerLoginMfa: h.workerLoginMfa, exchangeTicket: h.exchangeTicket }));
 vi.mock("@/lib/hevy-sync", async (orig) => ({ ...(await orig<object>()), fetchWorkoutCount: h.fetchWorkoutCount }));
 vi.mock("@/lib/garmin-cooldown", () => ({ cooldownRemaining: async () => 0, formatCooldown: () => "", clearCooldown: async () => {} }));
 vi.mock("@/lib/strict-routes", async (orig) => ({ ...(await orig<object>()), strictAuthorized: async () => h.authorized }));
@@ -62,6 +63,13 @@ describe("strict without H2G_CREDENTIALS_KEY: refuse before anything leaves the 
     const res = await POST(post("http://x/api/garmin-login-mfa", { session_id: "s", mfa_code: "123456" }));
     expect(res.status).toBe(503);
     expect(h.workerLoginMfa).not.toHaveBeenCalled();
+  });
+
+  it("a Garmin ticket is not spent with Garmin when its tokens could not be stored (re-audit #2)", async () => {
+    const { POST } = await import("./garmin-ticket-exchange/route");
+    const res = await POST(post("http://x/api/garmin-ticket-exchange", { ticket: "ST-synthetic-0001" }));
+    expect(res.status).toBe(503);
+    expect(h.exchangeTicket).not.toHaveBeenCalled();
   });
 
   it("a pasted Garmin ticket's tokens are not stored", async () => {

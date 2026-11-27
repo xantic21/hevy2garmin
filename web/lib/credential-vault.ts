@@ -53,10 +53,33 @@ interface Keyring {
 
 const kidOf = (key: Buffer) => createHash("sha256").update("h2g-kid:").update(key).digest("hex").slice(0, 16);
 
+const BASE64 = /^[A-Za-z0-9+/_-]+={0,2}$/;
+
+/** Strict: only the base64 / base64url alphabet, exactly 32 bytes. */
 function decodeKey(raw: string, name: string): Buffer {
-  const key = Buffer.from(raw.trim().replace(/-/g, "+").replace(/_/g, "/"), "base64");
+  const text = raw.trim();
+  const key = BASE64.test(text) ? Buffer.from(text.replace(/-/g, "+").replace(/_/g, "/"), "base64") : Buffer.alloc(0);
   if (key.length !== 32) throw new CredentialVaultError(`${name} must be base64 of exactly 32 random bytes`);
   return key;
+}
+
+/** The deployment's other secrets, for the separation check (raw text and, where it is one, the decoded key). */
+const OTHER_SECRETS = ["HEVY2GARMIN_SECRET", "H2G_SECRET", "CRON_SECRET", "H2G_PASSWORD", "H2G_PASSWORD_HASH", "H2G_BACKUP_KEY", "H2G_BACKUP_KEYS_PREVIOUS"];
+
+function assertSeparate(name: string, raw: string, key: Buffer, env: Env): void {
+  for (const other of OTHER_SECRETS) {
+    for (const value of (env[other] ?? "").split(other.endsWith("_PREVIOUS") ? "," : /$^/).map((s) => s.trim()).filter(Boolean)) {
+      let decoded: Buffer | null = null;
+      try {
+        decoded = decodeKey(value, other);
+      } catch {
+        decoded = null;
+      }
+      if (value === raw || (decoded && decoded.equals(key))) {
+        throw new CredentialVaultError(`${name} must be its own secret, not the same value as ${other}`);
+      }
+    }
+  }
 }
 
 /** The keys from the environment. Throws on a malformed or re-used key: fail closed. */
@@ -65,21 +88,24 @@ export function loadKeyring(env: Env = process.env): Keyring {
   const currentRaw = env.H2G_CREDENTIALS_KEY?.trim();
   let current: Keyring["current"] = null;
   if (currentRaw) {
-    for (const other of ["HEVY2GARMIN_SECRET", "H2G_SECRET", "CRON_SECRET", "H2G_PASSWORD", "H2G_BACKUP_KEY"]) {
-      if (env[other]?.trim() && env[other]!.trim() === currentRaw) {
-        throw new CredentialVaultError(`H2G_CREDENTIALS_KEY must be its own secret, not the same value as ${other}`);
-      }
-    }
     const key = decodeKey(currentRaw, "H2G_CREDENTIALS_KEY");
+    assertSeparate("H2G_CREDENTIALS_KEY", currentRaw, key, env);
     current = { kid: kidOf(key), key };
     byKid.set(current.kid, key);
   }
   for (const raw of (env.H2G_CREDENTIALS_KEYS_PREVIOUS ?? "").split(",").map((s) => s.trim()).filter(Boolean)) {
     const key = decodeKey(raw, "H2G_CREDENTIALS_KEYS_PREVIOUS");
+    assertSeparate("H2G_CREDENTIALS_KEYS_PREVIOUS", raw, key, env);
     byKid.set(kidOf(key), key);
   }
   return { current, byKid };
 }
+
+/**
+ * The platforms whose rows hold a secret. Other rows (the Python package keeps
+ * its `auto_sync` settings in the same table) are neither sealed nor counted.
+ */
+export const CREDENTIAL_PLATFORMS: readonly string[] = ["hevy", "garmin", "garmin_tokens", "github"];
 
 /** Plaintext is acceptable only in legacy mode with no key at all. */
 export function encryptionRequired(env: Env = process.env): boolean {
@@ -112,9 +138,13 @@ export function open(platform: string, envelope: CredentialEnvelope, ring: Keyri
   const key = ring.byKid.get(envelope.kid);
   if (!key) throw new CredentialVaultError(`no key for credential key id ${envelope.kid}; add it to H2G_CREDENTIALS_KEYS_PREVIOUS`);
   try {
-    const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(envelope.iv, "base64"));
+    const iv = Buffer.from(envelope.iv, "base64");
+    const tag = Buffer.from(envelope.tag, "base64");
+    // Pinned: a 96-bit IV and the full 128-bit tag. A shortened tag is a forgery attempt, never accepted.
+    if (iv.length !== 12 || tag.length !== 16) throw new Error("malformed envelope");
+    const decipher = createDecipheriv("aes-256-gcm", key, iv, { authTagLength: 16 });
     decipher.setAAD(aad(platform));
-    decipher.setAuthTag(Buffer.from(envelope.tag, "base64"));
+    decipher.setAuthTag(tag);
     const pt = Buffer.concat([decipher.update(Buffer.from(envelope.ct, "base64")), decipher.final()]);
     const value = JSON.parse(pt.toString("utf8"));
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("not an object");
@@ -124,14 +154,22 @@ export function open(platform: string, envelope: CredentialEnvelope, ring: Keyri
   }
 }
 
+/** The stored value as an object; a JSON string holding JSON (double-encoded by an older writer) is unwrapped once. */
 const parse = (raw: unknown): unknown => {
   if (typeof raw !== "string") return raw;
   try {
-    return JSON.parse(raw);
+    const once = JSON.parse(raw);
+    if (typeof once !== "string") return once;
+    try {
+      return JSON.parse(once);
+    } catch {
+      return once;
+    }
   } catch {
     return null;
   }
 };
+const isObject = (v: unknown): v is Record<string, unknown> => Boolean(v) && typeof v === "object" && !Array.isArray(v);
 
 /**
  * One platform's credentials, decrypted, or null when there is no row.
@@ -240,6 +278,8 @@ export interface VaultReport {
   encryptedPrevious: number;
   plaintext: number;
   unreadable: string[];
+  /** Credential rows in a shape the vault does not touch (not an object): listed, never sealed. */
+  unsupported?: string[];
 }
 
 /** Counts only; never decrypts. For the status panel. */
@@ -250,16 +290,19 @@ export async function vaultStatus(sql: Sql, env: Env = process.env): Promise<Vau
   } catch (e) {
     return { configured: false, currentKid: null, rows: 0, encryptedCurrent: 0, encryptedPrevious: 0, plaintext: 0, unreadable: [(e as Error).message] };
   }
-  const rows = (await sql`SELECT platform, credentials FROM platform_credentials`.catch(() => [])) as Array<{ platform: string; credentials: unknown }>;
-  const r: VaultReport = { configured: Boolean(ring.current), currentKid: ring.current?.kid ?? null, rows: rows.length, encryptedCurrent: 0, encryptedPrevious: 0, plaintext: 0, unreadable: [] };
+  const all = (await sql`SELECT platform, credentials FROM platform_credentials`.catch(() => [])) as Array<{ platform: string; credentials: unknown }>;
+  const rows = all.filter((row) => CREDENTIAL_PLATFORMS.includes(row.platform));
+  const r: VaultReport = { configured: Boolean(ring.current), currentKid: ring.current?.kid ?? null, rows: rows.length, encryptedCurrent: 0, encryptedPrevious: 0, plaintext: 0, unreadable: [], unsupported: [] };
   for (const row of rows) {
     const v = parse(row.credentials);
     if (isEnvelope(v)) {
       if (v.kid === ring.current?.kid) r.encryptedCurrent += 1;
       else if (ring.byKid.has(v.kid)) r.encryptedPrevious += 1;
       else r.unreadable.push(row.platform);
-    } else if (v && typeof v === "object" && Object.keys(v as object).length) {
-      r.plaintext += 1;
+    } else if (isObject(v)) {
+      if (Object.keys(v).length) r.plaintext += 1;
+    } else if (v !== null) {
+      r.unsupported!.push(row.platform);
     }
   }
   return r;
@@ -271,11 +314,16 @@ export async function vaultStatus(sql: Sql, env: Env = process.env): Promise<Vau
  * Each row is a compare-and-set; a row that cannot be opened is reported and
  * left untouched.
  */
-export async function migrateCredentials(sql: Sql, env: Env = process.env): Promise<{ encrypted: string[]; rotated: string[]; unchanged: string[]; failed: string[] }> {
+export async function migrateCredentials(
+  sql: Sql,
+  env: Env = process.env,
+): Promise<{ encrypted: string[]; rotated: string[]; unchanged: string[]; failed: string[]; unsupported: string[] }> {
   const ring = loadKeyring(env);
   if (!ring.current) throw new CredentialVaultError("H2G_CREDENTIALS_KEY is not set; nothing can be encrypted");
-  const out = { encrypted: [] as string[], rotated: [] as string[], unchanged: [] as string[], failed: [] as string[] };
-  const rows = (await sql`SELECT platform, credentials FROM platform_credentials ORDER BY platform`) as Array<{ platform: string; credentials: unknown }>;
+  const out = { encrypted: [] as string[], rotated: [] as string[], unchanged: [] as string[], failed: [] as string[], unsupported: [] as string[] };
+  const all = (await sql`SELECT platform, credentials FROM platform_credentials ORDER BY platform`) as Array<{ platform: string; credentials: unknown }>;
+  // Only credential rows; anything else in the table (Python's auto_sync settings) is not a secret and stays as it is.
+  const rows = all.filter((row) => CREDENTIAL_PLATFORMS.includes(row.platform));
   for (const row of rows) {
     const v = parse(row.credentials);
     try {
@@ -287,10 +335,12 @@ export async function migrateCredentials(sql: Sql, env: Env = process.env): Prom
         const value = open(row.platform, v, ring);
         if (await compareAndSet(sql, row.platform, row.credentials, seal(row.platform, value, ring))) out.rotated.push(row.platform);
         else out.failed.push(row.platform);
-      } else {
-        const value = v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
-        if (await compareAndSet(sql, row.platform, row.credentials, seal(row.platform, value, ring))) out.encrypted.push(row.platform);
+      } else if (isObject(v)) {
+        if (await compareAndSet(sql, row.platform, row.credentials, seal(row.platform, v, ring))) out.encrypted.push(row.platform);
         else out.failed.push(row.platform);
+      } else {
+        // An array, a number, an undecodable string: not a credential shape. Never replaced by a sealed {}.
+        out.unsupported.push(row.platform);
       }
     } catch {
       out.failed.push(row.platform);

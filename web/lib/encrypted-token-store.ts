@@ -37,7 +37,9 @@ export class EncryptedTokenStore implements TokenStore {
     const payload = typeof tokens === "string" ? (JSON.parse(tokens) as Record<string, unknown>) : tokens;
     const rows = (await this.sql`SELECT credentials, status FROM platform_credentials WHERE platform = ${this.platform} LIMIT 1`) as Array<{ credentials: unknown; status: string | null }>;
     const current = rows[0] ? peekStored(this.platform, rows[0].credentials) : null;
-    if (current && current !== "plaintext" && rows[0].status === "active" && canonicalJson(current) === canonicalJson({ garmin_tokens: payload })) return;
+    // Unchanged = the same tokens, nested or in the legacy flat shape a migrated row may still have.
+    const unchanged = (v: Record<string, unknown>) => canonicalJson(v) === canonicalJson({ garmin_tokens: payload }) || canonicalJson(v) === canonicalJson(payload);
+    if (current && current !== "plaintext" && rows[0].status === "active" && unchanged(current)) return;
     await writeCredentials(this.sql, this.platform, { garmin_tokens: payload }, { authType: "oauth", status: "active", touchConnectedAt: true });
   }
 

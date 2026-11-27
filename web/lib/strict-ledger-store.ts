@@ -101,7 +101,8 @@ export function postgresStrictLedger(sql: Sql): StrictLedger {
     const hasError = patch.lastError !== undefined;
     const rows = await sql`
       UPDATE strict_bindings SET
-        state = CASE WHEN ${hasState} THEN ${patch.state ?? null}::text ELSE state END,
+        -- A writer's release never lifts a review (a restore or a mismatch set it meanwhile).
+        state = CASE WHEN ${hasState} AND NOT (${release} AND state = 'needs_review') THEN ${patch.state ?? null}::text ELSE state END,
         last_journal_id = CASE WHEN ${hasJournal} THEN ${patch.lastJournalId ?? null}::text ELSE last_journal_id END,
         last_error = CASE WHEN ${hasError} THEN ${patch.lastError ?? null}::text ELSE last_error END,
         lease_owner = CASE WHEN ${release} THEN NULL ELSE lease_owner END,
@@ -252,6 +253,16 @@ export function postgresStrictLedger(sql: Sql): StrictLedger {
       if (rows[0]) return { ok: true, lock: lockRow(rows[0]) };
       const held = await sql`SELECT * FROM strict_activity_locks WHERE garmin_activity_id = ${activityId}`;
       return { ok: false, heldBy: held[0] ? lockRow(held[0]) : null };
+    },
+    async renewActivityLock({ activityId, owner, acquiredAt, now, leaseMs }) {
+      // Fencing: only a lease that is still ours, from the same acquisition, and not yet expired.
+      const rows = await sql`
+        UPDATE strict_activity_locks SET lease_until = ${new Date(now.getTime() + leaseMs)}
+        WHERE garmin_activity_id = ${activityId} AND owner = ${owner}
+          AND acquired_at = ${new Date(acquiredAt)} AND lease_until > ${now}
+        RETURNING garmin_activity_id
+      `;
+      return rows.length === 1;
     },
     async releaseActivityLock(activityId, owner) {
       const rows = await sql`

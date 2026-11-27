@@ -99,7 +99,7 @@ describe.skipIf(!url)("credential vault on Postgres", () => {
     }
     expect(await vaultStatus(sql, env)).toMatchObject({ configured: true, rows: 3, encryptedCurrent: 3, plaintext: 0, unreadable: [] });
     const second = await migrateCredentials(sql, env);
-    expect(second).toEqual({ encrypted: [], rotated: [], unchanged: ["garmin_tokens", "github", "hevy"], failed: [] });
+    expect(second).toEqual({ encrypted: [], rotated: [], unchanged: ["garmin_tokens", "github", "hevy"], failed: [], unsupported: [] });
   });
 
   it("rotates: rows under the previous key are re-sealed with the new one, the old key can then be dropped", async () => {
@@ -150,6 +150,28 @@ describe.skipIf(!url)("credential vault on Postgres", () => {
     expect((await vaultStatus(sql, env)).unreadable).toEqual(["hevy"]);
     expect((await migrateCredentials(sql, env)).failed).toEqual(["hevy"]);
     expect(await raw("hevy")).toBe(before);
+  });
+
+  it("migration touches credential rows only, and never replaces an odd shape with a sealed {} (re-audit #2)", async () => {
+    const env = { H2G_CREDENTIALS_KEY: key() };
+    await putPlain("auto_sync", { enabled: true, interval_minutes: 120 }); // Python's settings, not a secret
+    await putPlain("github", ["not", "an", "object"]);
+    await db.unsafe(`INSERT INTO platform_credentials (platform, auth_type, credentials, status) VALUES ('hevy', 'api_key', to_jsonb($1::text), 'active')`, [JSON.stringify({ api_key: HEVY })]); // double-encoded
+    const autoBefore = await raw("auto_sync");
+    const githubBefore = await raw("github");
+    const r = await migrateCredentials(sql, env);
+    expect(r.encrypted).toEqual(["hevy"]);
+    expect(r.unsupported).toEqual(["github"]);
+    expect(await raw("auto_sync")).toBe(autoBefore);
+    expect(await raw("github")).toBe(githubBefore);
+    expect(await readCredentials(sql, "hevy", env)).toEqual({ api_key: HEVY });
+    const status = await vaultStatus(sql, env);
+    expect(status).toMatchObject({ rows: 2, encryptedCurrent: 1, plaintext: 0, unsupported: ["github"] });
+  });
+
+  it("a double-encoded plaintext row is still recognised as plaintext (strict refuses to use it)", async () => {
+    await db.unsafe(`INSERT INTO platform_credentials (platform, auth_type, credentials, status) VALUES ('hevy', 'api_key', to_jsonb($1::text), 'active')`, [JSON.stringify({ api_key: HEVY })]);
+    await expect(readCredentials(sql, "hevy", { H2G_CREDENTIALS_KEY: key() })).rejects.toThrow(/plaintext hevy credentials/);
   });
 
   it("a tampered row is refused, not misread", async () => {
@@ -227,6 +249,16 @@ describe.skipIf(!url)("credential vault on Postgres", () => {
     await db.unsafe(`UPDATE platform_credentials SET status = 'disconnected' WHERE platform = 'garmin_tokens'`);
     await store.save({ ...DI, di_refresh_token: "synthetic-refresh-rotated" });
     expect((await db.unsafe(`SELECT status FROM platform_credentials WHERE platform = 'garmin_tokens'`))[0].status).toBe("active");
+  });
+
+  it("a migrated row in the legacy flat shape is not rewritten when the tokens did not change (re-audit #2)", async () => {
+    vi.stubEnv("H2G_CREDENTIALS_KEY", key());
+    await putPlain("garmin_tokens", DI);
+    await db.unsafe(`UPDATE platform_credentials SET status = 'active' WHERE platform = 'garmin_tokens'`);
+    await migrateCredentials(sql);
+    const before = await db.unsafe(`SELECT credentials::text AS c, status, connected_at FROM platform_credentials`);
+    await new EncryptedTokenStore(sql, "garmin_tokens").save(JSON.stringify(DI));
+    expect(await db.unsafe(`SELECT credentials::text AS c, status, connected_at FROM platform_credentials`)).toEqual(before);
   });
 
   it("garmin-auth building a client from valid tokens leaves the row byte-identical (dry-run side effect closed)", async () => {

@@ -99,6 +99,30 @@ describe("sync paths reach the strict engine only", () => {
     expect(strict.runStrictSync.mock.calls[1][1].excludeHevyIds).toEqual(["h1"]);
   });
 
+  it("POST /api/sync live stops starting workouts when its time budget is spent and says `more` (re-audit #2)", async () => {
+    vi.stubEnv("H2G_BATCH_BUDGET_MS", "1000");
+    let clock = 1_000_000;
+    const now = vi.spyOn(Date, "now").mockImplementation(() => clock);
+    let n = 0;
+    strict.runStrictSync.mockImplementation(async () => {
+      clock += 600; // each workout takes 0.6 s of the 1 s budget
+      n += 1;
+      return strictResult({ status: "synced", dryRun: false, hevyId: `h${n}`, writes: 2 });
+    });
+    try {
+      const { POST } = await import("./sync/route");
+      const res = await POST(post("http://x/api/sync?live=1", { live: 1, exclude: ["earlier-1", 7, "earlier-2"] }));
+      const body = await res.json();
+      expect(body.more).toBe(true);
+      expect(body.runs).toHaveLength(2); // started at 0 ms and 600 ms; not at 1200 ms
+      expect(body.tried).toEqual(["earlier-1", "earlier-2", "h1", "h2"]);
+      // The ids an earlier request tried are excluded from the start (non-strings dropped).
+      expect(strict.runStrictSync.mock.calls[0][1].excludeHevyIds).toEqual(["earlier-1", "earlier-2"]);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
   it("POST /api/sync/[id] targets that workout and passes an explicit resync through", async () => {
     strict.runStrictSync.mockResolvedValueOnce(strictResult({ status: "synced", dryRun: false, hevyId: "h7" }));
     const { POST } = await import("./sync/[hevyId]/route");

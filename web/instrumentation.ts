@@ -7,6 +7,10 @@
  */
 export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
+  // The quarantine at runtime: a production or non-staging preview deployment does not start.
+  const { quarantineViolation } = await import("./lib/deploy-quarantine");
+  const violation = quarantineViolation();
+  if (violation) throw new Error(`[quarantine] ${violation}`);
   const { assertStagingEnvironment, stagingMode } = await import("./lib/staging-mode");
   // Synthetic staging refuses to start as a production deployment or outside strict mode.
   assertStagingEnvironment();

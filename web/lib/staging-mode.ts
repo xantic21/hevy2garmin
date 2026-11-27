@@ -17,6 +17,7 @@
  * Edge-safe: no Node-only imports, so the proxy can use it.
  */
 import { NextResponse } from "next/server";
+import { STAGING_FORBIDDEN_ENV } from "./deploy-quarantine";
 
 type Env = Record<string, string | undefined>;
 
@@ -35,9 +36,19 @@ export class StagingIsolationError extends Error {
   }
 }
 
+/**
+ * Variables that carry (or reach with) a real credential, or turn on
+ * something staging must never do. Staging refuses to start with any of them.
+ */
+export { STAGING_FORBIDDEN_ENV } from "./deploy-quarantine";
+
 /** Throws when staging is switched on where it must not run. */
 export function assertStagingEnvironment(env: Env = process.env): void {
   if (!stagingMode(env)) return;
+  const present = STAGING_FORBIDDEN_ENV.filter((k) => (env[k] ?? "").trim() !== "");
+  if (present.length) {
+    throw new StagingIsolationError(`synthetic staging refuses to start with ${present.join(", ")} set: remove them from this deployment`);
+  }
   if ((env.VERCEL_ENV ?? "").trim() === "production") {
     throw new StagingIsolationError("H2G_STAGING=synthetic must never run as a Vercel production deployment");
   }
@@ -49,8 +60,10 @@ export function assertStagingEnvironment(env: Env = process.env): void {
 
 /**
  * Routes that would receive or forward a real credential. In staging they
- * answer 423 before reading the body, so a password, token or key typed into
- * a staging deployment by mistake goes nowhere.
+ * answer 423 for every method (a key can travel in a GET query too) before
+ * anything is read, so a password, token or key typed into a staging
+ * deployment by mistake goes nowhere. The one exception is the read-only
+ * vault status, GET /api/strict/credentials, which holds no value.
  */
 const CREDENTIAL_PATHS: RegExp[] = [
   /^\/api\/garmin-login\/?$/,
@@ -65,7 +78,8 @@ const CREDENTIAL_PATHS: RegExp[] = [
 ];
 
 export function stagingCredentialPath(pathname: string, method: string): boolean {
-  return method.toUpperCase() !== "GET" && CREDENTIAL_PATHS.some((r) => r.test(pathname));
+  if (method.toUpperCase() === "GET" && /^\/api\/strict\/credentials\/?$/.test(pathname)) return false;
+  return CREDENTIAL_PATHS.some((r) => r.test(pathname));
 }
 
 export function stagingRefusal(feature = "This action"): NextResponse {

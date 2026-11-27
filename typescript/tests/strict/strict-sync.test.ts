@@ -727,7 +727,8 @@ describe("review round 2: hard stop, recovery exclusivity, full verification", (
     t.garmin.port.exerciseSets = async (id) => {
       const s = await sets(id);
       calls += 1;
-      return calls > 1 ? { ...s, activityId: 4242 } : s;
+      // 1: planning read, 2: the re-check under the lock, 3: the read-back after the write.
+      return calls > 2 ? { ...s, activityId: 4242 } : s;
     };
     const r = await t.run({ dryRun: false });
     expect(r.status).toBe("needs_review");

@@ -1,4 +1,5 @@
 import { stagingCredentialPath, stagingMode, stagingRefusal } from "@/lib/staging-mode";
+import { quarantineViolation } from "@/lib/deploy-quarantine";
 import { NextResponse, type NextFetchEvent, type NextRequest } from "next/server";
 import { countVisit } from "@/lib/visit-counter";
 
@@ -236,6 +237,9 @@ function strictLocked(pathname: string, method: string): boolean {
     When no secret/password is set: open in development, but a production deploy serves only
     the setup and login pages until one is configured (#550). */
 export async function proxy(req: NextRequest, event?: NextFetchEvent) {
+  // The quarantine on every request, before anything else runs (instrumentation can be bypassed by a prebuilt deploy).
+  const quarantined = quarantineViolation();
+  if (quarantined) return NextResponse.json({ ok: false, quarantine: true, error: quarantined }, { status: 503 });
   // Optional visit counter: does nothing unless COLLECTOR_URL and COLLECTOR_TOKEN are set.
   countVisit(req, event);
   const { pathname } = req.nextUrl;

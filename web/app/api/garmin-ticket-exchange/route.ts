@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { exchangeTicket } from "@/lib/garmin-login-worker";
+import { assertVaultWritable } from "@/lib/credential-vault";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -15,6 +16,12 @@ export const runtime = "nodejs";
  * /api/garmin-ticket exactly as on the Worker path. Off, the route answers 404.
  */
 export async function POST(request: Request) {
+  // The tokens this would obtain could not be stored encrypted: do not spend the ticket with Garmin.
+  try {
+    assertVaultWritable();
+  } catch (err) {
+    return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 503 });
+  }
   // Fork: the exchange always runs here (direct, or via the owner's own Worker),
   // so the browser never posts a Garmin ticket to a third-party service.
   let ticket = "";

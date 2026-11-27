@@ -115,6 +115,33 @@ describe("credential vault: key management", () => {
   });
 });
 
+describe("credential vault: re-audit #2 hardening", () => {
+  it("refuses a shortened GCM tag and a wrong IV length (no truncated-tag forgery)", () => {
+    const ring = loadKeyring({ ...STRICT, H2G_CREDENTIALS_KEY: k() });
+    const env = seal("hevy", SECRET, ring);
+    const short = { ...env, tag: Buffer.from(env.tag, "base64").subarray(0, 4).toString("base64") };
+    expect(() => open("hevy", short, ring)).toThrow(/failed authentication/);
+    const longIv = { ...env, iv: Buffer.concat([Buffer.from(env.iv, "base64"), Buffer.alloc(4)]).toString("base64") };
+    expect(() => open("hevy", longIv, ring)).toThrow(/failed authentication/);
+  });
+
+  it("accepts only the base64 alphabet for keys (junk characters are refused, not skipped)", () => {
+    const key = k();
+    expect(() => loadKeyring({ ...STRICT, H2G_CREDENTIALS_KEY: `${key.slice(0, 10)}!!${key.slice(10)}` })).toThrow(/32 random bytes/);
+    expect(() => loadKeyring({ ...STRICT, H2G_CREDENTIALS_KEY: `${key} trailing` })).toThrow(/32 random bytes/);
+  });
+
+  it("detects a re-used key in any encoding, previous keys and the password hash included", () => {
+    const raw = randomBytes(32);
+    const b64 = raw.toString("base64");
+    const b64url = raw.toString("base64url");
+    expect(() => loadKeyring({ ...STRICT, H2G_CREDENTIALS_KEY: b64, H2G_BACKUP_KEY: b64url })).toThrow(/H2G_BACKUP_KEY/);
+    expect(() => loadKeyring({ ...STRICT, H2G_CREDENTIALS_KEY: k(), H2G_CREDENTIALS_KEYS_PREVIOUS: b64, CRON_SECRET: b64url })).toThrow(/CRON_SECRET/);
+    expect(() => loadKeyring({ ...STRICT, H2G_CREDENTIALS_KEY: b64, H2G_PASSWORD_HASH: b64 })).toThrow(/H2G_PASSWORD_HASH/);
+    expect(() => loadKeyring({ ...STRICT, H2G_CREDENTIALS_KEY: b64, H2G_BACKUP_KEYS_PREVIOUS: `${k()}, ${b64url}` })).toThrow(/H2G_BACKUP_KEYS_PREVIOUS/);
+  });
+});
+
 describe("credential vault: policy", () => {
   it("requires encryption in strict mode, and whenever a key is set", () => {
     expect(encryptionRequired(STRICT)).toBe(true);

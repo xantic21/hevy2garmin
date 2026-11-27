@@ -39,10 +39,29 @@ describe.skipIf(!url)("staging database guard", () => {
     expect(await tables(db)).toEqual(["platform_credentials"]);
   });
 
+  it("refuses an unmarked database that holds anything at all (here one setting), before creating anything", async () => {
+    const db = await fresh();
+    await db.unsafe(`CREATE TABLE app_cache (key TEXT PRIMARY KEY, value JSONB NOT NULL)`);
+    await db.unsafe(`INSERT INTO app_cache VALUES ('user_profile', '{"weight_kg": 80}')`);
+    const bootstrap = vi.fn(async () => {});
+    await expect(checkStagingDatabase(db, bootstrap)).rejects.toThrow(/not a staging database/);
+    expect(bootstrap).not.toHaveBeenCalled();
+    expect(await tables(db)).toEqual(["app_cache"]);
+  });
+
   it("refuses a database with real sync history", async () => {
     const db = await fresh();
     await db.unsafe(`CREATE TABLE synced_workouts (hevy_id TEXT PRIMARY KEY)`);
     await db.unsafe(`INSERT INTO synced_workouts VALUES ('8f3a-real-workout')`);
+    await expect(checkStagingDatabase(db, async () => {})).rejects.toThrow(/not a staging database/);
+  });
+
+  it("refuses a MARKED staging database once a non-synthetic workout appears in it", async () => {
+    const db = await fresh();
+    await db.unsafe(`CREATE TABLE app_cache (key TEXT PRIMARY KEY, value JSONB NOT NULL)`);
+    await db.unsafe(`INSERT INTO app_cache VALUES ('h2g_staging', '{"synthetic": true}')`);
+    await db.unsafe(`CREATE TABLE synced_workouts (hevy_id TEXT PRIMARY KEY)`);
+    await db.unsafe(`INSERT INTO synced_workouts VALUES ('syn-legs'), ('8f3a-real-workout')`);
     await expect(checkStagingDatabase(db, async () => {})).rejects.toThrow(/non-synthetic/);
   });
 
@@ -219,6 +238,14 @@ describe.skipIf(!url)("synthetic staging rehearsal (real runtime, simulated Hevy
     const report = await m.sync.strictDuplicateAudit(sql(), 30, { rateLimit: FAST });
     expect(JSON.stringify(report)).toContain("9100009");
     expect(await putCount()).toBe(w);
+  });
+
+  it("the own-origin passthrough is only the session-epoch read; any other local URL is refused, never fetched", async () => {
+    const res = await fetch("http://127.0.0.1:5432/anything", { method: "POST", body: "x" });
+    expect(res.status).toBe(503);
+    const get = await fetch("http://localhost:9999/admin");
+    expect(get.status).toBe(503);
+    expect(tripwire).not.toHaveBeenCalled();
   });
 
   it("uploads and deletes never reach the simulator; foreign hosts never reach the network", async () => {

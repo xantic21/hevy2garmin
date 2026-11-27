@@ -176,6 +176,13 @@ export interface StrictLedger {
    * the whole operation, so they can never interleave on one activity.
    */
   acquireActivityLock(input: { activityId: number; owner: string; purpose: LockPurpose; now: Date; leaseMs: number }): Promise<LockOutcome>;
+  /**
+   * Fencing: extend one's own lock, but only while it is CONTINUOUSLY one's own
+   * (same owner, same acquisition, lease not yet expired). An expired lease is
+   * never revived, even when nobody else took the activity meanwhile, because
+   * nobody can prove that nobody did. Every Garmin write calls this first.
+   */
+  renewActivityLock(input: { activityId: number; owner: string; acquiredAt: string; now: Date; leaseMs: number }): Promise<boolean>;
   /** Release only one's own lock. */
   releaseActivityLock(activityId: number, owner: string): Promise<boolean>;
   getActivityLock(activityId: number): Promise<ActivityLock | null>;
@@ -257,7 +264,10 @@ export function memoryStrictLedger(clock: () => Date = () => new Date()): Strict
     async releaseBinding(hevyId, owner, patch = {}) {
       const b = bindings.get(hevyId);
       if (!b || b.leaseOwner !== owner) return false;
-      Object.assign(b, clone(patch), { leaseOwner: null, leaseUntil: null, updatedAt: iso() });
+      const p = clone(patch);
+      // A writer's release never lifts a review (a restore or a mismatch set it meanwhile).
+      if (b.state === "needs_review" && p.state !== undefined) delete p.state;
+      Object.assign(b, p, { leaseOwner: null, leaseUntil: null, updatedAt: iso() });
       return true;
     },
     async setBindingState(hevyId, state, lastError) {
@@ -340,6 +350,12 @@ export function memoryStrictLedger(clock: () => Date = () => new Date()): Strict
       };
       locks.set(activityId, lock);
       return { ok: true, lock: clone(lock) };
+    },
+    async renewActivityLock({ activityId, owner, acquiredAt, now, leaseMs }) {
+      const held = locks.get(activityId);
+      if (!held || held.owner !== owner || held.acquiredAt !== acquiredAt || Date.parse(held.leaseUntil) <= now.getTime()) return false;
+      held.leaseUntil = new Date(now.getTime() + leaseMs).toISOString();
+      return true;
     },
     async releaseActivityLock(activityId, owner) {
       const held = locks.get(activityId);

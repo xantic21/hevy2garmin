@@ -68,11 +68,14 @@ async function main() {
   }
 
   // 1. Credentials can never reach it.
-  for (const p of ["/api/garmin-login", "/api/garmin-login-mfa", "/api/garmin-ticket", "/api/garmin-ticket-exchange", "/api/connect-hevy", "/api/validate-hevy", "/api/setup-actions", "/api/strict/credentials"]) {
+  for (const p of ["/api/garmin-login", "/api/garmin-login-mfa", "/api/garmin-ticket", "/api/garmin-ticket-exchange", "/api/connect-hevy", "/api/setup-actions", "/api/strict/credentials"]) {
     const r = await call("POST", p, { placeholder: "not-a-credential" });
     // 423 from the staging lock, or from the strict lock that some of these routes meet first.
-    check(`credential route ${p} → 423`, r.status === 423 && (r.data?.staging === true || r.data?.strict === true), r);
+    check(`credential route POST ${p} → 423`, r.status === 423 && (r.data?.staging === true || r.data?.strict === true), r);
   }
+  // validate-hevy takes the key in a GET query: refused before the route runs.
+  const v = await call("GET", "/api/validate-hevy?key=not-a-credential");
+  check("credential route GET /api/validate-hevy → 423", v.status === 423 && v.data?.staging === true, v);
   for (const p of ["/api/unsync/syn-legs", "/api/unsync-all", "/api/routines/sync"]) {
     const r = await call("POST", p, { confirm: "UNSYNC ALL" });
     check(`destructive route ${p} → 423`, r.status === 423, r);
@@ -126,12 +129,18 @@ async function main() {
   // 4. Read-only audit and the network evidence.
   const audit = await call("GET", "/api/strict/duplicate-audit?days=30");
   check("duplicate audit reports the legacy upload 9100009", audit.status === 200 && JSON.stringify(audit.data).includes("9100009"), audit.status);
+  // Evidence over EVERY simulated request of the run (aggregated by the server), not a recent sample.
   const after = (await call("GET", "/api/staging/status")).data?.staging ?? {};
-  const hosts = [...new Set((after.requests ?? []).map((r) => r.host))];
-  check("only the simulated hosts were contacted", hosts.every((h) => h === "api.hevyapp.com" || h === "connectapi.garmin.com"), hosts);
+  const hosts = after.hosts ?? [];
+  check("requests were logged", after.totalRequests > 0, after.totalRequests);
+  check("only the simulated hosts were contacted", hosts.length > 0 && hosts.every((h) => h === "api.hevyapp.com" || h === "connectapi.garmin.com"), hosts);
   check("no request to any other host", after.refusedRequests === 0, after.refusedRequests);
-  const writes = (after.requests ?? []).filter((r) => r.method !== "GET").map((r) => r.path);
-  check("every simulated write is a sets or name/description PUT", writes.every((p) => /^\/activity-service\/activity\/\d+(\/exerciseSets)?$/.test(p)), writes);
+  const writes = after.writes ?? [];
+  check(
+    "every simulated write is a sets or name/description PUT",
+    writes.length > 0 && writes.every((w) => w.method === "PUT" && /^\/activity-service\/activity\/\d+(\/exerciseSets)?$/.test(w.path)),
+    writes,
+  );
 }
 
 main()

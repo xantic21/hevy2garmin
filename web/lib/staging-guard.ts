@@ -20,6 +20,12 @@ type Client = {
 
 export const STAGING_TABLES = ["staging_hevy_workouts", "staging_garmin_activities", "staging_requests"] as const;
 
+/** Every table of the app (web/lib/schema.ts and the strict ledger). */
+const USER_TABLES = [
+  "synced_workouts", "sync_log", "hr_cache", "pending_uploads", "platform_credentials", "custom_mappings", "app_cache",
+  "synced_routines", "routine_schedules", "strict_bindings", "strict_backups", "strict_journal", "strict_control", "strict_activity_locks",
+] as const;
+
 export const STAGING_SCHEMA: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS staging_hevy_workouts (
      id TEXT PRIMARY KEY CHECK (id LIKE 'syn-%'),
@@ -67,14 +73,28 @@ export async function checkStagingDatabase(client: Client, bootstrap: () => Prom
   if (credentials > 0) {
     throw new StagingIsolationError(`refusing: this database holds ${credentials} stored credential row(s); synthetic staging needs its own empty database`);
   }
-  const foreign =
-    (await count(client, "synced_workouts", "WHERE hevy_id NOT LIKE 'syn-%'")) +
-    (await count(client, "strict_bindings", "WHERE hevy_id NOT LIKE 'syn-%'")) +
-    (await count(client, "strict_backups", "WHERE hevy_id NOT LIKE 'syn-%'")) +
-    (await count(client, "pending_uploads")) +
-    (await count(client, "synced_routines"));
-  if (foreign > 0) {
-    throw new StagingIsolationError(`refusing: this database holds ${foreign} non-synthetic row(s); synthetic staging needs its own empty database`);
+  const marked = (await count(client, "app_cache", `WHERE key = '${STAGING_MARKER_KEY}'`)) > 0;
+  if (!marked) {
+    // Never used by staging: it must hold nothing at all, in any table of the app.
+    let rows = 0;
+    for (const t of USER_TABLES) rows += await count(client, t);
+    if (rows > 0) {
+      throw new StagingIsolationError(`refusing: this database holds ${rows} row(s) and is not a staging database; synthetic staging needs its own empty database`);
+    }
+  } else {
+    // A staging database: only synthetic workouts (ids "syn-…") may ever appear in it.
+    const foreign =
+      (await count(client, "synced_workouts", "WHERE hevy_id NOT LIKE 'syn-%'")) +
+      (await count(client, "strict_bindings", "WHERE hevy_id NOT LIKE 'syn-%'")) +
+      (await count(client, "strict_backups", "WHERE hevy_id NOT LIKE 'syn-%'")) +
+      (await count(client, "strict_journal", "WHERE hevy_id NOT LIKE 'syn-%'")) +
+      (await count(client, "hr_cache", "WHERE hevy_id NOT LIKE 'syn-%'")) +
+      (await count(client, "pending_uploads")) +
+      (await count(client, "synced_routines")) +
+      (await count(client, "routine_schedules"));
+    if (foreign > 0) {
+      throw new StagingIsolationError(`refusing: the staging database holds ${foreign} non-synthetic row(s)`);
+    }
   }
   await bootstrap();
   for (const st of STAGING_SCHEMA) await client.unsafe(st);

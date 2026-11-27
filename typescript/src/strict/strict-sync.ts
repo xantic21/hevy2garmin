@@ -446,6 +446,13 @@ export async function strictInPlaceSync(deps: StrictSyncDeps, options: StrictSyn
       reason: `activity is locked by a ${lock.heldBy?.purpose ?? "concurrent"} operation; nothing was written`,
     });
   }
+  // Fencing: every write (and the final record) first renews the lock, and only
+  // if it was held without interruption. A lapsed lease never writes again.
+  const acquiredAt = lock.lock.acquiredAt;
+  const fence = async (): Promise<string | null> =>
+    (await ledger.renewActivityLock({ activityId, owner, acquiredAt, now: clock(), leaseMs }))
+      ? null
+      : "the activity lock lapsed (lease expired or another operation took the activity); nothing more is sent";
   try {
     return await liveWrite();
   } finally {
@@ -460,6 +467,38 @@ export async function strictInPlaceSync(deps: StrictSyncDeps, options: StrictSyn
   const preservedBefore = extractPreservedMetrics(detail);
   const done = (r: Partial<StrictSyncResult> & Pick<StrictSyncResult, "status">) =>
     result({ ...actBase, issues, plan, journalIds, writes, ...r });
+
+  // Under the lock, before anything is written: the reads above were taken
+  // BEFORE the lock, so another operation (a restore, a review) may have
+  // finished in between. Write only if the binding and the activity are still
+  // exactly what this run planned from.
+  const bindingNow = await ledger.getBindingByHevy(hevyId);
+  if (!bindingNow || bindingNow.leaseOwner !== owner || bindingNow.state === "needs_review") {
+    await ledger.releaseBinding(hevyId, owner).catch(() => false);
+    return done({
+      status: bindingNow?.state === "needs_review" ? "needs_review" : "blocked",
+      reason: "the workout's binding changed after this run read it (a restore or a review happened meanwhile); nothing was written",
+    });
+  }
+  let setsNow: Record<string, unknown>;
+  let detailNow: Record<string, unknown> | null;
+  try {
+    setsNow = await garmin.exerciseSets(activityId);
+    detailNow = await garmin.activityDetail(activityId);
+  } catch (e) {
+    await ledger.releaseBinding(hevyId, owner).catch(() => false);
+    return done({ status: "pending", reason: `Garmin activity unreadable under the lock: ${(e as Error).message}; nothing was written` });
+  }
+  const unchanged =
+    detailNow != null &&
+    sha256Canonical(setsNow) === sha256Canonical(originalSets) &&
+    activityNameOf(detailNow) === currentName &&
+    descriptionOf(detailNow) === currentDescription &&
+    comparePreservedMetrics(preservedBefore, detailNow).length === 0;
+  if (!unchanged) {
+    await ledger.releaseBinding(hevyId, owner).catch(() => false);
+    return done({ status: "blocked", reason: "the activity changed after this run read it (another operation finished in between); nothing was written; run the sync again" });
+  }
 
   try {
     // 6. Immutable backups, persisted and read back before any mutation.
@@ -482,7 +521,7 @@ export async function strictInPlaceSync(deps: StrictSyncDeps, options: StrictSyn
 
     // 7. The writes, each journaled and verified. Sets first: a name or a
     //    description is never changed on an activity whose sets are wrong.
-    const write = async (step: JournalStep, kind: GarminWriteKind, intended: unknown, perform: () => Promise<void>) => {
+    const write = async (step: JournalStep, kind: GarminWriteKind, intended: unknown, perform: () => Promise<void>, expectSets?: unknown) => {
       const outcome = await guardedWrite({
         ledger,
         garmin,
@@ -498,6 +537,8 @@ export async function strictInPlaceSync(deps: StrictSyncDeps, options: StrictSyn
         perform,
         sleep,
         verifyDelayMs,
+        fence,
+        expectSets,
       });
       if (outcome.journalId) journalIds.push(outcome.journalId);
       writes += outcome.sent ? 1 : 0;
@@ -512,11 +553,17 @@ export async function strictInPlaceSync(deps: StrictSyncDeps, options: StrictSyn
       const fields: { activityName?: string; description?: string } = {};
       if (newName !== null) fields.activityName = newName;
       if (newDescription !== null) fields.description = newDescription;
-      const o = await write("metadata", "metadata", fields, () => garmin.updateActivityMetadata(activityId, fields));
+      // The sets must still be what this run verified (or found applied) when the name changes.
+      const o = await write("metadata", "metadata", fields, () => garmin.updateActivityMetadata(activityId, fields), payload);
       if (o.status !== "verified") return finishFailure(o);
     }
 
-    // 8. Record it. The calories and heart rate are the watch's own.
+    // 8. Record it, still under an uninterrupted lock. The calories and heart rate are the watch's own.
+    const lapsed = await fence();
+    if (lapsed) {
+      await ledger.releaseBinding(hevyId, owner, { lastError: lapsed }).catch(() => false);
+      return done({ status: "blocked", reason: `${lapsed}; the writes were verified but are not recorded yet; a manual sync records them` });
+    }
     const summary = (detail.summaryDTO ?? {}) as Record<string, unknown>;
     await ledger.releaseBinding(hevyId, owner, { state: "verified", lastError: null, lastJournalId: journalIds.at(-1) ?? null });
     await legacy.markSynced(hevyId, {
@@ -571,6 +618,10 @@ interface GuardedWriteInput {
   perform: () => Promise<void>;
   sleep: (ms: number) => Promise<void>;
   verifyDelayMs: number;
+  /** Renews the activity lock; a reason when it lapsed (then nothing is sent). */
+  fence: () => Promise<string | null>;
+  /** Sets that must still be on Garmin after this write (the metadata step). */
+  expectSets?: unknown;
 }
 
 /** One journaled, capability-scoped, read-back-verified Garmin write. */
@@ -581,6 +632,8 @@ async function guardedWrite(w: GuardedWriteInput): Promise<GuardedOutcome> {
   if (block.blocked) return { status: "blocked", reason: block.reason, journalId: null, sent: false };
 
   if (strictHardStopActive()) return { status: "blocked", reason: "H2G_STRICT_STOP is set: every Garmin write is refused", journalId: null, sent: false };
+  const lapsed = await w.fence();
+  if (lapsed) return { status: "blocked", reason: lapsed, journalId: null, sent: false };
   const intendedSha256 = sha256Canonical(w.intended);
   let entry;
   try {
@@ -592,6 +645,7 @@ async function guardedWrite(w: GuardedWriteInput): Promise<GuardedOutcome> {
       intendedSha256,
       intended: w.intended,
       backupId: w.backupId,
+      ...(w.expectSets !== undefined ? { detail: { expectSets: w.expectSets } } : {}),
     });
   } catch (e) {
     if (isJournalConflict(e)) return { status: "blocked", reason: (e as Error).message, journalId: null, sent: false };
@@ -602,6 +656,12 @@ async function guardedWrite(w: GuardedWriteInput): Promise<GuardedOutcome> {
   if (!(await ledger.advanceJournal(entry.id, ["intent"], "put_sent"))) {
     await ledger.advanceJournal(entry.id, ["intent"], "aborted", { abortedReason: "intent → put_sent was refused" }).catch(() => false);
     return { status: "failed", reason: "journal could not be advanced; nothing was sent", journalId: entry.id, sent: false };
+  }
+  // Last check before the request leaves: the lock must still be ours, uninterrupted.
+  const lapsedLate = await w.fence();
+  if (lapsedLate) {
+    await ledger.advanceJournal(entry.id, ["put_sent"], "aborted", { abortedReason: lapsedLate });
+    return { status: "blocked", reason: lapsedLate, journalId: entry.id, sent: false };
   }
 
   let sendError: string | null = null;
@@ -619,7 +679,15 @@ async function guardedWrite(w: GuardedWriteInput): Promise<GuardedOutcome> {
     await ledger.advanceJournal(entry.id, ["put_sent"], "uncertain", { error: sendError });
   }
 
-  return verifyJournalEntry(ledger, garmin, entry.id, specOf(w.step, activityId, w.intended, w.backupPayload, w.preservedBefore, {}), w.sleep, w.verifyDelayMs, sendError);
+  return verifyJournalEntry(
+    ledger,
+    garmin,
+    entry.id,
+    specOf(w.step, activityId, w.intended, w.backupPayload, w.preservedBefore, w.expectSets !== undefined ? { expectSets: w.expectSets } : {}),
+    w.sleep,
+    w.verifyDelayMs,
+    sendError,
+  );
 }
 
 interface VerifySpec {
@@ -632,6 +700,8 @@ interface VerifySpec {
   before: { exerciseSets: unknown; activityName: string | null; description: string | null };
   preservedBefore: Record<string, unknown>;
   step: JournalStep;
+  /** Sets that must be on Garmin although this write did not touch them (metadata step). */
+  expectSets: unknown | null;
 }
 
 function specOf(
@@ -643,13 +713,13 @@ function specOf(
   detail: Record<string, unknown>,
 ): VerifySpec {
   if (step === "metadata") {
-    return { step, activityId, intendedSets: null, intendedMeta: intended as VerifySpec["intendedMeta"], before, preservedBefore };
+    return { step, activityId, intendedSets: null, intendedMeta: intended as VerifySpec["intendedMeta"], before, preservedBefore, expectSets: detail?.expectSets ?? null };
   }
   if (step === "restore") {
-    const meta = (detail.metaFields ?? null) as VerifySpec["intendedMeta"];
-    return { step, activityId, intendedSets: intended, intendedMeta: meta && Object.keys(meta).length ? meta : null, before, preservedBefore };
+    const meta = (detail?.metaFields ?? null) as VerifySpec["intendedMeta"];
+    return { step, activityId, intendedSets: intended, intendedMeta: meta && Object.keys(meta).length ? meta : null, before, preservedBefore, expectSets: null };
   }
-  return { step, activityId, intendedSets: intended, intendedMeta: null, before, preservedBefore };
+  return { step, activityId, intendedSets: intended, intendedMeta: null, before, preservedBefore, expectSets: null };
 }
 
 /**
@@ -696,10 +766,15 @@ async function verifyJournalEntry(
   const metrics = comparePreservedMetrics(spec.preservedBefore, readDetail);
   // The whole sequence: ACTIVE and REST, timing, every exercise field. Sets
   // identity is required whether or not this write touched the sets.
-  const sets =
+  // A restore must reproduce the backup exactly: a field the backup does not
+  // have must not be left behind on Garmin either (absent means null).
+  const primary =
     spec.intendedSets != null
-      ? compareSetSequences(spec.intendedSets, readSets, { activityId: spec.activityId })
+      ? compareSetSequences(spec.intendedSets, readSets, { activityId: spec.activityId, absentMeansNull: spec.step === "restore" })
       : compareSetSequences(readSets, readSets, { activityId: spec.activityId }).filter((m) => m.field === "activityId");
+  // A name/description write must leave the verified sets exactly as they were.
+  const guard = spec.expectSets != null ? compareSetSequences(spec.expectSets, readSets, { activityId: spec.activityId }) : [];
+  const sets = [...primary, ...guard];
   const metadata: string[] = [];
   const name = activityNameOf(readDetail);
   const desc = descriptionOf(readDetail);
@@ -711,7 +786,7 @@ async function verifyJournalEntry(
     if (f.description !== undefined && (desc ?? "") !== f.description) metadata.push("description differs from what was written");
   }
   const setsUnchanged =
-    spec.intendedSets == null || compareSetSequences({ exerciseSets: spec.before.exerciseSets }, readSets).length === 0;
+    spec.intendedSets == null ? guard.length === 0 : compareSetSequences({ exerciseSets: spec.before.exerciseSets }, readSets).length === 0;
   const metaUnchanged =
     spec.intendedMeta == null ||
     ((spec.intendedMeta.activityName === undefined || name === spec.before.activityName) &&
@@ -827,6 +902,26 @@ export async function reconcileStrictJournal(
     0,
     null,
   );
+  if (entry.step === "restore") {
+    // A restore is an operator's recovery: whatever the read-back says, the
+    // workout stays under review, and a verified restore closes the entry it
+    // restored exactly as the restore itself would have.
+    const reviewed = typeof entry.detail?.forJournal === "string" ? entry.detail.forJournal : null;
+    if (out.status === "verified" && reviewed) {
+      const moved = await deps.ledger.advanceJournal(reviewed, ["needs_review", "verified"], "restored", {
+        restoredBy: journalId,
+        source: entry.detail?.source ?? null,
+        reconciled: true,
+      });
+      if (!moved) await deps.ledger.setFrozen(true, `journal ${reviewed} changed while its restore was reconciled`);
+    }
+    await deps.ledger.setBindingState(
+      entry.hevyId,
+      "needs_review",
+      out.status === "verified" ? "restore reconciled as verified; review before syncing again" : `restore reconciled as ${out.status}; review the activity`,
+    );
+    return { status: out.status as StrictRecoveryResult["status"], reason: out.reason, journalId, writes: 0 };
+  }
   if (out.status === "needs_review") {
     // Same protection as a live mismatch: no manual sync may write this workout again.
     await deps.ledger.setBindingState(entry.hevyId, "needs_review", out.reason ?? "read-back mismatch found by reconcile");
@@ -873,8 +968,11 @@ export async function restoreStrictBackup(
   const activityId = first.garminActivityId;
   const clock = deps.now ?? (() => new Date());
   const owner = deps.owner ?? `restore-${randomUUID()}`;
-  const lock = await ledger.acquireActivityLock({ activityId, owner, purpose: "restore", now: clock(), leaseMs: options.leaseMs ?? DEFAULT_LEASE_MS });
+  const leaseMs = options.leaseMs ?? DEFAULT_LEASE_MS;
+  const lock = await ledger.acquireActivityLock({ activityId, owner, purpose: "restore", now: clock(), leaseMs });
   if (!lock.ok) return refuse(`activity ${activityId} is locked by a ${lock.heldBy?.purpose ?? "concurrent"} operation`);
+  const acquiredAt = lock.lock.acquiredAt;
+  const fenced = () => ledger.renewActivityLock({ activityId, owner, acquiredAt, now: clock(), leaseMs });
   try {
     return await restoreUnderLock();
   } finally {
@@ -953,6 +1051,10 @@ export async function restoreStrictBackup(
     if (strictHardStopActive()) {
       await ledger.advanceJournal(restoreEntry.id, ["put_sent"], "aborted", { abortedReason: "H2G_STRICT_STOP set before sending" });
       return refuse("H2G_STRICT_STOP is set: every Garmin write is refused, restores included", restoreEntry.id);
+    }
+    if (!(await fenced())) {
+      await ledger.advanceJournal(restoreEntry.id, ["put_sent"], "aborted", { abortedReason: "activity lock lapsed before sending" });
+      return refuse("the activity lock lapsed (lease expired or another operation took the activity); nothing was sent", restoreEntry.id);
     }
 
     let writes = 0;

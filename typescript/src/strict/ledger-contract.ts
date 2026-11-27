@@ -155,6 +155,34 @@ export const STRICT_LEDGER_CONTRACT: LedgerContractCase[] = [
     },
   },
   {
+    name: "fencing: a lock renews only while continuously held; an expired or taken-over lease never revives",
+    async run(make) {
+      const l = await make();
+      const a = await l.acquireActivityLock({ activityId: 81, owner: "A", purpose: "sync", now: T0, leaseMs: 60_000 });
+      check(a.ok, "A holds");
+      const acquiredAt = (a as { lock: { acquiredAt: string } }).lock.acquiredAt;
+      check(await l.renewActivityLock({ activityId: 81, owner: "A", acquiredAt, now: later(30_000), leaseMs: 60_000 }), "renews while held");
+      check(!(await l.renewActivityLock({ activityId: 81, owner: "B", acquiredAt, now: later(31_000), leaseMs: 60_000 })), "another owner cannot renew");
+      check(!(await l.renewActivityLock({ activityId: 81, owner: "A", acquiredAt, now: later(200_000), leaseMs: 60_000 })), "an expired lease is not revived");
+      // Taken over and released by someone else in between: A's acquisition is gone for good.
+      check((await l.acquireActivityLock({ activityId: 81, owner: "R", purpose: "restore", now: later(200_000), leaseMs: 60_000 })).ok, "R takes over");
+      check(await l.releaseActivityLock(81, "R"), "R releases");
+      check(!(await l.renewActivityLock({ activityId: 81, owner: "A", acquiredAt, now: later(201_000), leaseMs: 60_000 })), "A cannot renew after an interleaving");
+    },
+  },
+  {
+    name: "a writer's release never lifts a review set meanwhile",
+    async run(make) {
+      const l = await make();
+      check((await l.claimBinding({ hevyId: "rv", activityId: 82, owner: "W", now: T0, leaseMs: 60_000 })).ok, "claimed");
+      check(await l.setBindingState("rv", "needs_review", "restored by an operator"), "review set");
+      await l.releaseBinding("rv", "W", { state: "verified", lastError: null });
+      const b = await l.getBindingByHevy("rv");
+      check(b?.state === "needs_review", `release lifted the review: ${b?.state}`);
+      check(b?.leaseOwner === null, "lease released");
+    },
+  },
+  {
     name: "at most one write in flight per activity, even under concurrency",
     async run(make) {
       const l = await make();

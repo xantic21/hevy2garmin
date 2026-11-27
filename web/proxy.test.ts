@@ -302,8 +302,37 @@ describe("proxy: synthetic staging never receives a credential (gate E)", () => 
       expect((await res.json()).staging).toBe(true);
     },
   );
+  it("GET /api/validate-hevy?key= is refused too (a key in a query string) — only the vault status GET passes", async () => {
+    process.env.H2G_STAGING = "synthetic";
+    expect((await proxy(req("/api/validate-hevy?key=x"))).status).toBe(423);
+    expect((await proxy(req("/api/strict/credentials"))).status).not.toBe(423);
+  });
+
   it("outside staging the same route reaches the normal auth gate", async () => {
     const res = await proxy(req("/api/connect-hevy", {}, "POST"));
     expect(res.status).toBe(401);
+  });
+});
+
+describe("proxy: runtime quarantine (re-audit #2)", () => {
+  afterEach(() => {
+    for (const k of ["VERCEL_ENV", "H2G_STAGING", "H2G_PRODUCTION_CUTOVER", "HEVY_API_KEY"]) delete process.env[k];
+  });
+  it("a Vercel production deployment without the approved cutover serves nothing", async () => {
+    process.env.VERCEL_ENV = "production";
+    const res = await proxy(req("/login"));
+    expect(res.status).toBe(503);
+    expect((await res.json()).quarantine).toBe(true);
+  });
+  it("a preview that is not synthetic staging serves nothing; a staging preview does", async () => {
+    process.env.VERCEL_ENV = "preview";
+    expect((await proxy(req("/login"))).status).toBe(503);
+    process.env.H2G_STAGING = "synthetic";
+    expect((await proxy(req("/login"))).status).not.toBe(503);
+  });
+  it("staging with a real credential variable set serves nothing", async () => {
+    process.env.H2G_STAGING = "synthetic";
+    process.env.HEVY_API_KEY = "looks-real";
+    expect((await proxy(req("/login"))).status).toBe(503);
   });
 });

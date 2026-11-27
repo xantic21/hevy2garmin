@@ -70,3 +70,32 @@ describe("vercel.json files", () => {
     expect(web.installCommand).toMatch(/^cd \.\.\/typescript && npm ci .*npm run build && cd \.\.\/web && npm ci/);
   });
 });
+
+describe("runtime quarantine (re-audit #2: the build gate alone can be bypassed by a prebuilt deploy)", () => {
+  it("quarantineViolation decides exactly as documented", async () => {
+    const { quarantineViolation } = await import("./lib/deploy-quarantine");
+    expect(quarantineViolation({})).toBeNull();
+    expect(quarantineViolation({ VERCEL_ENV: "production" })).toMatch(/cutover/);
+    expect(quarantineViolation({ VERCEL_ENV: "production", H2G_PRODUCTION_CUTOVER: "yes" })).toMatch(/cutover/);
+    expect(quarantineViolation({ VERCEL_ENV: "production", H2G_PRODUCTION_CUTOVER: "approved-by-owner" })).toBeNull();
+    expect(quarantineViolation({ VERCEL_ENV: "production", H2G_STAGING: "synthetic", H2G_PRODUCTION_CUTOVER: "approved-by-owner" })).toMatch(/never run as a Vercel production/);
+    expect(quarantineViolation({ VERCEL_ENV: "preview" })).toMatch(/synthetic staging/);
+    expect(quarantineViolation({ VERCEL_ENV: "preview", H2G_STAGING: "synthetic" })).toBeNull();
+    for (const k of ["HEVY_API_KEY", "GITHUB_PAT", "GARMIN_LOGIN_WORKER_URL", "H2G_CREDENTIALS_KEY", "COLLECTOR_URL", "H2G_STRICT_AUTOMATIC"]) {
+      expect(quarantineViolation({ H2G_STAGING: "synthetic", [k]: "x" }), k).toMatch(new RegExp(k));
+    }
+  });
+
+  it("the server does not start (instrumentation) in a quarantined environment", async () => {
+    for (const [k, v] of Object.entries({ NEXT_RUNTIME: "nodejs", VERCEL_ENV: "production", H2G_STAGING: "", H2G_PRODUCTION_CUTOVER: "" })) vi.stubEnv(k, v);
+    vi.resetModules();
+    const { register } = await import("./instrumentation");
+    await expect(register()).rejects.toThrow(/quarantine/);
+    vi.stubEnv("VERCEL_ENV", "");
+    vi.stubEnv("H2G_STAGING", "synthetic");
+    vi.stubEnv("HEVY_API_KEY", "looks-real");
+    vi.resetModules();
+    const again = await import("./instrumentation");
+    await expect(again.register()).rejects.toThrow(/HEVY_API_KEY/);
+  });
+});

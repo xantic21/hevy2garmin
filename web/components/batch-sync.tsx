@@ -15,6 +15,10 @@ interface BatchResult {
   totalDeferred?: number;
   totalError?: number;
   error?: string;
+  /** Strict live batch: one entry per workout tried, `more` while candidates remain. */
+  runs?: Array<{ status: string }>;
+  more?: boolean;
+  tried?: string[];
 }
 
 /**
@@ -37,15 +41,36 @@ export function BatchSync({ ready, onServer = false, strict = false }: { ready: 
     setBusy(live ? "live" : "preview");
     setError(null);
     try {
-      const res = await fetch(withBasePath(`/api/sync${live ? "?live=1" : ""}`), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(live ? { live: 1 } : {}),
-      });
-      const d = (await res.json().catch(() => ({}))) as BatchResult;
-      if (!res.ok) {
-        setError(d.error ?? `Request failed (${res.status}).`);
-        return;
+      // A strict "Sync all" runs as short requests (each within the function
+      // limit); the server says `more` while candidates remain.
+      let exclude: string[] = [];
+      let d: BatchResult = {} as BatchResult;
+      const all: NonNullable<BatchResult["runs"]> = [];
+      for (let round = 0; round < 50; round++) {
+        const res = await fetch(withBasePath(`/api/sync${live ? "?live=1" : ""}`), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(live ? { live: 1, exclude } : {}),
+        });
+        d = (await res.json().catch(() => ({}))) as BatchResult;
+        if (!res.ok) {
+          setError(d.error ?? `Request failed (${res.status}).`);
+          return;
+        }
+        all.push(...(d.runs ?? []));
+        if (!live || !d.more || !Array.isArray(d.tried)) break;
+        exclude = d.tried;
+      }
+      if (live && all.length) {
+        const count = (...s: string[]) => all.filter((r) => s.includes(r.status)).length;
+        d = {
+          ...d,
+          runs: all,
+          totalSynced: count("synced"),
+          totalSkipped: count("skipped", "merge_pending"),
+          totalDeferred: count("deferred", "needs_review"),
+          totalError: count("failed", "processing"),
+        };
       }
       setResult(d);
       setConfirm(false);
