@@ -30,8 +30,12 @@ is pushed (any other branch would build a preview with the old credentials).
 
 ## Phase 2 — Gate F: one real activity (about 45 minutes)
 
-Needs: Docker Desktop on your computer, a checkout of the qualified commit
-(named in STRICT_GATE_F.md), phase 1 done (at least steps 1–7).
+Needs: Docker Desktop on your computer, phase 1 done (at least steps 1–7), and
+the qualified code commit **8ebd30d** (STRICT_GATE_F.md §3):
+
+```bash
+git clone https://github.com/xantic21/hevy2garmin && cd hevy2garmin && git checkout 8ebd30d
+```
 
 | # | What |
 | --- | --- |

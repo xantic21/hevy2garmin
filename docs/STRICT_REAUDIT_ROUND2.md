@@ -91,7 +91,7 @@ Setup, deployments and full evidence: [STRICT_OPERATIONS.md §7a](STRICT_OPERATI
 In short: a separate Vercel Hobby project `hevy2garmin-staging` without a Git
 link, Preview-only variables, its own Neon project `green-smoke-61642188`
 connected to it alone; the protected previews of 37c16b1 and of the final
-candidate 0a32304 passed the rehearsal 38/38; unauthenticated requests never
+candidate of that round, 0a32304, passed the rehearsal 38/38 (later candidates: STRICT_GATE_F.md); unauthenticated requests never
 reach the app; the production project and its Neon store are unchanged
 against the baseline taken beforehand.
 

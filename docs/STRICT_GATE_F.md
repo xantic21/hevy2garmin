@@ -40,26 +40,23 @@ its own owner authorization, separate from gate G:
 | Only from the dashboard itself (F9) | operator routes refuse another origin (403) and non-JSON bodies (415) | unit, HTTP | G32, G33 |
 | Evidence (F3) | original backup (before), journaled intents with integrity check, fresh read (after), comparisons of sets, name, description and native metrics, a verdict that is OK only when every comparison for the expected state ran and passed, SHA-256 | e2e (verdict fails when Garmin's name was changed elsewhere; OK again after a restore), HTTP | G29 |
 
-## 3. Qualification of the candidate 6dd7002
+## 3. Qualification of the final candidate 8ebd30d
+
+The first candidate 6dd7002 passed the same checks (engine 610, dashboard 1044,
+CI 11/11, gate E on Vercel 38/38) before the independent re-audit (section 4);
+8ebd30d closes its findings and was requalified in full.
 
 | Check | Result |
 | --- | --- |
-| Engine (`typescript/`): tsc, vitest | clean; 610/610 (20 new) |
-| Dashboard (`web/`): engine identity, tsc, eslint, vitest incl. Postgres and pg_dump/pg_restore | verified; clean; clean; 1044/1044 (108 files, 0 skipped) |
-| Negative controls, gate F (`strict_mutations.py G`) | 23/23 caught |
-| Negative controls touching changed files (A17, A18, A21, E01, E02) | caught (round 2 run); full list in STRICT_REAUDIT_ROUND2.md |
-| Gate F over HTTP (production build, synthetic authorization, `gate-f-rehearsal.mjs`) | 31/31: every other sync path 423, five wrong confirmations refused, one run synced, no repeat, evidence, restore to original, only PUTs on the one activity |
-| Gate E over HTTP, same build, no gate F (`staging-rehearsal.mjs`) | 38/38 |
-| Gate F panel in a browser | renders the authorization and every safeguard; the run button stays disabled until the confirmation matches and after the run |
-| Python: pytest SQLite / Postgres, ruff 0.16.7 | 480 passed, 7 skipped / 487 passed; clean (one root-only test fails locally as before; green in CI) |
+| Engine (`typescript/`): tsc, vitest | clean; 617/617 (27 gate F) |
+| Dashboard (`web/`): engine identity, tsc, eslint, vitest incl. Postgres and pg_dump/pg_restore | verified; clean; clean; 1081/1081 (110 files, 0 skipped) |
+| Negative controls, all (`strict_mutations.py`, 96) | 94 caught; 2 equivalent and documented: R1e (the dashboard's restore check behind the engine's) and G09 (the quarantine's Vercel check behind the gate F hosting check, G31). G03 survived once (the new plan requirement refused first) and is caught since a test runs a batch/cron trigger with a valid plan |
+| Gate F over HTTP (production build, synthetic authorization, `gate-f-rehearsal.mjs`) | 35/35: every other sync path 423, five wrong confirmations, no plan, another plan, another origin (403), a non-JSON body (415) all refused without a write; one run synced; no repeat; verdict OK (merged); restore; verdict OK (original); only PUTs on the one activity |
+| Gate E over HTTP, same build (`staging-rehearsal.mjs`) | 38/38 |
+| Python: pytest SQLite / Postgres, ruff 0.16.7 | 480 passed, 8 skipped / 487 passed, 1 skipped (the read-only-folder test skips under root); clean |
 | Playwright smoke (desktop + mobile) | 6/6 |
-| Dependencies | engine and dashboard 0 vulnerabilities; pip-audit clean; Dependabot #1 (vitest < 3.2.6) concerns main only, fixed on this branch |
+| Dependencies | engine and dashboard 0 vulnerabilities (vitest 5.0.5 / 4.1.12); pip-audit clean; Dependabot #1 (vitest < 3.2.6) concerns main only |
 | `tools/gate-f/prepare-env.sh` | writes a file the gate F rules accept; refuses overwrite, synthetic ids, bad ids, non-Postgres URLs, > 14 days |
-
-Pending at the time of writing, recorded in section 4 when done: GitHub
-Actions CI on the candidate, the gate E rehearsal on the Vercel staging
-preview of the candidate, the fresh cloud environment check, the independent
-re-audit.
 
 ## 4. Independent re-audit #3 (separate agent, read-only, on 6dd7002)
 
@@ -94,6 +91,19 @@ engine 610/610; dashboard tsc, eslint, 1044/1044 incl. Postgres and pg_dump;
 `pip install -e ".[dev,cloud]"`, pytest 480 passed, 7 skipped, 1 failed — the
 read-only-folder test, because the container runs as root. That test now skips
 itself under root. `git status` clean.
+
+## 6. CI and the Vercel staging preview of 8ebd30d
+
+| Check | Result |
+| --- | --- |
+| GitHub Actions CI | 11/11 jobs green, incl. "Synthetic staging rehearsal (gate E)" with the step "Rehearse gate F over HTTP" and the container image |
+| Gate E on the protected Vercel preview (`dpl_31VrTq6riv2Q1Lijz1qqUzA12B93`, `/api/version` = 8ebd30d) | 38/38 with a temporary automation bypass, revoked right after (the revoked token gets 302) |
+| Same-origin check behind Vercel's proxy (signed-in session) | own origin 200, `https://evil.example` and `http://localhost:3000` 403, `text/plain` body 415 |
+| Production project | unchanged: `updatedAt` 1795749432375, latest deployment `dpl_3xaUyy9uvxcNnJQPUYHnjeFJibjA`, no deployment since the baseline |
+
+A real gate F is not rehearsed on Vercel by design (it refuses every hosting
+platform); its synthetic rehearsal runs on the production build locally and in
+CI.
 
 ## 7. What stays open
 
