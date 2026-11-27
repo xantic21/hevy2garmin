@@ -64,4 +64,22 @@ dashboard's restore check is redundant to the engine's, which R1b proves).
 
 ## 4. Requalification of the final candidate
 
-Filled in with the exact commit and results when the candidate is final.
+Code candidate **73e134a** (later commits on the branch change documentation
+only). Synthetic data only.
+
+| Check | Result |
+| --- | --- |
+| Negative controls (`strict_mutations.py`, all 59) | 58 caught, 1 equivalent (R1e). The full run on 1d803b6 left R6b and A02 surviving; 73e134a adds their missing tests, and the re-run catches both |
+| Engine (`typescript/`): tsc, vitest | clean; 590/590 |
+| Web (`web/`): engine identity, tsc, eslint, vitest incl. Postgres and pg_dump/pg_restore | verified; clean; clean; 963/963 (106 files) |
+| Python: pytest SQLite / Postgres, ruff check + format | 480 passed, 7 skipped / 487 passed; clean. One test fails only when run as root (`test_unwritable_folder_is_named`: root can write a read-only folder); it passes in CI, which runs as a normal user |
+| Production build, Playwright smoke (desktop + mobile) | built; 6/6 |
+| Synthetic staging over HTTP (production server, empty Postgres) | 38/38 (`staging-rehearsal.mjs`), incl. credential routes 423 (POST and GET), every scenario, restore, reconcile after the outage, read-only audit, evidence over every simulated request |
+| Isolation: staging pointed at a database holding a credential | refused, no table created, rehearsal stopped before any write |
+| Runtime quarantine: production without the cutover | the server does not serve (proxy and instrumentation tests; locally `next.config.ts` already refuses at start) |
+| GitHub Actions CI on 73e134a | 11/11 jobs green, incl. "Synthetic staging rehearsal (gate E)" and the container image |
+
+What remains with the owner: gate E on Vercel (team access for this
+connection, an empty staging database whose role cannot reach production),
+gate F (one real activity), gate G (activation). No real credential, Garmin
+write, production merge or automation has been used or enabled.

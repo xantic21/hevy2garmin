@@ -49,9 +49,9 @@ deliberately, and a missing or misspelled one keeps the safe state.
 | Gate | State | Evidence / what remains |
 | --- | --- | --- |
 | A snapshot and quarantine | done | `vercel.json` (both roots) deployment off, `next.config.ts` refuses Vercel builds, no publish path, `typescript/` private with `prepublishOnly` refusal |
-| B end-to-end strict mode | done (synthetic) | engine 533 tests, web 802 tests + real-Postgres cases, e2e through firewall + Postgres |
+| B end-to-end strict mode | done (synthetic) | engine 590 tests, web 963 tests incl. real Postgres, e2e through firewall + Postgres, 59 negative controls (STRICT_REAUDIT_ROUND2.md) |
 | C synthetic migration and full CI | done | `web/lib/db-qualification.db.test.ts` (fresh DB, previous fork-main schema, pg_dump/restore); all CI jobs |
-| D independent review | done, 9/9 findings closed | `docs/STRICT_REAUDIT.md`; no upload/delete path found |
+| D independent review | done: round 1 9/9 closed (`docs/STRICT_REAUDIT.md`); round 2 owner findings 1–7 and independent re-audit #2 closed (`docs/STRICT_REAUDIT_ROUND2.md`) | no upload/delete path found |
 | E isolated staging | prepared (conditional GO): synthetic staging mode, CI rehearsal, Vercel preview path | §7; the owner opens the preview and runs the rehearsal |
 | F one owner-accepted real activity | **owner** | procedure §8 |
 | G production activation | **owner** | set `H2G_STRICT_AUTOMATIC` only after F; keep stop switches documented |
