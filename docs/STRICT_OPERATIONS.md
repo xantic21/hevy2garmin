@@ -52,7 +52,7 @@ deliberately, and a missing or misspelled one keeps the safe state.
 | B end-to-end strict mode | done (synthetic) | engine 590 tests, web 963 tests incl. real Postgres, e2e through firewall + Postgres, 59 negative controls (STRICT_REAUDIT_ROUND2.md) |
 | C synthetic migration and full CI | done | `web/lib/db-qualification.db.test.ts` (fresh DB, previous fork-main schema, pg_dump/restore); all CI jobs |
 | D independent review | done: round 1 9/9 closed (`docs/STRICT_REAUDIT.md`); round 2 owner findings 1–7 and independent re-audit #2 closed (`docs/STRICT_REAUDIT_ROUND2.md`) | no upload/delete path found |
-| E isolated staging | prepared (conditional GO): synthetic staging mode, CI rehearsal, Vercel preview path | §7; the owner opens the preview and runs the rehearsal |
+| E isolated staging | **done (synthetic, on Vercel)**: separate project `hevy2garmin-staging` with its own Neon project, protected preview of 37c16b1, rehearsal 38/38, isolation verified independently, production project unchanged | §7a; the owner may click through the preview (§7 step 5) |
 | F one owner-accepted real activity | **owner** | procedure §8 |
 | G production activation | **owner** | set `H2G_STRICT_AUTOMATIC` only after F; keep stop switches documented |
 
@@ -63,8 +63,8 @@ already exists:
 
 | Part | Where | Cost | Notes |
 | --- | --- | --- | --- |
-| Dashboard + API | **Vercel Hobby**, one project, Root Directory `web`, "Include files outside the Root Directory" on | free (personal use) | `web/vercel.json` installs and builds the engine first (`installCommand`), automatic Git deployments off, no Vercel crons |
-| Database | **Neon free plan**: production = the existing database; staging = a **separate, empty** database (e.g. `h2g_staging` in the same project) | free | never a branch of production (it would copy credentials; the staging guard refuses it anyway) |
+| Dashboard + API | **Vercel Hobby**, Root Directory `web`, "Include files outside the Root Directory" on. Two projects: production (`hevy2garmin`, quarantined) and staging (`hevy2garmin-staging`, synthetic previews only, §7a) | free (personal use) | `web/vercel.json` installs and builds the engine first (`installCommand`), automatic Git deployments off, no Vercel crons |
+| Database | **Neon free plan**: production = the existing database; staging = a **separate Neon project** (`green-smoke-61642188`), connected only to the staging project, Preview only | free | never a branch of production (it would copy credentials; the staging guard refuses it anyway) |
 | Garmin sign-in (production only) | **own Cloudflare Worker** (`GARMIN_LOGIN_WORKER_URL`, Workers free plan) or `H2G_DIRECT_GARMIN_LOGIN=1` | free | credentials never go to the shared upstream Worker; staging needs neither |
 | Scheduler (after gate G only) | GitHub Actions `schedule` or a Cloudflare Worker cron trigger calling `/api/cron/sync` with `CRON_SECRET` | free | Vercel Hobby crons are limited, and automatic runs stay off until gate G anyway |
 | Backups | operator machine: `pg_dump … \| backup-crypt.mjs encrypt` (§5) | free | before every gate and monthly |
@@ -170,7 +170,7 @@ duplicate, strict leaves it alone.
 
 **Qualified in CI** (job "Synthetic staging rehearsal (gate E)"): the
 production server in staging mode is driven over HTTP by
-`web/scripts/staging-rehearsal.mjs` (37 checks), and pointed at a database with
+`web/scripts/staging-rehearsal.mjs` (38 checks), and pointed at a database with
 a credential it refuses every query and creates nothing. On Postgres:
 `web/lib/staging.db.strict.test.ts` (the process network replaced by a
 tripwire that no request reaches).
@@ -202,6 +202,56 @@ tripwire that no request reaches).
 5. Click through the dashboard: the banner, Preview, Sync now, the strict panel
    (stop, lift, reconcile, restore), the duplicate audit. `GET
    /api/staging/status` shows every simulated request.
+
+## 7a. Gate E as set up and qualified on Vercel (2026-11-27)
+
+Synthetic data only. No real credential was entered or read, nothing reached
+Garmin or Hevy, and the production project and its database were not changed.
+
+**Setup** (team `xantic21s-projects`, Hobby plan, no new paid resource):
+
+| Item | State |
+| --- | --- |
+| Vercel project | `hevy2garmin-staging` (`prj_ZEpBc7oLBgJ2pl619AgyExNypDKa`), separate from production. **No Git repository linked**, so no branch is ever deployed automatically; each preview is created explicitly from a commit. Root Directory `web`, files outside the root included, install/build as `web/vercel.json`, Ignored Build Step `node scripts/vercel-ignore.mjs`, Node 22.x |
+| Protection | Vercel Authentication on every deployment (`all_except_custom_domains`; no custom domain). No automation bypass left (the one used for the rehearsal was revoked afterwards) |
+| Variables (Preview only; nothing for Production or Development) | `H2G_STAGING=synthetic`, `H2G_UPDATE_CHECK=off`; `H2G_PASSWORD`, `HEVY2GARMIN_SECRET`, `CRON_SECRET` as Sensitive, staging-only random values; the 18 Neon variables of store `store_Q12dNmiooBZRWrIP`, Sensitive. No Garmin/Hevy/GitHub variable, no `H2G_CREDENTIALS_KEY`, no `H2G_STRICT_AUTOMATIC`, nothing from production |
+| Database | Neon project `green-smoke-61642188` (free plan, `fra1`) — a separate Neon project, so its roles and connection strings cannot reach the production project `muddy-block-72846077`. Connected to the staging project only, for Preview only |
+| Production | `hevy2garmin` (`prj_3avsQM6o1KUXOvgDU2MZYFRKAPS7`) unchanged against the baseline taken before any staging work: `updatedAt` 1795749432375, latest deployment `dpl_3xaUyy9uvxcNnJQPUYHnjeFJibjA` (main 5e36566), the same 22 variable ids and timestamps; its Neon store is still connected to it alone. No deployment of this branch exists there |
+
+**Deployments of the staging project.**
+
+| Deployment | What happened |
+| --- | --- |
+| `dpl_6boDf6wGSETyLveAmsaRJYeXMoB4` | Vercel creates the *first* deployment of a project without a Git link as **production**, whatever the request says. The Ignored Build Step refused it (`[quarantine] build skipped … VERCEL_ENV=production, H2G_STAGING=unset`): canceled after about a second, nothing built, nothing served. Proof that the build quarantine works on Vercel itself |
+| `dpl_BBHBisAVcjvfw8gDCYdD99dN9B3N` | preview of 37c16b1 built before the database was connected; READY, not used |
+| `dpl_4JR3unrcMBQjGdngW2VLdFGyKQUr` | **the qualified preview**: commit 37c16b1 (code = candidate 73e134a), target preview, build log `[quarantine] synthetic staging preview: building`, engine digest `ea30e153…4cbe3c`, "Engine identity verified"; branch alias `hevy2garmin-staging-git-migration-str-9ef2d5-xantic21s-projects.vercel.app` |
+
+**Results.**
+
+| Check | Result |
+| --- | --- |
+| Without Vercel sign-in | `/`, `/api/staging/status`, `/api/session-epoch`, `/api/strict/credentials`, `/api/cron/sync` and `POST /api/staging/seed` all end at Vercel Authentication (302 to the SSO page); the app is never reached. The revoked bypass token also gets 302 |
+| Rehearsal (`staging-rehearsal.mjs`, temporary automation bypass) | **38/38**: credential routes 423 (POST and GET), destructive routes 423, every scenario, outage → uncertain → reconcile without a write, mismatch → freeze → restore, read-only duplicate audit |
+| Database was empty and is staging-only | the guard accepted it only because it held no row in any app table, and marked it at the first request (`2026-11-27T21:42:30Z`); 0 credential rows; automatic sync off |
+| Network | 90 simulated requests, only to the in-process `api.hevyapp.com` / `connectapi.garmin.com`; 0 to any other host; every write a sets or name/description PUT on a synthetic activity 91000xx |
+| Firewall | enforcement self-test passes through the global `fetch`. It reports `outermost: false` on Vercel: Next.js 16 patches the global `fetch` once per process after instrumentation installed the firewall, so the firewall sits inside Next's wrapper (still on every request's path); `ensureStrictFirewall` wraps once more on top before any Garmin client is built. Expected, no action |
+| Independent isolation check | separate read-only audit, see `docs/STRICT_REAUDIT_ROUND2.md` §5 |
+
+**Owner notes.**
+
+- To click through: open the branch alias above, sign in with Vercel, then
+  the dashboard asks for the staging `H2G_PASSWORD`. It is stored as
+  Sensitive and cannot be read back from Vercel; set a new Preview value in
+  the staging project's settings and redeploy if needed.
+- A new preview after code changes: create it explicitly from the commit (no
+  Git link). Never give the staging project production variables.
+- In the production project, `GARMIN_PASSWORD` is stored as type
+  "encrypted" (readable in the dashboard; Vercel flags it `readable-secret`),
+  unlike its other secrets (Sensitive). Not changed here (production
+  untouched); the owner may re-create it as Sensitive. The dashboard never
+  reads it (staging only names it, to refuse it).
+- When gate E is no longer needed, delete the staging project and its Neon
+  store; nothing else depends on them.
 
 ## 8. One owner-accepted real activity (gate F, owner)
 

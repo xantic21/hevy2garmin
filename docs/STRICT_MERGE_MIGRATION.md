@@ -39,5 +39,5 @@ Recorded by the single writer of `migration/strict-inplace-20261127`. The inputs
 | 6 read-only duplicate audit | implemented | `strict/duplicate-audit.ts`, `/api/strict/duplicate-audit` |
 | 7 auth, credentials, schema, backup/restore, migration, rollback on synthetic data; #473/#475 | qualified on synthetic data | `web/lib/db-qualification.db.test.ts`, login hardening, CI production checks |
 | 8 adversarial tests, CI incl. exact runtime, synthetic Postgres and integration | implemented | `typescript/tests/strict/*`, `web/**/*.strict.test.ts`, `*.db.test.ts` |
-| 9 isolated staging, one approved real activity, separate activation | E prepared (synthetic staging qualified in CI; Vercel preview path ready); F–G **owner** | procedure in STRICT_OPERATIONS.md §7–8 |
+| 9 isolated staging, one approved real activity, separate activation | E **done** (synthetic, on a separate Vercel Hobby project with its own Neon project; rehearsal 38/38; production unchanged); F–G **owner** | STRICT_OPERATIONS.md §7a (evidence), §8 (gate F procedure) |
 | 10 follow-ups | partly | dashboard redesign done; Expo SDK major and mapping coverage growth remain |

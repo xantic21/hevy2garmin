@@ -79,7 +79,19 @@ only). Synthetic data only.
 | Runtime quarantine: production without the cutover | the server does not serve (proxy and instrumentation tests; locally `next.config.ts` already refuses at start) |
 | GitHub Actions CI on 73e134a | 11/11 jobs green, incl. "Synthetic staging rehearsal (gate E)" and the container image |
 
-What remains with the owner: gate E on Vercel (team access for this
-connection, an empty staging database whose role cannot reach production),
-gate F (one real activity), gate G (activation). No real credential, Garmin
-write, production merge or automation has been used or enabled.
+What remained with the owner at this point: gate E on Vercel (done since,
+section 5), gate F (one real activity), gate G (activation). No real
+credential, Garmin write, production merge or automation has been used or
+enabled.
+
+## 5. Gate E on Vercel (2026-11-27)
+
+Setup, deployments and full evidence: [STRICT_OPERATIONS.md §7a](STRICT_OPERATIONS.md#7a-gate-e-as-set-up-and-qualified-on-vercel-2026-11-27).
+In short: a separate Vercel Hobby project `hevy2garmin-staging` without a Git
+link, Preview-only variables, its own Neon project `green-smoke-61642188`
+connected to it alone; the protected preview of 37c16b1 passed the rehearsal
+38/38; unauthenticated requests never reach the app; the production project
+and its Neon store are unchanged against the baseline taken beforehand.
+
+Independent read-only isolation check (separate agent, no writes, no
+decryption): in progress; its result is recorded here when complete.
