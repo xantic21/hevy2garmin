@@ -56,6 +56,17 @@ describe.skipIf(!url)("staging database guard", () => {
     await expect(checkStagingDatabase(db, async () => {})).rejects.toThrow(/not a staging database/);
   });
 
+  it("refuses a MARKED staging database once a credential row appears in it", async () => {
+    const db = await fresh();
+    await db.unsafe(`CREATE TABLE app_cache (key TEXT PRIMARY KEY, value JSONB NOT NULL)`);
+    await db.unsafe(`INSERT INTO app_cache VALUES ('h2g_staging', '{"synthetic": true}')`);
+    await db.unsafe(`CREATE TABLE platform_credentials (platform TEXT PRIMARY KEY, credentials JSONB NOT NULL DEFAULT '{}')`);
+    await db.unsafe(`INSERT INTO platform_credentials (platform, credentials) VALUES ('garmin_tokens', '{"garmin_tokens": {"di_token": "synthetic"}}')`);
+    const bootstrap = vi.fn(async () => {});
+    await expect(checkStagingDatabase(db, bootstrap)).rejects.toThrow(/stored credential/);
+    expect(bootstrap).not.toHaveBeenCalled();
+  });
+
   it("refuses a MARKED staging database once a non-synthetic workout appears in it", async () => {
     const db = await fresh();
     await db.unsafe(`CREATE TABLE app_cache (key TEXT PRIMARY KEY, value JSONB NOT NULL)`);

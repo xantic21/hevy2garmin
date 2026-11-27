@@ -94,6 +94,19 @@ describe("HIGH: the lock covers read → plan → write (TOCTOU)", () => {
     });
   }
 
+  it("a workout put under review between read and lock (activity unchanged) is not written", async () => {
+    const t = setup();
+    const hooked = hookOnce(t.ledger, "acquireActivityLock", () => true, async () => {
+      // An operator (or a reconcile) marks the workout for review; Garmin is untouched.
+      await t.ledger.setBindingState("hevy-1", "needs_review", "operator review");
+    });
+    const r = await t.run({ dryRun: false }, { ...t.deps, ledger: hooked });
+    expect(r).toMatchObject({ status: "needs_review", writes: 0 });
+    expect(r.reason).toMatch(/binding changed/);
+    expect(t.garmin.writes()).toBe(0);
+    expect((await t.ledger.getBindingByHevy("hevy-1"))?.state).toBe("needs_review");
+  });
+
   it("an activity changed by someone else between read and lock is not written", async () => {
     const t = setup();
     const hooked = hookOnce(t.ledger, "acquireActivityLock", () => true, async () => {
