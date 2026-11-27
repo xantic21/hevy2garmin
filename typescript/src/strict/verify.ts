@@ -68,7 +68,19 @@ export function canonicalActiveSets(sets: unknown): CanonicalActiveSet[] {
 
 export interface SetMismatch {
   index: number | null;
-  field: "count" | "category" | "name" | "reps" | "weight";
+  field:
+    | "count"
+    | "category"
+    | "name"
+    | "reps"
+    | "weight"
+    | "activityId"
+    | "setType"
+    | "startTime"
+    | "duration"
+    | "wktStepIndex"
+    | "exercises"
+    | "probability";
   expected: unknown;
   actual: unknown;
 }
@@ -160,4 +172,117 @@ export function activityNameOf(detail: unknown): string | null {
 export function descriptionOf(detail: unknown): string | null {
   const v = pick(detail, "description");
   return typeof v === "string" ? v : null;
+}
+
+/**
+ * Named tolerances for the full sequence comparison. Garmin stores set times
+ * and durations as floating point; anything beyond these is a real change.
+ */
+export const TIMING_TOLERANCE = Object.freeze({ durationS: 0.5, startMs: 1000 });
+
+const has = (o: Record<string, unknown>, k: string) => Object.prototype.hasOwnProperty.call(o, k) && o[k] !== undefined;
+
+/** Garmin set times carry no zone ("2026-03-10T17:00:00.0") and are UTC. */
+function instantMs(v: unknown): number | null {
+  if (typeof v !== "string" || !v) return null;
+  const iso = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(v) ? v : `${v.replace(" ", "T")}Z`;
+  const t = Date.parse(iso);
+  return Number.isFinite(t) ? t : null;
+}
+
+function listOf(x: unknown): Array<Record<string, unknown>> | null {
+  const sets = (x as { exerciseSets?: unknown } | null)?.exerciseSets;
+  return Array.isArray(sets) ? (sets as Array<Record<string, unknown>>) : null;
+}
+
+/**
+ * Compare a required value. `intended` undefined: not part of this write, not
+ * compared. `intended` null: the read-back must hold no value (null or absent).
+ * Any other value: the read-back MUST have it, and equal (within `tol`).
+ */
+function compareValue(
+  out: SetMismatch[],
+  index: number,
+  field: SetMismatch["field"],
+  intended: unknown,
+  actualObj: Record<string, unknown>,
+  key: string,
+  eq: (a: unknown, b: unknown) => boolean = (a, b) => a === b,
+): void {
+  if (intended === undefined) return;
+  const present = has(actualObj, key);
+  const actual = present ? actualObj[key] : undefined;
+  if (intended === null) {
+    if (present && actual !== null) out.push({ index, field, expected: null, actual });
+    return;
+  }
+  if (!present || actual === null || !eq(intended, actual)) out.push({ index, field, expected: intended, actual: present ? actual : "(missing)" });
+}
+
+const numEq = (tol: number) => (a: unknown, b: unknown) => {
+  const x = Number(a);
+  const y = Number(b);
+  return Number.isFinite(x) && Number.isFinite(y) && Math.abs(x - y) <= tol;
+};
+
+/**
+ * Every set, ACTIVE and REST, in order: set type, start time and duration for
+ * all of them; for ACTIVE sets also the step index, reps, weight and EVERY
+ * exercise entry (category, name, probability). A value the intended state
+ * has that the read-back lacks is a mismatch, never a pass. With
+ * `activityId`, the read-back must name that activity.
+ */
+export function compareSetSequences(intended: unknown, readback: unknown, opts: { activityId?: number } = {}): SetMismatch[] {
+  const out: SetMismatch[] = [];
+  if (opts.activityId !== undefined) {
+    const got = (readback as { activityId?: unknown } | null)?.activityId;
+    if (Number(got) !== opts.activityId) out.push({ index: null, field: "activityId", expected: opts.activityId, actual: got ?? "(missing)" });
+  }
+  const a = listOf(intended);
+  const b = listOf(readback);
+  if (!a) return [...out, { index: null, field: "count", expected: "a set list", actual: "(intended has none)" }];
+  if (!b) return [...out, { index: null, field: "count", expected: a.length, actual: "(missing)" }];
+  if (a.length !== b.length) out.push({ index: null, field: "count", expected: a.length, actual: b.length });
+  for (let i = 0; i < Math.min(a.length, b.length); i++) {
+    const x = a[i] ?? {};
+    const y = b[i] ?? {};
+    compareValue(out, i, "setType", x.setType ?? null, y, "setType");
+    compareValue(out, i, "startTime", x.startTime, y, "startTime", (p, q) => {
+      const s = instantMs(p);
+      const t = instantMs(q);
+      return s !== null && t !== null && Math.abs(s - t) <= TIMING_TOLERANCE.startMs;
+    });
+    compareValue(out, i, "duration", x.duration, y, "duration", numEq(TIMING_TOLERANCE.durationS));
+    if (x.setType !== "ACTIVE") continue;
+    compareValue(out, i, "wktStepIndex", x.wktStepIndex, y, "wktStepIndex", numEq(0));
+    compareValue(out, i, "reps", x.repetitionCount, y, "repetitionCount", numEq(0));
+    compareValue(out, i, "weight", x.weight, y, "weight", numEq(1));
+    const ex = Array.isArray(x.exercises) ? (x.exercises as Array<Record<string, unknown>>) : null;
+    const ey = Array.isArray(y.exercises) ? (y.exercises as Array<Record<string, unknown>>) : null;
+    if (ex === null) continue;
+    if (ey === null || ex.length !== ey.length) {
+      out.push({ index: i, field: "exercises", expected: ex.length, actual: ey === null ? "(missing)" : ey.length });
+      continue;
+    }
+    for (let j = 0; j < ex.length; j++) {
+      compareValue(out, i, "category", ex[j]?.category ?? null, ey[j] ?? {}, "category");
+      compareValue(out, i, "name", ex[j]?.name ?? null, ey[j] ?? {}, "name");
+      compareValue(out, i, "probability", ex[j]?.probability, ey[j] ?? {}, "probability", numEq(0));
+    }
+  }
+  return out;
+}
+
+/** Metrics an activity must expose before strict mode writes to it, and keep afterwards. */
+export const REQUIRED_PRESERVED_METRICS: readonly string[] = [
+  "activityId",
+  "activityTypeDTO.typeKey",
+  "metadataDTO.manufacturer",
+  "summaryDTO.startTimeGMT",
+  "summaryDTO.duration",
+];
+
+export function missingRequiredMetrics(detail: unknown): string[] {
+  const have = extractPreservedMetrics(detail);
+  return REQUIRED_PRESERVED_METRICS.filter((p) => !(p in have));
 }

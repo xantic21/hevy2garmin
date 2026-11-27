@@ -9,9 +9,12 @@
  *
  * Satisfies STRICT_LEDGER_CONTRACT (lib/strict-ledger-store.db.test.ts).
  */
+import { JournalConflictError } from "hevy2garmin";
 import type {
+  ActivityLock,
   BindingState,
   ClaimOutcome,
+  LockOutcome,
   JournalPhase,
   StrictBackup,
   StrictBinding,
@@ -72,6 +75,20 @@ function entry(r: Row): StrictJournalEntry {
 }
 
 const OPEN = ["intent", "put_sent", "put_acknowledged", "uncertain", "needs_review"];
+
+function lockRow(r: Row): ActivityLock {
+  return {
+    garminActivityId: Number(r.garmin_activity_id),
+    owner: String(r.owner),
+    purpose: String(r.purpose) as ActivityLock["purpose"],
+    leaseUntil: iso(r.lease_until)!,
+    acquiredAt: iso(r.acquired_at)!,
+  };
+}
+
+const isUniqueViolation = (e: unknown, constraint: string) =>
+  (e as { code?: string; constraint_name?: string; constraint?: string })?.code === "23505" &&
+  [((e as { constraint_name?: string }).constraint_name ?? ""), ((e as { constraint?: string }).constraint ?? ""), String((e as Error).message)].some((x) => x.includes(constraint));
 
 export function postgresStrictLedger(sql: Sql): StrictLedger {
   const patchBinding = async (
@@ -174,13 +191,18 @@ export function postgresStrictLedger(sql: Sql): StrictLedger {
     },
 
     async openJournal(input) {
-      const rows = await sql`
-        INSERT INTO strict_journal (hevy_id, garmin_activity_id, step, phase, owner, intended_sha256, intended, backup_id, detail)
-        VALUES (${input.hevyId}, ${input.garminActivityId}, ${input.step}, 'intent', ${input.owner},
-                ${input.intendedSha256}, ${sql.json(input.intended)}, ${input.backupId}, ${sql.json(input.detail ?? {})})
-        RETURNING *
-      `;
-      return entry(rows[0]);
+      try {
+        const rows = await sql`
+          INSERT INTO strict_journal (hevy_id, garmin_activity_id, step, phase, owner, intended_sha256, intended, backup_id, detail)
+          VALUES (${input.hevyId}, ${input.garminActivityId}, ${input.step}, 'intent', ${input.owner},
+                  ${input.intendedSha256}, ${sql.json(input.intended)}, ${input.backupId}, ${sql.json(input.detail ?? {})})
+          RETURNING *
+        `;
+        return entry(rows[0]);
+      } catch (e) {
+        if (isUniqueViolation(e, "strict_journal_one_in_flight")) throw new JournalConflictError(input.garminActivityId);
+        throw e;
+      }
     },
     async advanceJournal(id, from, to, detail) {
       if (!/^\d+$/.test(id)) return false;
@@ -215,11 +237,43 @@ export function postgresStrictLedger(sql: Sql): StrictLedger {
         ON CONFLICT (id) DO UPDATE SET frozen = EXCLUDED.frozen, reason = EXCLUDED.reason, updated_at = NOW()
       `;
     },
+
+    async acquireActivityLock({ activityId, owner, purpose, now, leaseMs }): Promise<LockOutcome> {
+      const until = new Date(now.getTime() + leaseMs);
+      // One statement: insert, or take over an expired lease, or extend one's own.
+      const rows = await sql`
+        INSERT INTO strict_activity_locks (garmin_activity_id, owner, purpose, lease_until, acquired_at)
+        VALUES (${activityId}, ${owner}, ${purpose}, ${until}, ${now})
+        ON CONFLICT (garmin_activity_id) DO UPDATE
+          SET owner = EXCLUDED.owner, purpose = EXCLUDED.purpose, lease_until = EXCLUDED.lease_until, acquired_at = EXCLUDED.acquired_at
+          WHERE strict_activity_locks.lease_until <= ${now} OR strict_activity_locks.owner = EXCLUDED.owner
+        RETURNING *
+      `;
+      if (rows[0]) return { ok: true, lock: lockRow(rows[0]) };
+      const held = await sql`SELECT * FROM strict_activity_locks WHERE garmin_activity_id = ${activityId}`;
+      return { ok: false, heldBy: held[0] ? lockRow(held[0]) : null };
+    },
+    async releaseActivityLock(activityId, owner) {
+      const rows = await sql`
+        DELETE FROM strict_activity_locks WHERE garmin_activity_id = ${activityId} AND owner = ${owner} RETURNING garmin_activity_id
+      `;
+      return rows.length === 1;
+    },
+    async getActivityLock(activityId) {
+      const rows = await sql`SELECT * FROM strict_activity_locks WHERE garmin_activity_id = ${activityId}`;
+      return rows[0] ? lockRow(rows[0]) : null;
+    },
   };
 }
 
 /** The strict tables and their safety constraints, as schema.ts creates them. */
-export const STRICT_SCHEMA_TABLES = ["strict_bindings", "strict_backups", "strict_journal", "strict_control"] as const;
+export const STRICT_SCHEMA_TABLES = [
+  "strict_bindings",
+  "strict_backups",
+  "strict_journal",
+  "strict_control",
+  "strict_activity_locks",
+] as const;
 
 /**
  * Live strict writes require the full schema, including the insert-only
@@ -238,8 +292,10 @@ export async function strictSchemaReady(sql: Sql): Promise<{ ready: boolean; mis
     const names = new Set(trig.map((r) => String(r.tgname)));
     if (!names.has("strict_backups_insert_only")) missing.push("trigger strict_backups_insert_only");
     if (!names.has("strict_backups_no_truncate")) missing.push("trigger strict_backups_no_truncate");
-    const idx = await sql`SELECT to_regclass('public.strict_backups_one_original') AS r`;
-    if (!idx[0]?.r) missing.push("index strict_backups_one_original");
+    for (const index of ["strict_backups_one_original", "strict_journal_one_in_flight"]) {
+      const idx = await sql`SELECT to_regclass(${`public.${index}`}) AS r`;
+      if (!idx[0]?.r) missing.push(`index ${index}`);
+    }
   } catch (e) {
     missing.push(`schema check failed: ${(e as Error).message}`);
   }

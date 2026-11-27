@@ -203,6 +203,16 @@ export function firewallStats(): { blocked: number; recent: FirewallEvent[] } {
   return { blocked: shared.blocked, recent: shared.recent.slice() };
 }
 
+/**
+ * The deployment-level hard stop. Read at call time, so it applies the moment
+ * the variable is set, and enforced at the network boundary for every write,
+ * a controlled restore included. (The database stop switch is different: it
+ * stops syncing but deliberately allows an operator's verified recovery.)
+ */
+export function strictHardStopActive(env: Record<string, string | undefined> = process.env): boolean {
+  return /^(1|true|yes|on)$/i.test((env.H2G_STRICT_STOP ?? "").trim());
+}
+
 /** True for a StrictModeViolation from ANY copy of this module (instanceof is per copy). */
 export function isStrictModeViolation(e: unknown): boolean {
   return e instanceof StrictModeViolation || (e as { code?: unknown } | null)?.code === "STRICT_MODE_VIOLATION";
@@ -238,6 +248,8 @@ export function createStrictFetch(base: typeof fetch): typeof fetch {
       case "forbidden":
         return block(input, init, verdict.reason);
       case "write": {
+        // The deployment-level hard stop beats every capability, restore included.
+        if (strictHardStopActive()) return block(input, init, "H2G_STRICT_STOP is set: every Garmin write is refused");
         const scope = scopeStore.getStore();
         if (!scope) return block(input, init, `${verdict.write} write outside a capability scope`);
         if (scope.activityId !== verdict.activityId) {

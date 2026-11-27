@@ -33,16 +33,17 @@ import { selectStrictMergeMatch } from "../strict-merge-policy";
 import type { SyncStore } from "../sync/store";
 import type { DedupWorkout } from "../sync/types";
 import { mergeDescription, strictDescriptionBlock } from "./description";
-import { isStrictModeViolation, withGarminWriteCapability, type GarminWriteKind } from "./firewall";
+import { isStrictModeViolation, strictHardStopActive, withGarminWriteCapability, type GarminWriteKind } from "./firewall";
 import { blockingIssues, buildStrictIntent, type StrictIntentIssue } from "./intent";
-import { BLOCKING_PHASES, type JournalPhase, type JournalStep, type StrictLedger } from "./ledger";
+import { BLOCKING_PHASES, isJournalConflict, type JournalPhase, type JournalStep, type LockPurpose, type StrictLedger } from "./ledger";
 import { encodeStrictPayload, type StrictSetsPayload } from "./payload";
 import {
   activityNameOf,
-  compareActiveSets,
+  compareSetSequences,
   comparePreservedMetrics,
   descriptionOf,
   extractPreservedMetrics,
+  missingRequiredMetrics,
   sha256Canonical,
   type MetricMismatch,
   type SetMismatch,
@@ -367,6 +368,11 @@ export async function strictInPlaceSync(deps: StrictSyncDeps, options: StrictSyn
   if (!detail) return result({ ...actBase, status: "pending", reason: "the activity is no longer on Garmin" });
   const detailType = (detail.activityTypeDTO as { typeKey?: string } | undefined)?.typeKey;
   const detailMaker = String((detail.metadataDTO as { manufacturer?: string } | undefined)?.manufacturer ?? "").toUpperCase();
+  const detailChecked: Record<string, unknown> = detail;
+  const missing = missingRequiredMetrics(detail);
+  if (missing.length) {
+    return result({ ...actBase, status: "needs_review", reason: `activity detail lacks required values (${missing.join(", ")}); nothing to verify against` });
+  }
   if (Number(detail.activityId) !== activityId || detailType !== "strength_training" || detailMaker !== "GARMIN") {
     return result({ ...actBase, status: "needs_review", reason: "activity detail does not confirm a native Garmin strength activity" });
   }
@@ -387,7 +393,7 @@ export async function strictInPlaceSync(deps: StrictSyncDeps, options: StrictSyn
   }
   const payload = encoded.payload;
   const intendedSha256 = sha256Canonical(payload);
-  const setsAlreadyApplied = compareActiveSets(payload, originalSets).length === 0;
+  const setsAlreadyApplied = compareSetSequences(payload, originalSets, { activityId }).length === 0;
   const currentName = activityNameOf(detail);
   const currentDescription = descriptionOf(detail);
   const newName = rename && intent.title !== currentName ? intent.title : null;
@@ -413,6 +419,9 @@ export async function strictInPlaceSync(deps: StrictSyncDeps, options: StrictSyn
   }
 
   // ---- LIVE ----
+  if (strictHardStopActive()) {
+    return result({ ...actBase, issues, plan, status: "blocked", reason: "H2G_STRICT_STOP is set: every Garmin write is refused" });
+  }
   await abortStaleIntents(ledger, now, leaseMs);
   const claim = await ledger.claimBinding({ hevyId, activityId, owner, now: clock(), leaseMs });
   if (!claim.ok) {
@@ -424,6 +433,27 @@ export async function strictInPlaceSync(deps: StrictSyncDeps, options: StrictSyn
       reason: `binding refused: ${claim.reason}`,
     });
   }
+  // The activity itself, for the whole write: no restore or reconcile may
+  // touch it meanwhile, and no other sync either.
+  const lock = await ledger.acquireActivityLock({ activityId, owner, purpose: "sync", now: clock(), leaseMs });
+  if (!lock.ok) {
+    await ledger.releaseBinding(hevyId, owner).catch(() => false);
+    return result({
+      ...actBase,
+      issues,
+      plan,
+      status: "blocked",
+      reason: `activity is locked by a ${lock.heldBy?.purpose ?? "concurrent"} operation; nothing was written`,
+    });
+  }
+  try {
+    return await liveWrite();
+  } finally {
+    await ledger.releaseActivityLock(activityId, owner).catch(() => false);
+  }
+
+  async function liveWrite(): Promise<StrictSyncResult> {
+  const detail = detailChecked;
 
   const journalIds: string[] = [];
   let writes = 0;
@@ -515,6 +545,7 @@ export async function strictInPlaceSync(deps: StrictSyncDeps, options: StrictSyn
       o.status === "needs_review" ? "needs_review" : o.status === "uncertain" ? "uncertain" : o.status === "blocked" ? "blocked" : "failed";
     return done({ status, reason: o.reason, mismatches: o.mismatches });
   }
+  }
 }
 
 interface GuardedOutcome {
@@ -549,19 +580,27 @@ async function guardedWrite(w: GuardedWriteInput): Promise<GuardedOutcome> {
   const block = await strictWriteBlock(ledger);
   if (block.blocked) return { status: "blocked", reason: block.reason, journalId: null, sent: false };
 
+  if (strictHardStopActive()) return { status: "blocked", reason: "H2G_STRICT_STOP is set: every Garmin write is refused", journalId: null, sent: false };
   const intendedSha256 = sha256Canonical(w.intended);
-  const entry = await ledger.openJournal({
-    hevyId: w.hevyId,
-    garminActivityId: activityId,
-    step: w.step,
-    owner: w.owner,
-    intendedSha256,
-    intended: w.intended,
-    backupId: w.backupId,
-  });
+  let entry;
+  try {
+    entry = await ledger.openJournal({
+      hevyId: w.hevyId,
+      garminActivityId: activityId,
+      step: w.step,
+      owner: w.owner,
+      intendedSha256,
+      intended: w.intended,
+      backupId: w.backupId,
+    });
+  } catch (e) {
+    if (isJournalConflict(e)) return { status: "blocked", reason: (e as Error).message, journalId: null, sent: false };
+    throw e;
+  }
   // Durable BEFORE the request leaves: a crash from here on is an open,
   // blocking entry that only read-back can close.
   if (!(await ledger.advanceJournal(entry.id, ["intent"], "put_sent"))) {
+    await ledger.advanceJournal(entry.id, ["intent"], "aborted", { abortedReason: "intent → put_sent was refused" }).catch(() => false);
     return { status: "failed", reason: "journal could not be advanced; nothing was sent", journalId: entry.id, sent: false };
   }
 
@@ -646,8 +685,21 @@ async function verifyJournalEntry(
     return { status: "needs_review", reason, journalId, sent };
   }
 
+  // Identity first: a read-back of another activity, or one that does not say
+  // which activity it is, proves nothing.
+  if (Number(readDetail.activityId) !== spec.activityId) {
+    const reason = `read-back names activity ${String(readDetail.activityId ?? "(none)")}, not ${spec.activityId}`;
+    await ledger.advanceJournal(journalId, ["put_sent", "put_acknowledged", "uncertain"], "needs_review", { reason });
+    await ledger.setFrozen(true, `${reason} (journal ${journalId})`);
+    return { status: "needs_review", reason, journalId, sent };
+  }
   const metrics = comparePreservedMetrics(spec.preservedBefore, readDetail);
-  const sets = spec.intendedSets != null ? compareActiveSets(spec.intendedSets, readSets) : [];
+  // The whole sequence: ACTIVE and REST, timing, every exercise field. Sets
+  // identity is required whether or not this write touched the sets.
+  const sets =
+    spec.intendedSets != null
+      ? compareSetSequences(spec.intendedSets, readSets, { activityId: spec.activityId })
+      : compareSetSequences(readSets, readSets, { activityId: spec.activityId }).filter((m) => m.field === "activityId");
   const metadata: string[] = [];
   const name = activityNameOf(readDetail);
   const desc = descriptionOf(readDetail);
@@ -659,7 +711,7 @@ async function verifyJournalEntry(
     if (f.description !== undefined && (desc ?? "") !== f.description) metadata.push("description differs from what was written");
   }
   const setsUnchanged =
-    spec.intendedSets == null || compareActiveSets({ exerciseSets: spec.before.exerciseSets }, readSets).length === 0;
+    spec.intendedSets == null || compareSetSequences({ exerciseSets: spec.before.exerciseSets }, readSets).length === 0;
   const metaUnchanged =
     spec.intendedMeta == null ||
     ((spec.intendedMeta.activityName === undefined || name === spec.before.activityName) &&
@@ -734,6 +786,30 @@ export async function reconcileStrictJournal(
   if (binding?.leaseOwner === entry.owner && binding.leaseUntil && Date.parse(binding.leaseUntil) > now.getTime()) {
     return { status: "refused", reason: "the writer still holds its lease; try again after it finishes or the lease expires", journalId, writes: 0 };
   }
+  // And the activity itself: no sync or restore may run while it is read back.
+  const owner = deps.owner ?? `reconcile-${randomUUID()}`;
+  const lock = await deps.ledger.acquireActivityLock({
+    activityId: entry.garminActivityId,
+    owner,
+    purpose: "reconcile",
+    now,
+    leaseMs: options.leaseMs ?? DEFAULT_LEASE_MS,
+  });
+  if (!lock.ok) {
+    return { status: "refused", reason: `activity is locked by a ${lock.heldBy?.purpose ?? "concurrent"} operation`, journalId, writes: 0 };
+  }
+  try {
+    return await reconcileUnderLock();
+  } finally {
+    await deps.ledger.releaseActivityLock(entry.garminActivityId, owner).catch(() => false);
+  }
+
+  async function reconcileUnderLock(): Promise<StrictRecoveryResult> {
+  if (!entry) return { status: "not_open", reason: "no such journal entry", journalId, writes: 0 };
+  const current = await deps.ledger.getJournal(journalId);
+  if (!current || current.phase !== entry.phase) {
+    return { status: "refused", reason: `journal moved to ${current?.phase ?? "nothing"} meanwhile; look again`, journalId, writes: 0 };
+  }
   const backup = await deps.ledger.getBackup(entry.backupId);
   if (!backup || sha256Canonical(backup.payload) !== backup.sha256) {
     await deps.ledger.advanceJournal(journalId, [entry.phase], "needs_review", { reason: "backup missing or corrupt" });
@@ -761,115 +837,174 @@ export async function reconcileStrictJournal(
     await deps.ledger.setBindingState(entry.hevyId, "claimed", `reconciled as ${out.status}; run a manual sync to finish`);
   }
   return { status: out.status as StrictRecoveryResult["status"], reason: out.reason, journalId, writes: 0 };
+  }
 }
 
 /**
  * Operator-approved restore of an activity to a verified backup: its `pre_write`
  * snapshot (undo the last write) or its `original` (undo everything strict
- * mode ever wrote). Exactly one sets write and, if needed, one metadata write,
- * each journaled and read back. Never automatic: requires `confirm: true`.
+ * mode ever wrote). Never automatic: requires `confirm: true`.
+ *
+ * Guarantees, in order, each checked before any network write:
+ *  - H2G_STRICT_STOP refuses it outright (the database stop switch does not:
+ *    a verified recovery is exactly what a frozen deployment may need);
+ *  - the activity lock is held for the whole restore, so no sync, reconcile or
+ *    second restore can interleave;
+ *  - the reviewed entry is re-read under the lock and must still be
+ *    needs_review/verified; the backup must pass its integrity check;
+ *  - the current state is read, identified and snapshotted (a verified
+ *    pre_write backup), so the restore itself can be undone;
+ *  - its own journal entry must open (one in-flight write per activity) and
+ *    move intent → put_sent by compare-and-set; if either fails, nothing is sent.
+ * Then exactly one sets write and, if needed, one name/description write,
+ * read back over the full set sequence and the activity's native metrics.
  */
 export async function restoreStrictBackup(
   deps: StrictRecoveryDeps,
   input: { journalId: string; source: "pre_write" | "original"; confirm: boolean },
+  options: { leaseMs?: number; verifyDelayMs?: number } = {},
 ): Promise<StrictRecoveryResult> {
   const { ledger } = deps;
-  if (input.confirm !== true) return { status: "refused", reason: "a restore must be confirmed explicitly", journalId: input.journalId, writes: 0 };
-  const entry = await ledger.getJournal(input.journalId);
-  if (!entry) return { status: "not_open", reason: "no such journal entry", journalId: input.journalId, writes: 0 };
-  if (!["needs_review", "verified"].includes(entry.phase)) {
-    return { status: "refused", reason: `cannot restore from a ${entry.phase} entry; reconcile it first`, journalId: entry.id, writes: 0 };
-  }
-  const backup = input.source === "original" ? await ledger.getOriginalBackup(entry.garminActivityId) : await ledger.getBackup(entry.backupId);
-  if (!backup || sha256Canonical(backup.payload) !== backup.sha256) {
-    return { status: "refused", reason: "backup missing or failed its integrity check", journalId: entry.id, writes: 0 };
-  }
-  const target = backup.payload as GuardedWriteInput["backupPayload"] & { preservedMetrics: Record<string, unknown> };
-  const activityId = entry.garminActivityId;
-  const garmin = await deps.garmin();
+  const refuse = (reason: string, journalId = input.journalId): StrictRecoveryResult => ({ status: "refused", reason, journalId, writes: 0 });
+  if (input.confirm !== true) return refuse("a restore must be confirmed explicitly");
+  if (strictHardStopActive()) return refuse("H2G_STRICT_STOP is set: every Garmin write is refused, restores included");
+  const first = await ledger.getJournal(input.journalId);
+  if (!first) return { status: "not_open", reason: "no such journal entry", journalId: input.journalId, writes: 0 };
+  const activityId = first.garminActivityId;
+  const clock = deps.now ?? (() => new Date());
   const owner = deps.owner ?? `restore-${randomUUID()}`;
-
-  // The restore is itself reversible: snapshot the current state first.
-  let current: Record<string, unknown>;
-  let detail: Record<string, unknown> | null;
+  const lock = await ledger.acquireActivityLock({ activityId, owner, purpose: "restore", now: clock(), leaseMs: options.leaseMs ?? DEFAULT_LEASE_MS });
+  if (!lock.ok) return refuse(`activity ${activityId} is locked by a ${lock.heldBy?.purpose ?? "concurrent"} operation`);
   try {
-    current = await garmin.exerciseSets(activityId);
-    detail = await garmin.activityDetail(activityId);
-  } catch (e) {
-    return { status: "failed", reason: `could not read the activity: ${(e as Error).message}`, journalId: entry.id, writes: 0 };
-  }
-  if (!detail) return { status: "failed", reason: "the activity is no longer on Garmin", journalId: entry.id, writes: 0 };
-  const snapshot = {
-    activityId,
-    exerciseSets: (current as { exerciseSets?: unknown }).exerciseSets ?? [],
-    activityName: activityNameOf(detail),
-    description: descriptionOf(detail),
-    preservedMetrics: extractPreservedMetrics(detail),
-  };
-  const pre = await ledger.saveBackup({ garminActivityId: activityId, hevyId: entry.hevyId, kind: "pre_write", payload: snapshot, sha256: sha256Canonical(snapshot) });
-  const reread = await ledger.getBackup(pre.id);
-  if (!reread || reread.sha256 !== sha256Canonical(reread.payload)) {
-    return { status: "failed", reason: "pre-restore backup could not be verified; nothing was written", journalId: entry.id, writes: 0 };
+    return await restoreUnderLock();
+  } finally {
+    await ledger.releaseActivityLock(activityId, owner).catch(() => false);
   }
 
-  const setsPayload = { activityId, exerciseSets: target.exerciseSets };
-  const metaFields: { activityName?: string; description?: string } = {};
-  if (target.activityName != null && target.activityName !== snapshot.activityName) metaFields.activityName = target.activityName;
-  // An original without a description is restored by clearing what strict
-  // mode added (Garmin stores "no description" as empty).
-  if ((target.description ?? "") !== (snapshot.description ?? "")) metaFields.description = target.description ?? "";
+  async function restoreUnderLock(): Promise<StrictRecoveryResult> {
+    const entry = await ledger.getJournal(input.journalId);
+    if (!entry || !["needs_review", "verified"].includes(entry.phase)) {
+      return refuse(`cannot restore from a ${entry?.phase ?? "missing"} entry; reconcile it first`);
+    }
+    const backup = input.source === "original" ? await ledger.getOriginalBackup(activityId) : await ledger.getBackup(entry.backupId);
+    if (!backup || backup.garminActivityId !== activityId || sha256Canonical(backup.payload) !== backup.sha256) {
+      return refuse("backup missing, for another activity, or failed its integrity check", entry.id);
+    }
+    const target = backup.payload as GuardedWriteInput["backupPayload"] & { preservedMetrics: Record<string, unknown> };
+    if (!Array.isArray(target.exerciseSets)) return refuse("backup holds no set list to restore", entry.id);
+    const garmin = await deps.garmin();
 
-  // A restore runs while writes are frozen (that is usually why it is needed),
-  // so it bypasses the freeze check but still journals and verifies.
-  const restoreEntry = await ledger.openJournal({
-    hevyId: entry.hevyId,
-    garminActivityId: activityId,
-    step: "restore",
-    owner,
-    intendedSha256: sha256Canonical(setsPayload),
-    intended: setsPayload,
-    backupId: pre.id,
-    detail: { restoring: backup.id, source: input.source, forJournal: entry.id, metaFields },
-  });
-  await ledger.advanceJournal(restoreEntry.id, ["intent"], "put_sent");
-  let writes = 0;
-  let sendError: string | null = null;
-  const allow = new Set<GarminWriteKind>(["exercise_sets"]);
-  if (Object.keys(metaFields).length) allow.add("metadata");
-  const attempt = async (call: () => Promise<void>) => {
+    // The restore is itself reversible: snapshot the current state first.
+    let current: Record<string, unknown>;
+    let detail: Record<string, unknown> | null;
     try {
-      await call();
-      writes += 1;
+      current = await garmin.exerciseSets(activityId);
+      detail = await garmin.activityDetail(activityId);
     } catch (e) {
-      if (!isStrictModeViolation(e)) writes += 1; // it may have reached Garmin
+      return { status: "failed", reason: `could not read the activity: ${(e as Error).message}`, journalId: entry.id, writes: 0 };
+    }
+    if (!detail) return { status: "failed", reason: "the activity is no longer on Garmin", journalId: entry.id, writes: 0 };
+    if (Number(detail.activityId) !== activityId || Number((current as { activityId?: unknown }).activityId) !== activityId) {
+      return refuse("Garmin's answer does not identify the activity; nothing was written", entry.id);
+    }
+    const missing = missingRequiredMetrics(detail);
+    if (missing.length) return refuse(`activity detail lacks required values (${missing.join(", ")})`, entry.id);
+    const snapshot = {
+      activityId,
+      exerciseSets: (current as { exerciseSets?: unknown }).exerciseSets ?? [],
+      activityName: activityNameOf(detail),
+      description: descriptionOf(detail),
+      preservedMetrics: extractPreservedMetrics(detail),
+    };
+    const pre = await ledger.saveBackup({ garminActivityId: activityId, hevyId: entry.hevyId, kind: "pre_write", payload: snapshot, sha256: sha256Canonical(snapshot) });
+    const reread = await ledger.getBackup(pre.id);
+    if (!reread || reread.sha256 !== sha256Canonical(reread.payload)) {
+      return { status: "failed", reason: "pre-restore backup could not be verified; nothing was written", journalId: entry.id, writes: 0 };
+    }
+
+    const setsPayload = { activityId, exerciseSets: target.exerciseSets };
+    const metaFields: { activityName?: string; description?: string } = {};
+    if (target.activityName != null && target.activityName !== snapshot.activityName) metaFields.activityName = target.activityName;
+    // An original without a description is restored by clearing what strict
+    // mode added (Garmin stores "no description" as empty).
+    if ((target.description ?? "") !== (snapshot.description ?? "")) metaFields.description = target.description ?? "";
+
+    let restoreEntry;
+    try {
+      restoreEntry = await ledger.openJournal({
+        hevyId: entry.hevyId,
+        garminActivityId: activityId,
+        step: "restore",
+        owner,
+        intendedSha256: sha256Canonical(setsPayload),
+        intended: setsPayload,
+        backupId: pre.id,
+        detail: { restoring: backup.id, source: input.source, forJournal: entry.id, metaFields },
+      });
+    } catch (e) {
+      if (isJournalConflict(e)) return refuse((e as Error).message, entry.id);
       throw e;
     }
-  };
-  try {
-    await withGarminWriteCapability({ activityId, allow }, async () => {
-      await attempt(() => garmin.putExerciseSets(activityId, setsPayload as StrictSetsPayload));
-      if (Object.keys(metaFields).length) await attempt(() => garmin.updateActivityMetadata(activityId, metaFields));
-    });
-    await ledger.advanceJournal(restoreEntry.id, ["put_sent"], "put_acknowledged");
-  } catch (e) {
-    sendError = (e as Error).message;
-    await ledger.advanceJournal(restoreEntry.id, ["put_sent"], "uncertain", { error: sendError });
+    // Durable before anything leaves; a refused transition means nothing is sent.
+    if (!(await ledger.advanceJournal(restoreEntry.id, ["intent"], "put_sent"))) {
+      await ledger.advanceJournal(restoreEntry.id, ["intent"], "aborted", { abortedReason: "intent → put_sent was refused" }).catch(() => false);
+      return { status: "failed", reason: "restore journal could not be advanced; nothing was sent", journalId: restoreEntry.id, writes: 0 };
+    }
+    if (strictHardStopActive()) {
+      await ledger.advanceJournal(restoreEntry.id, ["put_sent"], "aborted", { abortedReason: "H2G_STRICT_STOP set before sending" });
+      return refuse("H2G_STRICT_STOP is set: every Garmin write is refused, restores included", restoreEntry.id);
+    }
+
+    let writes = 0;
+    let sendError: string | null = null;
+    let refusedBeforeNetwork = false;
+    const allow = new Set<GarminWriteKind>(["exercise_sets"]);
+    if (Object.keys(metaFields).length) allow.add("metadata");
+    const attempt = async (call: () => Promise<void>) => {
+      try {
+        await call();
+        writes += 1;
+      } catch (e) {
+        if (isStrictModeViolation(e)) refusedBeforeNetwork = writes === 0;
+        else writes += 1; // it may have reached Garmin
+        throw e;
+      }
+    };
+    try {
+      await withGarminWriteCapability({ activityId, allow }, async () => {
+        await attempt(() => garmin.putExerciseSets(activityId, setsPayload as StrictSetsPayload));
+        if (Object.keys(metaFields).length) await attempt(() => garmin.updateActivityMetadata(activityId, metaFields));
+      });
+      if (!(await ledger.advanceJournal(restoreEntry.id, ["put_sent"], "put_acknowledged"))) {
+        await ledger.setFrozen(true, `restore journal ${restoreEntry.id} changed during its write`);
+      }
+    } catch (e) {
+      sendError = (e as Error).message;
+      if (refusedBeforeNetwork) {
+        await ledger.advanceJournal(restoreEntry.id, ["put_sent"], "aborted", { error: sendError });
+        return { status: "failed", reason: sendError, journalId: restoreEntry.id, writes: 0 };
+      }
+      await ledger.advanceJournal(restoreEntry.id, ["put_sent"], "uncertain", { error: sendError });
+    }
+    const out = await verifyJournalEntry(
+      ledger,
+      garmin,
+      restoreEntry.id,
+      specOf("restore", activityId, setsPayload, snapshot, snapshot.preservedMetrics, { metaFields }),
+      deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms))),
+      options.verifyDelayMs ?? STRICT_VERIFY_DELAY_MS,
+      sendError,
+    );
+    if (out.status === "verified") {
+      if (!(await ledger.advanceJournal(entry.id, ["needs_review", "verified"], "restored", { restoredBy: restoreEntry.id, source: input.source }))) {
+        await ledger.setFrozen(true, `journal ${entry.id} changed while it was being restored`);
+        return { status: "needs_review", reason: `journal ${entry.id} changed during the restore; frozen for review`, journalId: restoreEntry.id, writes };
+      }
+      await ledger.setBindingState(entry.hevyId, "needs_review", `restored to the ${input.source} backup by an operator; review before syncing again`);
+      return { status: "restored", reason: null, journalId: restoreEntry.id, writes };
+    }
+    return { status: out.status as StrictRecoveryResult["status"], reason: out.reason, journalId: restoreEntry.id, writes };
   }
-  const out = await verifyJournalEntry(
-    ledger,
-    garmin,
-    restoreEntry.id,
-    specOf("restore", activityId, setsPayload, snapshot, snapshot.preservedMetrics, { metaFields }),
-    deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms))),
-    STRICT_VERIFY_DELAY_MS,
-    sendError,
-  );
-  if (out.status === "verified") {
-    await ledger.advanceJournal(entry.id, ["needs_review", "verified"], "restored", { restoredBy: restoreEntry.id, source: input.source });
-    await ledger.setBindingState(entry.hevyId, "needs_review", `restored to the ${input.source} backup by an operator; review before syncing again`);
-    return { status: "restored", reason: null, journalId: restoreEntry.id, writes };
-  }
-  return { status: out.status as StrictRecoveryResult["status"], reason: out.reason, journalId: restoreEntry.id, writes };
 }
 
 /** Operator closes a reviewed entry. Local only. */

@@ -155,6 +155,17 @@ export const SCHEMA_STATEMENTS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS strict_journal_open ON strict_journal (phase)
      WHERE phase IN ('intent', 'put_sent', 'put_acknowledged', 'uncertain', 'needs_review')`,
   `CREATE INDEX IF NOT EXISTS strict_journal_activity ON strict_journal (garmin_activity_id)`,
+  // One in-flight write per activity, enforced by the database itself.
+  `CREATE UNIQUE INDEX IF NOT EXISTS strict_journal_one_in_flight ON strict_journal (garmin_activity_id)
+     WHERE phase IN ('intent', 'put_sent', 'put_acknowledged', 'uncertain')`,
+  // Sync, restore and reconcile each hold the activity for their whole run.
+  `CREATE TABLE IF NOT EXISTS strict_activity_locks (
+     garmin_activity_id BIGINT PRIMARY KEY,
+     owner TEXT NOT NULL,
+     purpose TEXT NOT NULL CHECK (purpose IN ('sync', 'restore', 'reconcile')),
+     lease_until TIMESTAMPTZ NOT NULL,
+     acquired_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+   )`,
   `CREATE TABLE IF NOT EXISTS strict_control (
      id SMALLINT PRIMARY KEY CHECK (id = 1),
      frozen BOOLEAN NOT NULL DEFAULT FALSE,

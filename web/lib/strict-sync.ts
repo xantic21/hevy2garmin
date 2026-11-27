@@ -18,6 +18,7 @@ import {
   strictWriteBlock,
   firewallStats,
   firewallSelfTest,
+  strictHardStopActive,
   auditDuplicates,
   gatherActivities,
   STRICT_LISTING_LIMIT,
@@ -96,7 +97,8 @@ async function strictOptions(sql: Sql): Promise<Pick<StrictSyncOptions, "customM
  * The DB stop switch (strict_control) is the operator's in-app equivalent.
  */
 export function strictEnvStop(env: Record<string, string | undefined> = process.env): boolean {
-  return /^(1|true|yes|on)$/i.test((env.H2G_STRICT_STOP ?? "").trim());
+  // The engine's definition, so the route check and the network boundary agree.
+  return strictHardStopActive(env);
 }
 
 export async function runStrictSync(sql: Sql, o: StrictRouteOptions): Promise<StrictSyncResult> {
@@ -201,11 +203,23 @@ function recoveryDeps(sql: Sql, garminClientFactory?: () => Promise<GarminClient
 export const strictReconcile = (sql: Sql, journalId: string, f?: () => Promise<GarminClient>, rateLimit?: RateLimitOptions) =>
   reconcileStrictJournal(recoveryDeps(sql, f, rateLimit), journalId);
 
-export const strictRestore = (
+/**
+ * Controlled recovery. The DATABASE stop switch does not block it (recovering
+ * a frozen deployment is its purpose); H2G_STRICT_STOP does, here and again at
+ * the network boundary.
+ */
+export async function strictRestore(
   sql: Sql,
   input: { journalId: string; source: "pre_write" | "original"; confirm: boolean },
   f?: () => Promise<GarminClient>,
-) => restoreStrictBackup(recoveryDeps(sql, f), input);
+  timing?: { verifyDelayMs?: number; rateLimit?: RateLimitOptions },
+) {
+  if (strictEnvStop()) {
+    return { status: "refused" as const, reason: "H2G_STRICT_STOP is set: every Garmin write is refused, restores included", journalId: input.journalId, writes: 0 };
+  }
+  ensureStrictFirewall();
+  return restoreStrictBackup(recoveryDeps(sql, f, timing?.rateLimit), input, { verifyDelayMs: timing?.verifyDelayMs });
+}
 
 export const strictResolve = (sql: Sql, journalId: string, note: string) =>
   resolveStrictJournal(postgresStrictLedger(sql), journalId, note);

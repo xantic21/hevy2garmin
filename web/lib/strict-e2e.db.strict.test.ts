@@ -13,7 +13,8 @@ import { deleteActivity, StrictModeViolation, uploadFit } from "hevy2garmin";
 import type { GarminClient } from "garmin-auth";
 import { SCHEMA_STATEMENTS } from "./schema";
 import type { Sql } from "./pending-store";
-import { ensureStrictFirewall, runStrictSync, strictReconcile, strictStatus } from "./strict-sync";
+import { createScratchDatabase } from "./test-scratch-db";
+import { ensureStrictFirewall, runStrictSync, strictReconcile, strictRestore, strictStatus } from "./strict-sync";
 import { syncOneWorkout } from "./sync-one";
 
 const url = process.env.TEST_DATABASE_URL;
@@ -28,6 +29,7 @@ function garminServer() {
     sets: [] as unknown[],
     calories: 380,
   };
+  const behaviour = { dropNames: false };
   const requests: Array<{ method: string; path: string }> = [];
   const detail = () => ({
     activityId: activity.activityId,
@@ -53,7 +55,10 @@ function garminServer() {
       return json({ activityId: activity.activityId, exerciseSets: activity.sets });
     }
     if (u.pathname === `/activity-service/activity/${activity.activityId}/exerciseSets` && effective === "PUT") {
-      activity.sets = (JSON.parse(String(init?.body)) as { exerciseSets: unknown[] }).exerciseSets;
+      const sent = (JSON.parse(String(init?.body)) as { exerciseSets: Array<Record<string, unknown>> }).exerciseSets;
+      activity.sets = behaviour.dropNames
+        ? sent.map((x) => ({ ...x, exercises: ((x.exercises as Array<Record<string, unknown>>) ?? []).map((e) => ({ ...e, name: null })) }))
+        : sent;
       return new Response(null, { status: 204 });
     }
     if (u.pathname === `/activity-service/activity/${activity.activityId}` && effective === "PUT") {
@@ -64,7 +69,7 @@ function garminServer() {
     }
     return json({ error: "unexpected" }, 500);
   };
-  return { activity, requests, fetchImpl };
+  return { activity, requests, fetchImpl, behaviour };
 }
 
 const client = { domain: "garmin.com", di_token: "t", refreshDiToken: async () => {}, connectapi: async (p: string) => (await fetch(`https://connectapi.garmin.com${p}`)).json() } as unknown as GarminClient;
@@ -87,16 +92,17 @@ describe.skipIf(!url)("strict in-place merge end to end (Postgres + firewall + H
   let server: ReturnType<typeof garminServer>;
   const realFetch = globalThis.fetch;
 
+  let drop: () => Promise<void>;
   beforeAll(async () => {
-    db = postgres(url!, { prepare: false, onnotice: () => {} });
-    const tag = ((s: TemplateStringsArray, ...v: unknown[]) =>
-      (db as unknown as (s: TemplateStringsArray, ...v: unknown[]) => Promise<unknown[]>)(s, ...v).then((r) => Array.from(r))) as unknown as Sql;
-    (tag as unknown as { json: (v: unknown) => unknown }).json = (v: unknown) => db.json(v as never);
-    sql = tag;
+    const scratch = await createScratchDatabase("e2e");
+    db = scratch.db;
+    sql = scratch.sql;
+    drop = scratch.drop;
+
   });
 
   beforeEach(async () => {
-    await db.unsafe("DROP TABLE IF EXISTS strict_bindings, strict_backups, strict_journal, strict_control CASCADE");
+    await db.unsafe("DROP TABLE IF EXISTS strict_bindings, strict_backups, strict_journal, strict_control, strict_activity_locks CASCADE");
     for (const s of SCHEMA_STATEMENTS) await db.unsafe(s);
     await db.unsafe("DELETE FROM synced_workouts WHERE hevy_id LIKE 'e2e-%'");
     server = garminServer();
@@ -106,7 +112,7 @@ describe.skipIf(!url)("strict in-place merge end to end (Postgres + firewall + H
 
   afterAll(async () => {
     globalThis.fetch = realFetch;
-    await db?.end();
+    await drop?.();
   });
 
   const run = (dryRun: boolean) =>
@@ -197,5 +203,45 @@ describe.skipIf(!url)("strict in-place merge end to end (Postgres + firewall + H
     expect(resumed.status).toBe("synced");
     const setPuts = server.requests.filter((q) => q.method === "PUT" && q.path.endsWith("/exerciseSets"));
     expect(setPuts).toHaveLength(1);
+  });
+
+  describe("controlled recovery on Postgres (review round 2)", () => {
+    async function needsReview() {
+      server.behaviour.dropNames = true;
+      const r = await run(false);
+      expect(r.status).toBe("needs_review");
+      server.behaviour.dropNames = false;
+      return r.journalIds[0];
+    }
+    const restore = (journalId: string) =>
+      strictRestore(sql, { journalId, source: "original", confirm: true }, async () => client, { verifyDelayMs: 0, rateLimit: FAST });
+
+    it("H2G_STRICT_STOP refuses the restore; the database freeze alone does not", async () => {
+      const journalId = await needsReview();
+      expect((await strictStatus(sql)).control.frozen).toBe(true);
+      const writesBefore = server.requests.filter((q) => q.method !== "GET").length;
+      process.env.H2G_STRICT_STOP = "1";
+      try {
+        const refused = await restore(journalId);
+        expect(refused).toMatchObject({ status: "refused", writes: 0 });
+      } finally {
+        delete process.env.H2G_STRICT_STOP;
+      }
+      expect(server.requests.filter((q) => q.method !== "GET").length).toBe(writesBefore);
+      const ok = await restore(journalId);
+      expect(ok.status).toBe("restored");
+      expect(server.activity.sets).toEqual([]);
+      expect(server.activity.description).toBe("my own note");
+    });
+
+    it("three concurrent restores: exactly one writes, on real Postgres locks", async () => {
+      const journalId = await needsReview();
+      const before = server.requests.filter((q) => q.method === "PUT" && q.path.endsWith("/exerciseSets")).length;
+      const runs = await Promise.all([1, 2, 3].map(() => restore(journalId)));
+      expect(runs.filter((r) => r.status === "restored")).toHaveLength(1);
+      expect(runs.filter((r) => r.status === "refused")).toHaveLength(2);
+      expect(server.requests.filter((q) => q.method === "PUT" && q.path.endsWith("/exerciseSets")).length - before).toBe(1);
+      expect((await db`SELECT count(*)::int AS n FROM strict_activity_locks`)[0].n).toBe(0);
+    });
   });
 });

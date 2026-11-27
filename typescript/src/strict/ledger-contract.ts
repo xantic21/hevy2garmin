@@ -4,7 +4,7 @@
  * against real Postgres, so the two cannot drift apart. No test framework is
  * imported: a failed expectation throws.
  */
-import type { StrictLedger } from "./ledger";
+import { isJournalConflict, type StrictLedger } from "./ledger";
 
 export interface LedgerContractCase {
   name: string;
@@ -130,6 +130,52 @@ export const STRICT_LEDGER_CONTRACT: LedgerContractCase[] = [
       check(!(await l.listOpenJournal()).some((x) => x.id === e.id), "verified entry is closed");
       check(((await l.getJournal(e.id))?.detail as Record<string, unknown>).note === "ok", "detail merged");
       check((await l.listJournalForActivity(101)).length === 1, "lookup by activity");
+    },
+  },
+  {
+    name: "an activity lock has one holder; it can be extended by its owner and taken over only after expiry",
+    async run(make) {
+      const l = await make();
+      const racers = await Promise.all(
+        (["sync", "restore", "reconcile", "restore", "sync"] as const).map((purpose, i) =>
+          l.acquireActivityLock({ activityId: 77, owner: `o${i}`, purpose, now: T0, leaseMs: 60_000 }),
+        ),
+      );
+      const winners = racers.filter((r) => r.ok);
+      check(winners.length === 1, `expected one lock holder, got ${winners.length}`);
+      const holder = (await l.getActivityLock(77))!;
+      check(racers.filter((r) => !r.ok).every((r) => !r.ok && r.heldBy?.owner === holder.owner), "losers see the holder");
+      check((await l.acquireActivityLock({ activityId: 77, owner: holder.owner, purpose: holder.purpose, now: later(1000), leaseMs: 60_000 })).ok, "owner extends");
+      check(!(await l.releaseActivityLock(77, "intruder")), "only the owner releases");
+      check(!(await l.acquireActivityLock({ activityId: 77, owner: "late", purpose: "sync", now: later(30_000), leaseMs: 60_000 })).ok, "live lease refuses");
+      check((await l.acquireActivityLock({ activityId: 77, owner: "late", purpose: "sync", now: later(120_000), leaseMs: 60_000 })).ok, "expired lease can be taken over");
+      check(await l.releaseActivityLock(77, "late"), "owner releases");
+      check((await l.getActivityLock(77)) === null, "released");
+      check((await l.acquireActivityLock({ activityId: 78, owner: "x", purpose: "restore", now: T0, leaseMs: 60_000 })).ok, "other activities are independent");
+    },
+  },
+  {
+    name: "at most one write in flight per activity, even under concurrency",
+    async run(make) {
+      const l = await make();
+      const base = { hevyId: "h1", garminActivityId: 90, step: "exercise_sets" as const, owner: "A", intendedSha256: H(5), intended: {}, backupId: "b" };
+      const opened = await Promise.allSettled(Array.from({ length: 6 }, (_, i) => l.openJournal({ ...base, owner: `W${i}` })));
+      const ok = opened.filter((r) => r.status === "fulfilled");
+      check(ok.length === 1, `expected one in-flight entry, got ${ok.length}`);
+      check(opened.filter((r) => r.status === "rejected").every((r) => isJournalConflict((r as PromiseRejectedResult).reason)), "losers get a journal conflict");
+      const first = (ok[0] as PromiseFulfilledResult<{ id: string }>).value;
+      await l.advanceJournal(first.id, ["intent"], "put_sent");
+      let blocked = false;
+      try {
+        await l.openJournal(base);
+      } catch (e) {
+        blocked = isJournalConflict(e);
+      }
+      check(blocked, "a put_sent entry still blocks a second write");
+      await l.advanceJournal(first.id, ["put_sent"], "needs_review");
+      const restore = await l.openJournal({ ...base, step: "restore" });
+      check(restore.phase === "intent", "a reviewed (needs_review) entry admits the controlled restore");
+      check((await l.openJournal({ ...base, garminActivityId: 91 })).phase === "intent", "other activities are independent");
     },
   },
   {

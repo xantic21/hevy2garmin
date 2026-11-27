@@ -482,3 +482,230 @@ describe("closed re-audit findings", () => {
     }
   });
 });
+
+describe("review round 2: hard stop, recovery exclusivity, full verification", () => {
+  const withStop = async <T>(fn: () => Promise<T>) => {
+    const prev = process.env.H2G_STRICT_STOP;
+    process.env.H2G_STRICT_STOP = "1";
+    try {
+      return await fn();
+    } finally {
+      if (prev === undefined) delete process.env.H2G_STRICT_STOP;
+      else process.env.H2G_STRICT_STOP = prev;
+    }
+  };
+
+  async function reviewedEntry() {
+    const t = setup();
+    t.garmin.behaviour.put = "apply_dropping_names";
+    const r = await t.run({ dryRun: false });
+    expect(r.status).toBe("needs_review");
+    t.garmin.behaviour.put = "apply";
+    return { t, journalId: r.journalIds[0] };
+  }
+
+  it("1: H2G_STRICT_STOP refuses a restore before anything is read or written", async () => {
+    const { t, journalId } = await reviewedEntry();
+    const before = { writes: t.garmin.writes(), reads: t.garmin.calls.sets };
+    const r = await withStop(() => restoreStrictBackup(t.deps, { journalId, source: "original", confirm: true }));
+    expect(r).toMatchObject({ status: "refused", writes: 0 });
+    expect(r.reason).toMatch(/H2G_STRICT_STOP/);
+    expect(t.garmin.writes()).toBe(before.writes);
+    expect(t.garmin.calls.sets).toBe(before.reads);
+    expect(await t.ledger.getActivityLock(9001)).toBeNull();
+  });
+
+  it("1: H2G_STRICT_STOP refuses a live sync; the database freeze alone still allows the verified restore", async () => {
+    const t = setup();
+    const blocked = await withStop(() => t.run({ dryRun: false }));
+    expect(blocked.status).toBe("blocked");
+    expect(t.garmin.writes()).toBe(0);
+    const { t: t2, journalId } = await reviewedEntry();
+    expect((await t2.ledger.getControl()).frozen).toBe(true);
+    const restored = await restoreStrictBackup(t2.deps, { journalId, source: "original", confirm: true }, { verifyDelayMs: 0 });
+    expect(restored.status).toBe("restored");
+  });
+
+  it("1: the firewall refuses even a capability-scoped write while the hard stop is set", async () => {
+    const { createStrictFetch, withGarminWriteCapability, isStrictModeViolation } = await import("../../src/strict");
+    let network = 0;
+    const f = createStrictFetch((async () => {
+      network += 1;
+      return new Response(null, { status: 204 });
+    }) as typeof fetch);
+    const init = { method: "POST", headers: { "X-HTTP-Method-Override": "PUT" }, body: JSON.stringify({ activityId: 5, exerciseSets: [] }) };
+    const err = await withStop(() =>
+      withGarminWriteCapability({ activityId: 5, allow: new Set(["exercise_sets"]) }, () =>
+        f("https://connectapi.garmin.com/activity-service/activity/5/exerciseSets", init),
+      ).catch((e) => e),
+    );
+    expect(isStrictModeViolation(err)).toBe(true);
+    expect(network).toBe(0);
+  });
+
+  it("2: two concurrent restores of the same entry: exactly one writes", async () => {
+    const { t, journalId } = await reviewedEntry();
+    const before = t.garmin.calls.putSets;
+    const runs = await Promise.all([1, 2, 3].map((i) => restoreStrictBackup({ ...t.deps, owner: `op${i}` }, { journalId, source: "original", confirm: true }, { verifyDelayMs: 0 })));
+    expect(runs.filter((r) => r.status === "restored")).toHaveLength(1);
+    expect(runs.filter((r) => r.status === "refused")).toHaveLength(2);
+    expect(t.garmin.calls.putSets - before).toBe(1);
+  });
+
+  it("2: a restore is refused while a sync holds the activity, and a sync while a restore does", async () => {
+    const { t, journalId } = await reviewedEntry();
+    await t.ledger.acquireActivityLock({ activityId: 9001, owner: "someone-syncing", purpose: "sync", now: NOW, leaseMs: 600_000 });
+    const r = await restoreStrictBackup(t.deps, { journalId, source: "original", confirm: true }, { verifyDelayMs: 0 });
+    expect(r.status).toBe("refused");
+    expect(r.reason).toMatch(/locked by a sync/);
+    await t.ledger.releaseActivityLock(9001, "someone-syncing");
+
+    const t2 = setup();
+    await t2.ledger.acquireActivityLock({ activityId: 9001, owner: "operator", purpose: "restore", now: NOW, leaseMs: 600_000 });
+    const s = await t2.run({ dryRun: false });
+    expect(s.status).toBe("blocked");
+    expect(s.reason).toMatch(/locked by a restore/);
+    expect(t2.garmin.writes()).toBe(0);
+    expect((await t2.ledger.getBindingByHevy("hevy-1"))?.leaseOwner).toBeNull();
+  });
+
+  it("2: reconcile is refused while a restore holds the activity", async () => {
+    const t = setup();
+    t.garmin.behaviour.readback = "throw_after_put";
+    const first = await t.run({ dryRun: false });
+    expect(first.status).toBe("uncertain");
+    t.garmin.behaviour.readback = "ok";
+    await t.ledger.acquireActivityLock({ activityId: 9001, owner: "operator", purpose: "restore", now: NOW, leaseMs: 600_000 });
+    const rec = await reconcileStrictJournal(t.deps, first.journalIds[0]);
+    expect(rec.status).toBe("refused");
+    expect((await t.ledger.getJournal(first.journalIds[0]))?.phase).toBe("uncertain");
+  });
+
+  it("2: a refused intent → put_sent transition means the restore sends nothing", async () => {
+    const { t, journalId } = await reviewedEntry();
+    const ledger = t.ledger;
+    const refusing: StrictLedger = {
+      ...ledger,
+      advanceJournal: async (id, from, to, detail) => (to === "put_sent" ? false : ledger.advanceJournal(id, from, to, detail)),
+    };
+    const before = t.garmin.writes();
+    const r = await restoreStrictBackup({ ...t.deps, ledger: refusing }, { journalId, source: "original", confirm: true }, { verifyDelayMs: 0 });
+    expect(r.status).toBe("failed");
+    expect(t.garmin.writes()).toBe(before);
+    const restoreJournal = (await ledger.listJournalForActivity(9001)).find((e) => e.step === "restore");
+    expect(restoreJournal?.phase).toBe("aborted");
+  });
+
+  it("2: a restore cannot start while another write is in flight on the activity", async () => {
+    const { t, journalId } = await reviewedEntry();
+    const pre = await t.ledger.saveBackup({ garminActivityId: 9001, hevyId: "x", kind: "pre_write", payload: {}, sha256: "" });
+    await t.ledger.openJournal({ hevyId: "x", garminActivityId: 9001, step: "exercise_sets", owner: "w", intendedSha256: "a", intended: {}, backupId: pre.id });
+    const before = t.garmin.writes();
+    const r = await restoreStrictBackup(t.deps, { journalId, source: "original", confirm: true }, { verifyDelayMs: 0 });
+    expect(r.status).toBe("refused");
+    expect(r.reason).toMatch(/already has a write in flight/);
+    expect(t.garmin.writes()).toBe(before);
+  });
+
+  it("2: a crash mid-restore leaves a blocking entry that only read-back closes", async () => {
+    const { t, journalId } = await reviewedEntry();
+    let landed = false;
+    const crashing = { ...t.garmin.port, putExerciseSets: async (id: number, p: never) => {
+      await t.garmin.port.putExerciseSets(id, p);
+      landed = true;
+      throw new Error("process killed");
+    }, exerciseSets: async (id: number) => {
+      if (landed) throw new Error("process killed");
+      return t.garmin.port.exerciseSets(id);
+    } };
+    const r = await restoreStrictBackup({ ...t.deps, garmin: async () => crashing as never }, { journalId, source: "original", confirm: true }, { verifyDelayMs: 0 });
+    expect(r.status).toBe("uncertain");
+    expect(await t.ledger.getActivityLock(9001)).toBeNull();
+    const open = (await t.ledger.listOpenJournal()).find((e) => e.step === "restore");
+    expect(open?.phase).toBe("uncertain");
+    const rec = await reconcileStrictJournal(t.deps, open!.id);
+    expect(rec.status).toBe("verified");
+  });
+
+  it("3: a changed rest duration, a shifted start time or a lost exercise entry is a mismatch", async () => {
+    const { compareSetSequences, buildStrictIntent, encodeStrictPayload } = await import("../../src/strict");
+    const intent = buildStrictIntent(hevyWorkout());
+    const { payload } = encodeStrictPayload(intent, { activityId: 9001, startTimeGMT: "2026-03-10 17:00:00", durationS: 3600 }, null);
+    const read = () => ({ activityId: 9001, exerciseSets: structuredClone(payload.exerciseSets) as Array<Record<string, unknown>> });
+    expect(compareSetSequences(payload, read(), { activityId: 9001 })).toEqual([]);
+
+    const rest = read();
+    const restIdx = rest.exerciseSets.findIndex((s) => s.setType === "REST");
+    rest.exerciseSets[restIdx].duration = Number(rest.exerciseSets[restIdx].duration) + 5;
+    expect(compareSetSequences(payload, rest).map((m) => m.field)).toEqual(["duration"]);
+
+    const shifted = read();
+    shifted.exerciseSets[2].startTime = "2026-03-10T17:05:00.0";
+    expect(compareSetSequences(payload, shifted).map((m) => m.field)).toEqual(["startTime"]);
+
+    const lost = read();
+    (lost.exerciseSets[0].exercises as unknown[]).length = 0;
+    expect(compareSetSequences(payload, lost).map((m) => m.field)).toEqual(["exercises"]);
+
+    const prob = read();
+    ((prob.exerciseSets[0].exercises as Array<Record<string, unknown>>)[0]).probability = 0;
+    expect(compareSetSequences(payload, prob).map((m) => m.field)).toEqual(["probability"]);
+  });
+
+  it("3: missing required values never pass, while an intended null may be absent", async () => {
+    const { compareSetSequences } = await import("../../src/strict");
+    const intended = { exerciseSets: [{ setType: "ACTIVE", startTime: "2026-03-10T17:00:00.0", duration: 30, repetitionCount: 8, weight: null, wktStepIndex: 0, exercises: [{ category: "CURL", name: null, probability: 100 }] }] };
+    const full = { activityId: 1, exerciseSets: [{ setType: "ACTIVE", startTime: "2026-03-10T17:00:00.0", duration: 30, repetitionCount: 8, wktStepIndex: 0, exercises: [{ category: "CURL", probability: 100 }] }] };
+    expect(compareSetSequences(intended, full, { activityId: 1 })).toEqual([]);
+    for (const drop of ["startTime", "duration", "repetitionCount", "wktStepIndex", "setType"]) {
+      const r = structuredClone(full) as { exerciseSets: Array<Record<string, unknown>> };
+      delete r.exerciseSets[0][drop];
+      expect(compareSetSequences(intended, r).length, drop).toBeGreaterThan(0);
+    }
+    expect(compareSetSequences(intended, { exerciseSets: full.exerciseSets }, { activityId: 1 }).map((m) => m.field)).toEqual(["activityId"]);
+    expect(compareSetSequences(intended, { activityId: 1 }, { activityId: 1 }).map((m) => m.field)).toEqual(["count"]);
+  });
+
+  it("3: an activity whose detail lacks a required metric is never written", async () => {
+    const t = setup();
+    const detail = t.garmin.port.activityDetail;
+    t.garmin.port.activityDetail = async (id) => {
+      const d = await detail(id);
+      if (d) delete (d.summaryDTO as Record<string, unknown>).duration;
+      return d;
+    };
+    const r = await t.run({ dryRun: false });
+    expect(r.status).toBe("needs_review");
+    expect(r.reason).toMatch(/summaryDTO.duration/);
+    expect(t.garmin.writes()).toBe(0);
+  });
+
+  it("3: a read-back that names another activity is never a pass", async () => {
+    const t = setup();
+    const sets = t.garmin.port.exerciseSets;
+    let calls = 0;
+    t.garmin.port.exerciseSets = async (id) => {
+      const s = await sets(id);
+      calls += 1;
+      return calls > 1 ? { ...s, activityId: 4242 } : s;
+    };
+    const r = await t.run({ dryRun: false });
+    expect(r.status).toBe("needs_review");
+    expect(r.mismatches?.sets.some((m) => m.field === "activityId")).toBe(true);
+    expect((await t.ledger.getControl()).frozen).toBe(true);
+  });
+
+  it("3: restore fidelity covers the watch's own timing and rests", async () => {
+    const watchSets = [
+      { setType: "ACTIVE", startTime: "2026-03-10T17:01:00.0", duration: 33.5, repetitionCount: 9, weight: 41000, wktStepIndex: 0, messageIndex: 0, exercises: [{ category: "BENCH_PRESS", name: null, probability: 47 }] },
+      { setType: "REST", startTime: "2026-03-10T17:01:33.5", duration: 97.25, wktStepIndex: 0, messageIndex: 1, exercises: [] },
+    ];
+    const t = setup({ activities: [nativeActivity({ sets: watchSets })] });
+    t.garmin.behaviour.put = "apply_dropping_names";
+    const r = await t.run({ dryRun: false });
+    t.garmin.behaviour.put = "apply";
+    const restored = await restoreStrictBackup(t.deps, { journalId: r.journalIds[0], source: "original", confirm: true }, { verifyDelayMs: 0 });
+    expect(restored.status).toBe("restored");
+    expect(t.garmin.state.get(9001)!.sets).toEqual(watchSets);
+  });
+});

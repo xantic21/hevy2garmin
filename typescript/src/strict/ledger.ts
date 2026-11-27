@@ -101,6 +101,35 @@ export interface StrictJournalInput {
   detail?: Record<string, unknown>;
 }
 
+/** Who may act on one Garmin activity right now. One holder at a time, leased. */
+export type LockPurpose = "sync" | "restore" | "reconcile";
+
+export interface ActivityLock {
+  garminActivityId: number;
+  owner: string;
+  purpose: LockPurpose;
+  leaseUntil: string;
+  acquiredAt: string;
+}
+
+export type LockOutcome = { ok: true; lock: ActivityLock } | { ok: false; heldBy: ActivityLock | null };
+
+/** Thrown by openJournal when the activity already has a write in flight. */
+export class JournalConflictError extends Error {
+  readonly code = "STRICT_JOURNAL_CONFLICT";
+  constructor(activityId: number) {
+    super(`activity ${activityId} already has a write in flight; only one at a time`);
+    this.name = "JournalConflictError";
+  }
+}
+
+export function isJournalConflict(e: unknown): boolean {
+  return e instanceof JournalConflictError || (e as { code?: unknown } | null)?.code === "STRICT_JOURNAL_CONFLICT";
+}
+
+/** Phases of a write whose request may still be on its way: at most one per activity. */
+export const IN_FLIGHT_PHASES: ReadonlySet<JournalPhase> = new Set(["intent", "put_sent", "put_acknowledged", "uncertain"]);
+
 export interface StrictControl {
   frozen: boolean;
   reason: string | null;
@@ -140,6 +169,16 @@ export interface StrictLedger {
 
   getControl(): Promise<StrictControl>;
   setFrozen(frozen: boolean, reason: string | null): Promise<void>;
+
+  /**
+   * Atomically take the activity for `owner` (insert, or take over an expired
+   * lease, or extend one's own). Sync, restore and reconcile each hold it for
+   * the whole operation, so they can never interleave on one activity.
+   */
+  acquireActivityLock(input: { activityId: number; owner: string; purpose: LockPurpose; now: Date; leaseMs: number }): Promise<LockOutcome>;
+  /** Release only one's own lock. */
+  releaseActivityLock(activityId: number, owner: string): Promise<boolean>;
+  getActivityLock(activityId: number): Promise<ActivityLock | null>;
 }
 
 const clone = <T>(v: T): T => (v === undefined ? v : JSON.parse(JSON.stringify(v)));
@@ -161,6 +200,7 @@ export function memoryStrictLedger(clock: () => Date = () => new Date()): Strict
   const bindings = new Map<string, StrictBinding>();
   const backups = new Map<string, StrictBackup>();
   const journal = new Map<string, StrictJournalEntry>();
+  const locks = new Map<number, ActivityLock>();
   let control: StrictControl = { frozen: false, reason: null, updatedAt: null };
   let seq = 0;
   const iso = () => clock().toISOString();
@@ -246,6 +286,11 @@ export function memoryStrictLedger(clock: () => Date = () => new Date()): Strict
     },
 
     async openJournal(input) {
+      for (const e of journal.values()) {
+        if (e.garminActivityId === input.garminActivityId && IN_FLIGHT_PHASES.has(e.phase)) {
+          throw new JournalConflictError(input.garminActivityId);
+        }
+      }
       const now = iso();
       const e: StrictJournalEntry = {
         ...clone(input),
@@ -281,6 +326,29 @@ export function memoryStrictLedger(clock: () => Date = () => new Date()): Strict
     },
     async setFrozen(frozen, reason) {
       control = { frozen, reason, updatedAt: iso() };
+    },
+
+    async acquireActivityLock({ activityId, owner, purpose, now, leaseMs }) {
+      const held = locks.get(activityId);
+      if (held && held.owner !== owner && Date.parse(held.leaseUntil) > now.getTime()) return { ok: false, heldBy: clone(held) };
+      const lock: ActivityLock = {
+        garminActivityId: activityId,
+        owner,
+        purpose,
+        leaseUntil: new Date(now.getTime() + leaseMs).toISOString(),
+        acquiredAt: now.toISOString(),
+      };
+      locks.set(activityId, lock);
+      return { ok: true, lock: clone(lock) };
+    },
+    async releaseActivityLock(activityId, owner) {
+      const held = locks.get(activityId);
+      if (!held || held.owner !== owner) return false;
+      locks.delete(activityId);
+      return true;
+    },
+    async getActivityLock(activityId) {
+      return clone(locks.get(activityId) ?? null);
     },
   };
 }

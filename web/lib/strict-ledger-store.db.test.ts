@@ -4,6 +4,7 @@ import { STRICT_LEDGER_CONTRACT } from "hevy2garmin";
 import { SCHEMA_STATEMENTS } from "./schema";
 import { postgresStrictLedger, strictSchemaReady } from "./strict-ledger-store";
 import type { Sql } from "./pending-store";
+import { createScratchDatabase } from "./test-scratch-db";
 
 /**
  * The strict ledger against real Postgres: the same contract the engine's
@@ -19,24 +20,25 @@ describe.skipIf(!url)("postgresStrictLedger (real Postgres)", () => {
   let db: ReturnType<typeof postgres>;
   let sql: Sql;
 
+  let drop: () => Promise<void>;
+
   beforeAll(async () => {
-    db = postgres(url!, { prepare: false, onnotice: () => {} });
+    const scratch = await createScratchDatabase("ledger");
+    db = scratch.db;
+    sql = scratch.sql;
+    drop = scratch.drop;
     for (const s of SCHEMA_STATEMENTS) await db.unsafe(s);
-    const tag = ((strings: TemplateStringsArray, ...values: unknown[]) =>
-      (db as unknown as (s: TemplateStringsArray, ...v: unknown[]) => Promise<unknown[]>)(strings, ...values).then((r) => Array.from(r))) as unknown as Sql;
-    (tag as unknown as { json: (v: unknown) => unknown }).json = (v: unknown) => db.json(v as never);
-    sql = tag;
   });
 
   // Each case starts from empty strict tables. Backups are insert-only, so
   // the test drops and recreates them rather than deleting rows.
   beforeEach(async () => {
-    await db.unsafe("DROP TABLE IF EXISTS strict_bindings, strict_backups, strict_journal, strict_control CASCADE");
+    await db.unsafe("DROP TABLE IF EXISTS strict_bindings, strict_backups, strict_journal, strict_control, strict_activity_locks CASCADE");
     for (const s of SCHEMA_STATEMENTS) await db.unsafe(s);
   });
 
   afterAll(async () => {
-    await db?.end();
+    await drop?.();
   });
 
   for (const c of STRICT_LEDGER_CONTRACT) {
@@ -59,12 +61,25 @@ describe.skipIf(!url)("postgresStrictLedger (real Postgres)", () => {
     await expect(db.unsafe(`INSERT INTO strict_bindings (hevy_id, garmin_activity_id, state) VALUES ('c', 3, 'bogus')`)).rejects.toThrow(/check/i);
   });
 
+  it("allows only one in-flight write per activity at the database, whatever the code does", async () => {
+    const ins = (id: string, phase: string) =>
+      db.unsafe(`INSERT INTO strict_journal (hevy_id, garmin_activity_id, step, phase, owner, intended_sha256, intended, backup_id)
+                 VALUES ('${id}', 500, 'exercise_sets', '${phase}', 'o', 'x', '{}', 'b')`);
+    await ins("a", "put_sent");
+    await expect(ins("b", "intent")).rejects.toThrow(/strict_journal_one_in_flight/);
+    await expect(ins("c", "uncertain")).rejects.toThrow(/strict_journal_one_in_flight/);
+    await ins("d", "needs_review");
+    await ins("e", "verified");
+  });
+
   it("reports readiness, and not-ready when the insert-only trigger is missing", async () => {
     expect(await strictSchemaReady(sql)).toEqual({ ready: true, missing: [] });
     await db.unsafe("DROP TRIGGER strict_backups_insert_only ON strict_backups");
     const r = await strictSchemaReady(sql);
     expect(r.ready).toBe(false);
     expect(r.missing).toContain("trigger strict_backups_insert_only");
+    await db.unsafe("DROP INDEX strict_journal_one_in_flight");
+    expect((await strictSchemaReady(sql)).missing).toContain("index strict_journal_one_in_flight");
   });
 
   it("running the schema twice changes nothing (idempotent bootstrap)", async () => {

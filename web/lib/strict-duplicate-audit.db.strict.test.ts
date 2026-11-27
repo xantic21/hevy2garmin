@@ -8,6 +8,7 @@ import postgres from "postgres";
 import type { GarminClient } from "garmin-auth";
 import { SCHEMA_STATEMENTS } from "./schema";
 import type { Sql } from "./pending-store";
+import { createScratchDatabase } from "./test-scratch-db";
 import { ensureStrictFirewall, strictDuplicateAudit } from "./strict-sync";
 
 const url = process.env.TEST_DATABASE_URL;
@@ -18,13 +19,13 @@ describe.skipIf(!url)("strict duplicate audit (read-only, Postgres + firewall)",
   const realFetch = globalThis.fetch;
   const requests: string[] = [];
 
+  let drop: () => Promise<void>;
   beforeAll(async () => {
-    db = postgres(url!, { prepare: false, onnotice: () => {} });
+    const scratch = await createScratchDatabase("audit");
+    db = scratch.db;
+    sql = scratch.sql;
+    drop = scratch.drop;
     for (const s of SCHEMA_STATEMENTS) await db.unsafe(s);
-    const tag = ((s: TemplateStringsArray, ...v: unknown[]) =>
-      (db as unknown as (s: TemplateStringsArray, ...v: unknown[]) => Promise<unknown[]>)(s, ...v).then((r) => Array.from(r))) as unknown as Sql;
-    (tag as unknown as { json: (v: unknown) => unknown }).json = (v: unknown) => db.json(v as never);
-    sql = tag;
     await db.unsafe("DELETE FROM synced_workouts WHERE hevy_id LIKE 'dup-%'");
     await db.unsafe("INSERT INTO synced_workouts (hevy_id, garmin_activity_id, status, sync_method) VALUES ('dup-1', '501', 'success', 'upload')");
     globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
@@ -43,7 +44,7 @@ describe.skipIf(!url)("strict duplicate audit (read-only, Postgres + firewall)",
   afterAll(async () => {
     globalThis.fetch = realFetch;
     await db.unsafe("DELETE FROM synced_workouts WHERE hevy_id LIKE 'dup-%'");
-    await db?.end();
+    await drop?.();
   });
 
   it("reports the duplicate pair with exact ids and changes nothing", async () => {
