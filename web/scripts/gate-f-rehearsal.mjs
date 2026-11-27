@@ -99,33 +99,47 @@ async function main() {
   check("nothing written so far", (await putsOf()).length === 0, await putsOf());
 
   const preview = await gateF({ action: "preview" });
+  const planSha256 = preview.data?.result?.plan?.planSha256;
   check("preview plans exactly the authorized pair, no write",
-    preview.data?.result?.status === "dry_run" && preview.data?.result?.plan?.activityId === auth.activityId && (await putsOf()).length === 0,
+    preview.data?.result?.status === "dry_run" && preview.data?.result?.plan?.activityId === auth.activityId && /^[0-9a-f]{64}$/.test(String(planSha256)) && (await putsOf()).length === 0,
     preview.data);
   for (const wrong of ["", "GATE-F", `GATE-F ${auth.hevyId}`, `gate-f ${auth.hevyId} ${auth.activityId}`, `GATE-F ${auth.hevyId} ${auth.activityId + 1}`]) {
-    const r = await gateF({ action: "run", confirm: wrong });
+    const r = await gateF({ action: "run", confirm: wrong, planSha256 });
     check(`run refused without the exact confirmation (${JSON.stringify(wrong)})`, /type exactly/.test(String(r.data?.refused)), r.data);
   }
+  const noPlan = await gateF({ action: "run", confirm: confirmation });
+  check("run refused without the previewed plan", /preview first/.test(String(noPlan.data?.refused)), noPlan.data);
+  const otherPlan = await gateF({ action: "run", confirm: confirmation, planSha256: "f".repeat(64) });
+  check("run with another plan writes nothing", otherPlan.data?.result?.status === "blocked" && /plan differs/.test(String(otherPlan.data?.result?.reason)), otherPlan.data);
+  // Cross-site requests: another origin, or a body that is not JSON.
+  const foreign = await call("POST", "/api/strict/gate-f", { action: "run", confirm: confirmation, planSha256 }, { origin: "http://localhost:1" });
+  check("a request from another origin is refused (403)", foreign.status === 403, foreign);
+  const plain = await fetch(`${base}/api/strict/gate-f`, {
+    method: "POST",
+    headers: { cookie, "content-type": "text/plain", ...(process.env.H2G_REHEARSAL_BYPASS ? { "x-vercel-protection-bypass": process.env.H2G_REHEARSAL_BYPASS } : {}) },
+    body: JSON.stringify({ action: "run", confirm: confirmation, planSha256 }),
+  });
+  check("a non-JSON body is refused (415)", plain.status === 415, plain.status);
   check("still nothing written", (await putsOf()).length === 0, await putsOf());
 
-  const runOut = await gateF({ action: "run", confirm: confirmation });
+  const runOut = await gateF({ action: "run", confirm: confirmation, planSha256 });
   check("the one run: synced and verified", runOut.data?.result?.status === "synced" && runOut.data?.record?.state === "done", runOut.data);
-  const again = await gateF({ action: "run", confirm: confirmation });
+  const again = await gateF({ action: "run", confirm: confirmation, planSha256 });
   check("a second run is refused", /already run/.test(String(again.data?.refused)), again.data);
 
   const ev = await gateF({ action: "evidence" });
   const c = ev.data?.bundle?.comparisons ?? {};
   check("evidence: SHA-256 over the bundle", /^[0-9a-f]{64}$/.test(String(ev.data?.bundleSha256)), ev.data?.bundleSha256);
-  check("evidence: original backup intact, sets as intended, native metrics unchanged, same activity",
-    ev.data?.bundle?.before?.intact === true && Array.isArray(c.setsAgainstIntended) && c.setsAgainstIntended.length === 0 && Array.isArray(c.preservedMetrics) && c.preservedMetrics.length === 0 && c.activityIdUnchanged === true,
-    c);
+  check("evidence verdict: merged and OK (backup and journal intact, sets, name and description as written, native metrics unchanged)",
+    ev.data?.bundle?.verdict?.expected === "merged" && ev.data?.bundle?.verdict?.ok === true && ev.data?.bundle?.before?.intact === true && c.activityIdConfirmed === true,
+    ev.data?.bundle?.verdict);
 
   const journalId = ev.data?.bundle?.intended?.journalId;
   const restore = await call("POST", "/api/strict/restore", { journalId, source: "original", confirm: `RESTORE ${journalId}` });
   check("restore of the original → restored", restore.data?.result?.status === "restored", restore.data);
   const ev2 = await gateF({ action: "evidence" });
-  check("after the restore the activity equals the original backup", Array.isArray(ev2.data?.bundle?.comparisons?.setsAgainstOriginal) && ev2.data.bundle.comparisons.setsAgainstOriginal.length === 0, ev2.data?.bundle?.comparisons);
-  const after = await gateF({ action: "run", confirm: confirmation });
+  check("after the restore the verdict is original and OK", ev2.data?.bundle?.verdict?.expected === "original" && ev2.data?.bundle?.verdict?.ok === true, ev2.data?.bundle?.verdict);
+  const after = await gateF({ action: "run", confirm: confirmation, planSha256 });
   check("restored is no licence to merge again", /already run/.test(String(after.data?.refused)), after.data);
 
   const evidence = (await call("GET", "/api/staging/status")).data?.staging ?? {};

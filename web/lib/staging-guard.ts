@@ -13,7 +13,7 @@
  */
 import { STAGING_MARKER_KEY, StagingIsolationError } from "./staging-mode";
 
-type Client = {
+export type Client = {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   unsafe: (text: string, params?: any[]) => PromiseLike<unknown>;
 };
@@ -21,7 +21,7 @@ type Client = {
 export const STAGING_TABLES = ["staging_hevy_workouts", "staging_garmin_activities", "staging_requests"] as const;
 
 /** Every table of the app (web/lib/schema.ts and the strict ledger). */
-const USER_TABLES = [
+export const USER_TABLES = [
   "synced_workouts", "sync_log", "hr_cache", "pending_uploads", "platform_credentials", "custom_mappings", "app_cache",
   "synced_routines", "routine_schedules", "strict_bindings", "strict_backups", "strict_journal", "strict_control", "strict_activity_locks",
   "strict_gate_f",
@@ -57,7 +57,7 @@ let checked: Promise<void> | null = null;
 
 const rowsOf = (r: unknown) => Array.from(r as ArrayLike<Record<string, unknown>>);
 
-async function count(client: Client, table: string, where = ""): Promise<number> {
+export async function count(client: Client, table: string, where = ""): Promise<number> {
   const [reg] = rowsOf(await client.unsafe(`SELECT to_regclass($1) AS r`, [`public.${table}`]));
   if (!reg?.r) return 0;
   const [row] = rowsOf(await client.unsafe(`SELECT count(*)::int AS n FROM ${table} ${where}`));

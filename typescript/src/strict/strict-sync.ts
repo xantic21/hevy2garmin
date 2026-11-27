@@ -128,6 +128,12 @@ export interface StrictSyncOptions {
    * into exactly that activity; anything else is refused before it is written.
    */
   pin?: StrictPin;
+  /**
+   * The plan the owner previewed (`StrictPlan.planSha256`). A live run whose
+   * plan differs (other mappings, settings, Hevy edits, watch data) is refused
+   * before anything is written. Required for a live pinned run.
+   */
+  expectPlanSha256?: string;
 }
 
 /** Gate F authorization: exactly one Hevy workout and one native Garmin activity. */
@@ -137,13 +143,17 @@ export interface StrictPin {
 }
 
 /** Why a pinned call may not run at all (checked before any IO), or null. */
-export function strictPinRefusal(pin: StrictPin, call: { trigger: StrictTrigger; targetHevyId?: string; resync?: boolean }): string | null {
+export function strictPinRefusal(
+  pin: StrictPin,
+  call: { trigger: StrictTrigger; targetHevyId?: string; resync?: boolean; dryRun?: boolean; expectPlanSha256?: string },
+): string | null {
   if (typeof pin.hevyId !== "string" || !pin.hevyId || !Number.isSafeInteger(pin.activityId) || pin.activityId <= 0) {
     return "gate F: the authorization is malformed";
   }
   if (call.trigger !== "manual") return `gate F: only a manual sync of the authorized workout may run (not ${call.trigger})`;
   if (call.targetHevyId !== pin.hevyId) return `gate F: only workout ${pin.hevyId} is authorized`;
   if (call.resync) return "gate F: a resync is not part of the authorization";
+  if (call.dryRun === false && !/^[0-9a-f]{64}$/.test(call.expectPlanSha256 ?? "")) return "gate F: a live run needs the plan from the preview";
   return null;
 }
 
@@ -167,6 +177,8 @@ export interface StrictPlan {
   rename: string | null;
   descriptionChange: boolean;
   intendedSha256: string;
+  /** Everything this run would write (sets payload, new name, new description), hashed. */
+  planSha256: string;
 }
 
 export interface StrictSyncResult {
@@ -270,7 +282,13 @@ export async function strictInPlaceSync(deps: StrictSyncDeps, options: StrictSyn
     return result({ ...base, status: "blocked", reason: "a resync needs an explicit workout id" });
   }
   if (options.pin) {
-    const refused = strictPinRefusal(options.pin, { trigger, targetHevyId: options.targetHevyId, resync: options.resync });
+    const refused = strictPinRefusal(options.pin, {
+      trigger,
+      targetHevyId: options.targetHevyId,
+      resync: options.resync,
+      dryRun,
+      expectPlanSha256: options.expectPlanSha256,
+    });
     if (refused) return result({ ...base, status: "blocked", hevyId: options.targetHevyId ?? null, reason: refused });
   }
 
@@ -446,6 +464,7 @@ export async function strictInPlaceSync(deps: StrictSyncDeps, options: StrictSyn
     rename: newName,
     descriptionChange: newDescription !== null,
     intendedSha256,
+    planSha256: sha256Canonical({ activityId, sets: payload, name: newName, description: newDescription }),
   };
 
   if (dryRun) {
@@ -455,6 +474,15 @@ export async function strictInPlaceSync(deps: StrictSyncDeps, options: StrictSyn
   // ---- LIVE ----
   if (strictHardStopActive()) {
     return result({ ...actBase, issues, plan, status: "blocked", reason: "H2G_STRICT_STOP is set: every Garmin write is refused" });
+  }
+  if (options.expectPlanSha256 !== undefined && options.expectPlanSha256 !== plan.planSha256) {
+    return result({
+      ...actBase,
+      issues,
+      plan,
+      status: "blocked",
+      reason: "the plan differs from the previewed one (mappings, settings, the Hevy workout or the watch data changed); nothing was written: preview again",
+    });
   }
   await abortStaleIntents(ledger, now, leaseMs);
   const claim = await ledger.claimBinding({ hevyId, activityId, owner, now: clock(), leaseMs });

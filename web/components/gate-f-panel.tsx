@@ -51,6 +51,8 @@ export function GateFPanel() {
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const [typed, setTyped] = useState("");
+  // The plan the preview showed; the run is bound to it and refused if anything changed since.
+  const [plan, setPlan] = useState<{ sha256: string; summary: string } | null>(null);
 
   const load = useCallback(
     () =>
@@ -102,19 +104,30 @@ export function GateFPanel() {
     act("preview", async () => {
       const d = await call({ action: "preview" });
       if (d.refused) return `Refused: ${String(d.refused)}`;
-      const r = d.result as { status: string; reason: string | null; activityId: number | null; plan: { activeSets: number; timingSource: string; rename: string | null } | null };
-      return r.plan
-        ? `Preview: activity ${r.activityId}, ${r.plan.activeSets} sets (${r.plan.timingSource} timing)${r.plan.rename ? `, name "${r.plan.rename}"` : ""}. Nothing was written.`
-        : `Preview: ${r.status}${r.reason ? ` (${r.reason})` : ""}. Nothing was written.`;
+      const r = d.result as {
+        status: string;
+        reason: string | null;
+        activityId: number | null;
+        plan: { activeSets: number; timingSource: string; rename: string | null; descriptionChange: boolean; planSha256: string } | null;
+      };
+      if (!r.plan || r.status !== "dry_run") {
+        setPlan(null);
+        return `Preview: ${r.status}${r.reason ? ` (${r.reason})` : ""}. Nothing was written.`;
+      }
+      const summary = `activity ${r.activityId}, ${r.plan.activeSets} sets (${r.plan.timingSource} timing)${r.plan.rename ? `, name "${r.plan.rename}"` : ""}${r.plan.descriptionChange ? ", description updated" : ""}`;
+      setPlan({ sha256: r.plan.planSha256, summary });
+      return `Preview: ${summary}. Plan ${r.plan.planSha256.slice(0, 12)}…. Nothing was written.`;
     });
 
   const run = () =>
     act("run", async () => {
-      const d = await call({ action: "run", confirm: typed });
+      const d = await call({ action: "run", confirm: typed, planSha256: plan?.sha256 });
       setTyped("");
+      setPlan(null);
       if (d.refused) return `Refused: ${String(d.refused)}`;
       const r = d.result as { status: string; reason: string | null; writes: number };
-      return `Gate F run: ${r.status}${r.reason ? ` (${r.reason})` : ""}; ${r.writes} Garmin write(s). Download the evidence next.`;
+      const warning = d.warning ? ` WARNING: ${String(d.warning)}` : "";
+      return `Gate F run: ${r.status}${r.reason ? ` (${r.reason})` : ""}; ${r.writes} Garmin write(s). Download the evidence next.${warning}`;
     });
 
   const evidence = () =>
@@ -128,7 +141,9 @@ export function GateFPanel() {
       link.download = `gate-f-evidence-${a.activityId}.json`;
       link.click();
       URL.revokeObjectURL(url);
-      return `Evidence downloaded (SHA-256 ${String(d.bundleSha256).slice(0, 16)}…). Read-only: nothing was written.`;
+      const v = (d.bundle as { verdict?: { expected: string; ok: boolean; checks: Record<string, string> } }).verdict;
+      const failed = v ? Object.entries(v.checks).filter(([, c]) => c !== "passed").map(([k, c]) => `${k}: ${c}`) : [];
+      return `Evidence downloaded (SHA-256 ${String(d.bundleSha256).slice(0, 16)}…): ${v?.ok ? `verdict OK (${v.expected})` : `verdict NOT OK (${v?.expected ?? "?"}${failed.length ? `; ${failed.join(", ")}` : ""})`}. Nothing was written.`;
     });
 
   return (
@@ -159,14 +174,15 @@ export function GateFPanel() {
           disabled={!ready || busy !== null}
           aria-label="Gate F confirmation"
         />
-        <button type="button" className="oui-button oui-button-primary" disabled={!ready || busy !== null || typed !== s.confirmation} onClick={run}>
+        <button type="button" className="oui-button oui-button-primary" disabled={!ready || busy !== null || !plan || typed !== s.confirmation} onClick={run}>
           {busy === "run" ? "Merging…" : "2 · Run gate F"}
         </button>
         <button type="button" className="oui-button oui-button-tonal" disabled={busy !== null} onClick={evidence}>
           {busy === "evidence" ? "Reading…" : "3 · Evidence"}
         </button>
       </div>
-      {message && <p className={`mt-3 text-sm ${message.kind === "ok" ? "text-text-primary" : "text-danger"}`}>{message.text}</p>}
+      {plan && <p className="text-sm text-text-secondary">The run is bound to this preview: {plan.summary}. Anything that changes the plan before you run refuses the run.</p>}
+      {message && <p className={`text-sm ${message.kind === "ok" ? "text-text" : "text-danger"}`}>{message.text}</p>}
     </section>
   );
 }

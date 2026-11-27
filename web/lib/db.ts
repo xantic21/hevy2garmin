@@ -3,6 +3,8 @@ import { ensureSchema, SCHEMA_STATEMENTS } from "./schema";
 import { resolveDatabaseUrl, DATABASE_URL_HINT } from "./database-url";
 import { stagingMode } from "./staging-mode";
 import { ensureStagingDatabase, STAGING_SCHEMA } from "./staging-guard";
+import { ensureGateFDatabase } from "./gate-f-guard";
+import { gateFState } from "./gate-f";
 
 /**
  * Tagged-template SQL function matching the @neondatabase/serverless shape
@@ -44,7 +46,13 @@ export function getDb(): SqlTag {
   // write on a fresh database cannot outrun the CREATE TABLE statements.
   // Synthetic staging: the database guard runs first, before even the additive
   // bootstrap, and a refusal fails every query (lib/staging-guard.ts).
-  const ready = () => (stagingMode() ? ensureStagingDatabase(client, () => ensureSchema(client)) : ensureSchema(client));
+  // A real gate F (lib/gate-f.ts) accepts only its own new, empty database, checked the same way (lib/gate-f-guard.ts).
+  const ready = () => {
+    if (stagingMode()) return ensureStagingDatabase(client, () => ensureSchema(client));
+    const gate = gateFState();
+    if (gate.requested && gate.ok && !gate.auth.synthetic) return ensureGateFDatabase(client, () => ensureSchema(client), gate.auth);
+    return ensureSchema(client);
+  };
   const tag = ((strings: TemplateStringsArray, ...values: unknown[]) =>
     ready()
       .then(() => (client as unknown as (s: TemplateStringsArray, ...v: unknown[]) => Promise<unknown[]>)(strings, ...values))

@@ -3,7 +3,7 @@
  * Every rule of lib/gate-f.ts as a positive and a negative case.
  */
 import { describe, expect, it } from "vitest";
-import { GATE_F_FORBIDDEN_ENV, GATE_F_MAX_WINDOW_MS, gateFLockedPath, gateFMode, gateFState } from "./gate-f";
+import { GATE_F_FORBIDDEN_ENV, GATE_F_MAX_WINDOW_MS, gateFLockedPath, gateFMode, gateFState, strictIsoMs } from "./gate-f";
 import { quarantineViolation } from "./deploy-quarantine";
 import { gateFRecoveryPin, gateFSyncRefusal } from "./strict-sync";
 
@@ -85,6 +85,27 @@ describe("gate F authorization", () => {
     expect(error({ ...REAL, H2G_GATE_F_EXPIRES: new Date(NOW.getTime() + GATE_F_MAX_WINDOW_MS).toISOString() })).toBeNull();
   });
 
+  for (const exp of ["2026-11-31T12:00:00Z", "2026-02-29T12:00:00Z", "2026-12-02T24:00:00Z", "2026-12-02T10:60:00Z", "2026-12-02T10:00:00+23:59", "2026-12-02T10:00:00+14:01", "2026-12-02T10:00:00+01:60"]) {
+    it(`refuses an impossible date or offset (${exp}) instead of rolling it over (re-audit #3, F4)`, () => {
+      expect(Number.isNaN(strictIsoMs(exp))).toBe(true);
+      expect(error({ ...REAL, H2G_GATE_F_EXPIRES: exp })).toMatch(/ISO-8601/);
+    });
+  }
+
+  it("accepts real dates and offsets up to ±14:00", () => {
+    for (const exp of ["2026-12-02T10:00:00Z", "2026-12-02T10:00Z", "2026-12-02T10:00:00.123Z", "2026-12-02T10:00:00+14:00", "2026-12-02T10:00:00-12:00", "2028-02-29T10:00:00Z"]) {
+      expect(Number.isFinite(strictIsoMs(exp)), exp).toBe(true);
+    }
+  });
+
+  for (const k of ["VERCEL_URL", "VERCEL_REGION", "AWS_LAMBDA_FUNCTION_NAME", "LAMBDA_TASK_ROOT", "AWS_EXECUTION_ENV", "NETLIFY", "RENDER", "FLY_APP_NAME", "K_SERVICE", "DYNO"]) {
+    it(`a real gate F refuses a hosting platform (${k} set; re-audit #3, F5)`, () => {
+      expect(error({ ...REAL, [k]: "x" })).toMatch(/owner's own computer/);
+      // A synthetic rehearsal inside staging may run on a hosted preview.
+      expect(error({ ...SYN, [k]: "x" })).toBeNull();
+    });
+  }
+
   it("an expired authorization stays valid but expired (readable, recovery only)", () => {
     expect(gateFState({ ...REAL, H2G_GATE_F_EXPIRES: inHours(-1) }, NOW)).toMatchObject({ ok: true, expired: true });
   });
@@ -114,7 +135,7 @@ describe("gate F in the runtime quarantine", () => {
   it("a real gate F runs only off Vercel", () => {
     expect(quarantineViolation(REAL, NOW)).toBeNull();
     for (const v of [{ VERCEL_ENV: "production" }, { VERCEL_ENV: "preview" }, { VERCEL_ENV: "development" }, { VERCEL: "1" }]) {
-      expect(quarantineViolation({ ...REAL, ...v }, NOW), JSON.stringify(v)).toMatch(/owner's own machine/);
+      expect(quarantineViolation({ ...REAL, ...v }, NOW), JSON.stringify(v)).toMatch(/owner's own (machine|computer)/);
     }
   });
 

@@ -78,7 +78,14 @@ describe.skipIf(!url)("gate F: one authorized activity, end to end", { timeout: 
     (activityId === undefined
       ? await raw`SELECT count(*)::int AS n FROM staging_requests WHERE method = 'PUT'`
       : await raw`SELECT count(*)::int AS n FROM staging_requests WHERE method = 'PUT' AND path LIKE ${`%/${activityId}%`}`)[0].n as number;
-  const run = (confirm = "GATE-F syn-legs 9100001") => m.gate.gateFRun(sql(), confirm, SEAMS);
+  /** The plan the preview shows (a placeholder when the preview offers none, e.g. a wrong activity). */
+  const planOf = async () => {
+    const p = await m.gate.gateFPreview(sql(), SEAMS);
+    return ("result" in p && p.result.plan?.planSha256) || "0".repeat(64);
+  };
+  /** What the panel does: preview, then run bound to that plan. */
+  const run = async (confirm: unknown = "GATE-F syn-legs 9100001", planSha256?: string) =>
+    m.gate.gateFRun(sql(), { confirm, planSha256: planSha256 ?? (await planOf()) }, SEAMS);
   const record = async () => (await raw`SELECT * FROM strict_gate_f WHERE id = 'gate_f'`)[0] as Record<string, unknown> | undefined;
 
   it("status names the authorization and every safeguard; no record before the first run", async () => {
@@ -110,8 +117,8 @@ describe.skipIf(!url)("gate F: one authorized activity, end to end", { timeout: 
   });
 
   it("the run needs the exact confirmation; a wrong one claims nothing and writes nothing", async () => {
-    expect(await m.gate.gateFRun(sql(), undefined, SEAMS)).toMatchObject({ refused: expect.stringMatching(/type exactly/) });
-    expect(await m.gate.gateFRun(sql(), { toString: () => "GATE-F syn-legs 9100001" }, SEAMS)).toMatchObject({ refused: expect.stringMatching(/type exactly/) });
+    expect(await m.gate.gateFRun(sql(), { confirm: undefined, planSha256: await planOf() }, SEAMS)).toMatchObject({ refused: expect.stringMatching(/type exactly/) });
+    expect(await run({ toString: () => "GATE-F syn-legs 9100001" })).toMatchObject({ refused: expect.stringMatching(/type exactly/) });
     for (const c of ["", "GATE-F syn-legs", "gate-f syn-legs 9100001", "GATE-F syn-legs 9100002", "GATE-F syn-pull 9100001", " GATE-F syn-legs 9100001"]) {
       expect(await run(c)).toMatchObject({ refused: expect.stringMatching(/type exactly/) });
     }
@@ -143,7 +150,8 @@ describe.skipIf(!url)("gate F: one authorized activity, end to end", { timeout: 
     expect(ev.bundleSha256).toMatch(/^[0-9a-f]{64}$/);
     expect(bundle.before).toMatchObject({ intact: true });
     expect(bundle.intended).toMatchObject({ phase: "verified" });
-    expect(bundle.comparisons).toMatchObject({ activityIdUnchanged: true, setsAgainstIntended: [], preservedMetrics: [] });
+    expect(bundle.comparisons).toMatchObject({ activityIdConfirmed: true, setsAgainstIntended: [], preservedMetrics: [], metadataAgainstIntended: [], integrity: [] });
+    expect(bundle.verdict).toMatchObject({ expected: "merged", ok: true });
     expect((bundle.comparisons.setsAgainstOriginal ?? []).length).toBeGreaterThan(0);
 
     const journalId = bundle.intended!.journalId;
@@ -230,7 +238,7 @@ describe.skipIf(!url)("gate F: one authorized activity, end to end", { timeout: 
 
   it("a record taken over during the run freezes all writes", async () => {
     const hevy = await import("./hevy-sync");
-    const out = await m.gate.gateFRun(sql(), "GATE-F syn-legs 9100001", {
+    const out = await m.gate.gateFRun(sql(), { confirm: "GATE-F syn-legs 9100001", planSha256: await planOf() }, {
       ...SEAMS,
       fetchWorkouts: async () => {
         await raw`UPDATE strict_gate_f SET run_owner = 'intruder'`;
@@ -238,6 +246,67 @@ describe.skipIf(!url)("gate F: one authorized activity, end to end", { timeout: 
       },
     });
     expect("result" in out).toBe(true);
+    expect("warning" in out && out.warning).toMatch(/frozen/);
     expect((await raw`SELECT frozen FROM strict_control WHERE id = 1`)[0]?.frozen).toBe(true);
   });
+
+  // ---- independent re-audit #3 ----
+
+  it("F1: after gate F the database stays locked once the authorization is removed (sync, batch, cron, restore); gate G unlocks", async () => {
+    const out = await run();
+    expect("result" in out && out.result.status).toBe("synced");
+    const merged = await puts();
+    deauthorize();
+    const live = (hevyId: string) => m.sync.runStrictSync(sql(), { dryRun: false, trigger: "manual", targetHevyId: hevyId, ...SEAMS });
+    expect(await live("syn-core")).toMatchObject({ status: "blocked", reason: expect.stringMatching(/holds the gate F record/) });
+    expect(await m.sync.runStrictSync(sql(), { dryRun: false, trigger: "batch", ...SEAMS })).toMatchObject({ status: "blocked" });
+    const journalId = ("result" in out && out.result.journalIds[0]) as string;
+    expect(await m.sync.strictRestore(sql(), { journalId, source: "original", confirm: true }, undefined, { verifyDelayMs: 0, rateLimit: FAST })).toMatchObject({ status: "refused" });
+    // Reading stays possible.
+    expect((await m.sync.runStrictSync(sql(), { dryRun: true, trigger: "manual", targetHevyId: "syn-core", ...SEAMS })).status).toBe("dry_run");
+    expect(await puts()).toBe(merged);
+    // All four variables blank counts as "not set": still locked.
+    for (const k of ["H2G_GATE_F", "H2G_GATE_F_HEVY_ID", "H2G_GATE_F_GARMIN_ACTIVITY_ID", "H2G_GATE_F_EXPIRES"]) vi.stubEnv(k, "   ");
+    expect((await live("syn-core")).status).toBe("blocked");
+    // The gate G cutover is the one switch that lifts it.
+    vi.stubEnv("H2G_PRODUCTION_CUTOVER", "approved-by-owner");
+    try {
+      expect((await live("syn-core")).status).toBe("synced");
+    } finally {
+      vi.stubEnv("H2G_PRODUCTION_CUTOVER", "");
+    }
+  });
+
+  it("F2: the run is bound to the previewed plan: none, a wrong one, or a mapping changed after the preview writes nothing", async () => {
+    expect(await m.gate.gateFRun(sql(), { confirm: "GATE-F syn-legs 9100001", planSha256: undefined }, SEAMS)).toMatchObject({ refused: expect.stringMatching(/preview first/) });
+    expect(await record()).toBeUndefined();
+    const wrong = await run(undefined, "f".repeat(64));
+    expect("result" in wrong && wrong.result).toMatchObject({ status: "blocked", reason: expect.stringMatching(/plan differs/) });
+    expect(await record()).toMatchObject({ state: "armed" });
+    const previewed = await planOf();
+    // Squat remapped to a bench press (FIT category 0, subcategory 1) after the preview.
+    await raw`INSERT INTO custom_mappings (hevy_name, category, subcategory) VALUES ('Squat (Barbell)', 0, 1)
+              ON CONFLICT (hevy_name) DO UPDATE SET category = EXCLUDED.category, subcategory = EXCLUDED.subcategory`;
+    const stale = await run("GATE-F syn-legs 9100001", previewed);
+    expect("result" in stale && stale.result).toMatchObject({ status: "blocked", reason: expect.stringMatching(/plan differs/) });
+    expect(await puts()).toBe(0);
+    // A fresh preview of the changed plan can run.
+    const fresh = await run();
+    expect("result" in fresh && fresh.result.status).toBe("synced");
+  });
+
+  it("F3: the evidence verdict fails when Garmin's name differs from the journaled write, and passes again after a restore", async () => {
+    await run();
+    const ok = (await m.gate.gateFEvidence(sql())).bundle!;
+    expect(ok.verdict).toMatchObject({ expected: "merged", ok: true });
+    expect(Object.values(ok.verdict.checks).every((c) => c === "passed")).toBe(true);
+    await raw`UPDATE staging_garmin_activities SET detail = jsonb_set(detail, '{activityName}', '"Changed elsewhere"') WHERE activity_id = 9100001`;
+    const bad = (await m.gate.gateFEvidence(sql())).bundle!;
+    expect(bad.verdict.ok).toBe(false);
+    expect(bad.verdict.checks.metadataAgainstIntended).toBe("failed");
+    const journalId = bad.intended!.journalId;
+    expect((await m.sync.strictRestore(sql(), { journalId, source: "original", confirm: true }, undefined, { verifyDelayMs: 0, rateLimit: FAST })).status).toBe("restored");
+    const back = (await m.gate.gateFEvidence(sql())).bundle!;
+    expect(back.verdict).toMatchObject({ expected: "original", ok: true });
+  }, 30_000);
 });

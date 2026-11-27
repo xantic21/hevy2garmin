@@ -132,18 +132,27 @@ export async function gateFPreview(sql: Sql, seams: Seams = {}): Promise<{ refus
 
 export type GateFRunOutcome =
   | { refused: string; record?: GateFRecord | null }
-  | { result: StrictSyncResult; record: GateFRecord | null; consumed: boolean };
+  | { result: StrictSyncResult; record: GateFRecord | null; consumed: boolean; warning?: string };
 
 /**
  * The live merge of the authorized pair, at most once per database.
- * `confirm` must be exactly "GATE-F <hevyId> <activityId>".
+ * `confirm` must be exactly "GATE-F <hevyId> <activityId>"; `planSha256` is the
+ * plan the preview showed, and a run whose plan differs writes nothing.
  */
-export async function gateFRun(sql: Sql, confirm: unknown, seams: Seams = {}, now: () => Date = () => new Date()): Promise<GateFRunOutcome> {
+export async function gateFRun(
+  sql: Sql,
+  input: { confirm: unknown; planSha256: unknown },
+  seams: Seams = {},
+  now: () => Date = () => new Date(),
+): Promise<GateFRunOutcome> {
+  const confirm = input.confirm;
   const a = authorization();
   if ("refusal" in a) return { refused: a.refusal };
   if (a.expired) return { refused: "the gate F authorization has expired; nothing more is merged" };
   if (confirm !== gateFConfirmation(a.auth)) return { refused: `type exactly "${gateFConfirmation(a.auth)}" to run gate F` };
   if (strictEnvStop()) return { refused: "H2G_STRICT_STOP is set: every Garmin write is refused" };
+  const planSha256 = typeof input.planSha256 === "string" && /^[0-9a-f]{64}$/.test(input.planSha256) ? input.planSha256 : null;
+  if (!planSha256) return { refused: "preview first: the run is bound to the plan the preview showed" };
   if (!(await tableReady(sql))) return { refused: "the gate F record table is missing; the schema bootstrap did not run" };
   const schema = await strictSchemaReady(sql);
   if (!schema.ready) return { refused: `strict ledger schema is incomplete (${schema.missing.join(", ")})` };
@@ -180,7 +189,14 @@ export async function gateFRun(sql: Sql, confirm: unknown, seams: Seams = {}, no
   let result: StrictSyncResult | null = null;
   let failure: string | null = null;
   try {
-    result = await runStrictSync(sql, { ...seams, dryRun: false, trigger: "manual", targetHevyId: a.auth.hevyId, pin: pinOf(a.auth) });
+    result = await runStrictSync(sql, {
+      ...seams,
+      dryRun: false,
+      trigger: "manual",
+      targetHevyId: a.auth.hevyId,
+      pin: pinOf(a.auth),
+      expectPlanSha256: planSha256,
+    });
   } catch (e) {
     failure = (e as Error).message;
   }
@@ -197,19 +213,26 @@ export async function gateFRun(sql: Sql, confirm: unknown, seams: Seams = {}, no
      WHERE id = 'gate_f' AND state = 'running' AND run_owner = ${owner}
     RETURNING *
   `;
+  let warning: string | undefined;
   if (!finished[0]) {
     // Someone took the record over while this run was still going: fail closed.
     await ledger.setFrozen(true, "gate F record changed during the run; review before any further write");
+    warning = "the gate F record changed during this run; every strict write is now frozen: check the evidence and the journal before anything else";
   }
   const record = await readRecord(sql);
   if (!result) return { refused: `gate F run failed: ${failure}`, record };
-  return { result, record, consumed };
+  return { result, record, consumed, ...(warning ? { warning } : {}) };
 }
 
 /**
- * The evidence bundle. Reads the activity from Garmin (GET only) and compares
- * it with the original backup and with what the journal says was written.
- * Allowed after the authorization expired.
+ * The evidence bundle. Reads the activity from Garmin (reads only; building
+ * the client may refresh the Garmin sign-in token, which is authentication,
+ * not activity data) and compares it with the original backup and with what
+ * the journal says was written. Allowed after the authorization expired.
+ *
+ * `verdict.ok` is true only when every comparison for the expected state ran
+ * and found nothing: "merged" after a verified run, "original" after a
+ * verified restore to the original, "untouched" before anything was written.
  */
 export async function gateFEvidence(sql: Sql, garminClientFactory?: () => Promise<GarminClient>) {
   const a = authorization();
@@ -218,8 +241,13 @@ export async function gateFEvidence(sql: Sql, garminClientFactory?: () => Promis
   const ledger = postgresStrictLedger(sql);
   const original = await ledger.getOriginalBackup(a.auth.activityId);
   const journal = await ledger.listJournalForActivity(a.auth.activityId);
-  const setsEntry = [...journal].reverse().find((e) => e.step === "exercise_sets" && ["verified", "needs_review"].includes(e.phase)) ?? null;
-  const restoreEntry = [...journal].reverse().find((e) => e.step === "restore") ?? null;
+  const latest = (step: string) => [...journal].reverse().find((e) => e.step === step) ?? null;
+  const setsEntry = [...journal].reverse().find((e) => e.step === "exercise_sets" && ["verified", "needs_review", "restored"].includes(e.phase)) ?? null;
+  const metaEntry = [...journal].reverse().find((e) => e.step === "metadata" && ["verified", "needs_review", "restored"].includes(e.phase)) ?? null;
+  const restoreEntry = latest("restore");
+  const restoredToOriginal = restoreEntry?.phase === "verified" && restoreEntry.detail?.source === "original";
+  const merged = !restoredToOriginal && setsEntry?.phase === "verified" && (metaEntry === null || metaEntry.phase === "verified");
+  const expected: "merged" | "original" | "untouched" | "review" = restoredToOriginal ? "original" : merged ? "merged" : journal.length === 0 ? "untouched" : "review";
 
   let after: { detail: Record<string, unknown> | null; sets: Record<string, unknown> | null; error: string | null } = { detail: null, sets: null, error: null };
   try {
@@ -228,28 +256,71 @@ export async function gateFEvidence(sql: Sql, garminClientFactory?: () => Promis
   } catch (e) {
     after = { detail: null, sets: null, error: (e as Error).message };
   }
-  const before = original?.payload as { exerciseSets?: unknown; activityName?: unknown; description?: unknown; preservedMetrics?: Record<string, unknown> } | undefined;
+  const before = original?.payload as { exerciseSets?: unknown; activityName?: string | null; description?: string | null; preservedMetrics?: Record<string, unknown> } | undefined;
   const afterSets = (after.sets as { exerciseSets?: unknown } | null)?.exerciseSets;
+  const nameNow = after.detail ? activityNameOf(after.detail) : null;
+  const descriptionNow = after.detail ? descriptionOf(after.detail) : null;
+  const metaIntended = (metaEntry?.intended ?? null) as { activityName?: string; description?: string } | null;
+  const field = (label: string, want: unknown, got: unknown) => (want === got ? [] : [{ field: label, expected: want, actual: got }]);
+
   const comparisons = {
-    activityIdUnchanged: after.detail ? Number(after.detail.activityId) === a.auth.activityId : null,
+    // Garmin answered for the authorized activity in both reads.
+    activityIdConfirmed: after.detail && after.sets ? Number(after.detail.activityId) === a.auth.activityId && Number(after.sets.activityId) === a.auth.activityId : null,
+    // Every journaled intent and the backup still hash to what was stored.
+    integrity:
+      original === null
+        ? null
+        : [original.sha256 === sha256Canonical(original.payload) ? null : "original backup", ...journal.map((e) => (sha256Canonical(e.intended) === e.intendedSha256 ? null : `journal ${e.id}`))].filter(Boolean),
     // Native metrics (HR, calories, duration, ...) as they were before the first write.
     preservedMetrics: before?.preservedMetrics && after.detail ? comparePreservedMetrics(before.preservedMetrics, after.detail) : null,
     // The sets on Garmin now against what the verified write intended.
     setsAgainstIntended: setsEntry && after.sets ? compareSetSequences(setsEntry.intended, after.sets, { activityId: a.auth.activityId }) : null,
-    // After a restore to the original: the sets on Garmin against the backup, nothing left behind.
+    // The sets on Garmin now against the original backup, nothing left behind.
     setsAgainstOriginal:
       Array.isArray(before?.exerciseSets) && after.sets
         ? compareSetSequences({ activityId: a.auth.activityId, exerciseSets: before.exerciseSets }, after.sets, { activityId: a.auth.activityId, absentMeansNull: true })
         : null,
-    nameNow: after.detail ? activityNameOf(after.detail) : null,
-    descriptionNow: after.detail ? descriptionOf(after.detail) : null,
+    // Name and description against the journaled metadata write.
+    metadataAgainstIntended:
+      metaIntended && after.detail
+        ? [
+            ...("activityName" in metaIntended ? field("activityName", metaIntended.activityName, nameNow) : []),
+            ...("description" in metaIntended ? field("description", metaIntended.description, descriptionNow) : []),
+          ]
+        : null,
+    // Name and description against the original backup.
+    metadataAgainstOriginal: before && after.detail ? [...field("activityName", before.activityName ?? null, nameNow), ...field("description", before.description ?? null, descriptionNow)] : null,
+    nameNow,
+    descriptionNow,
+  };
+  const required: Record<typeof expected, Array<keyof typeof comparisons>> = {
+    merged: ["activityIdConfirmed", "integrity", "preservedMetrics", "setsAgainstIntended", "metadataAgainstIntended"],
+    original: ["activityIdConfirmed", "integrity", "preservedMetrics", "setsAgainstOriginal", "metadataAgainstOriginal"],
+    untouched: [],
+    review: [],
+  };
+  const checks = Object.fromEntries(
+    required[expected]
+      .filter((k) => !(k === "metadataAgainstIntended" && metaEntry === null))
+      .map((k) => {
+        const v = comparisons[k];
+        return [k, v === null ? "not_compared" : v === true || (Array.isArray(v) && v.length === 0) ? "passed" : "failed"];
+      }),
+  ) as Record<string, "passed" | "failed" | "not_compared">;
+  const verdict = {
+    expected,
+    ok: after.error === null && (expected === "merged" || expected === "original") && Object.values(checks).every((c) => c === "passed"),
+    checks,
+    readError: after.error,
   };
   const bundle = {
     generatedAt: new Date().toISOString(),
     authorization: { ...a.auth, expired: a.expired },
+    verdict,
     status,
     before: original ? { backupId: original.id, sha256: original.sha256, capturedAt: original.capturedAt, intact: sha256Canonical(original.payload) === original.sha256, payload: original.payload } : null,
     intended: setsEntry ? { journalId: setsEntry.id, phase: setsEntry.phase, intendedSha256: setsEntry.intendedSha256, intended: setsEntry.intended } : null,
+    metadataIntended: metaEntry ? { journalId: metaEntry.id, phase: metaEntry.phase, intendedSha256: metaEntry.intendedSha256, intended: metaEntry.intended } : null,
     restore: restoreEntry ? { journalId: restoreEntry.id, phase: restoreEntry.phase, detail: restoreEntry.detail } : null,
     after: { ...after, setsSha256: afterSets !== undefined ? sha256Canonical(afterSets) : null },
     comparisons,

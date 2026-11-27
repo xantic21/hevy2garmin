@@ -14,7 +14,7 @@ export async function GET(request: Request) {
 /**
  * POST /api/strict/gate-f
  *   {action: "preview"}                                    strict dry run of the authorized pair
- *   {action: "run", confirm: "GATE-F <hevyId> <activityId>"} the one live merge
+ *   {action: "run", confirm: "GATE-F <hevyId> <activityId>", planSha256} the one live merge, bound to the preview
  *   {action: "evidence"}                                   before / intended / after, read-only
  */
 export async function POST(request: Request) {
@@ -22,7 +22,7 @@ export async function POST(request: Request) {
     request,
     async (sql, body) => {
       if (body.action === "preview") return await gateFPreview(sql);
-      if (body.action === "run") return await gateFRun(sql, body.confirm);
+      if (body.action === "run") return await gateFRun(sql, { confirm: body.confirm, planSha256: body.planSha256 });
       if (body.action === "evidence") return await gateFEvidence(sql);
       return { refused: 'action must be "preview", "run" or "evidence"' };
     },

@@ -63,7 +63,29 @@ export type GateFState =
   | { requested: true; ok: true; auth: GateFAuthorization; expired: boolean };
 
 const set = (env: Env, k: string) => (env[k] ?? "").trim() !== "";
-const ISO_WITH_ZONE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2})$/;
+const ISO_WITH_ZONE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?(Z|([+-])(\d{2}):(\d{2}))$/;
+
+/** Milliseconds of a strict ISO-8601 time with zone, or NaN: no rolled-over dates, no 24:00, offsets within ±14:00. */
+export function strictIsoMs(raw: string): number {
+  const m = ISO_WITH_ZONE.exec(raw);
+  if (!m) return Number.NaN;
+  const [y, mo, d, h, mi, se] = [m[1], m[2], m[3], m[4], m[5], m[6] ?? "0"].map(Number);
+  if (mo < 1 || mo > 12 || d < 1 || h > 23 || mi > 59 || se > 59) return Number.NaN;
+  const day = new Date(Date.UTC(y, mo - 1, d));
+  if (day.getUTCFullYear() !== y || day.getUTCMonth() !== mo - 1 || day.getUTCDate() !== d) return Number.NaN;
+  if (m[7] !== "Z") {
+    const oh = Number(m[9]);
+    const om = Number(m[10]);
+    if (om > 59 || oh * 60 + om > 14 * 60) return Number.NaN;
+  }
+  return Date.parse(raw);
+}
+
+/**
+ * Variables that only a hosting platform sets. A real gate F runs on the
+ * owner's own computer; any of these means it is not.
+ */
+const HOSTED = /^(VERCEL|VERCEL_[A-Z0-9_]+|AWS_LAMBDA_[A-Z0-9_]+|LAMBDA_TASK_ROOT|AWS_EXECUTION_ENV|NETLIFY|CF_PAGES|RENDER|RAILWAY_[A-Z0-9_]+|FLY_APP_NAME|K_SERVICE|DYNO)$/;
 
 export function gateFState(env: Env = process.env, now: Date = new Date()): GateFState {
   if (!GATE_F_VARS.some((k) => set(env, k))) return { requested: false };
@@ -80,8 +102,8 @@ export function gateFState(env: Env = process.env, now: Date = new Date()): Gate
     return refuse("H2G_GATE_F_GARMIN_ACTIVITY_ID is not an activity id");
   }
   const rawExpires = env.H2G_GATE_F_EXPIRES!.trim();
-  const expiresMs = Date.parse(rawExpires);
-  if (!ISO_WITH_ZONE.test(rawExpires) || !Number.isFinite(expiresMs)) {
+  const expiresMs = strictIsoMs(rawExpires);
+  if (!Number.isFinite(expiresMs)) {
     return refuse("H2G_GATE_F_EXPIRES must be an ISO-8601 time with a zone, e.g. 2026-12-01T20:00:00Z");
   }
   if (expiresMs - now.getTime() > GATE_F_MAX_WINDOW_MS) return refuse("H2G_GATE_F_EXPIRES is more than 14 days ahead");
@@ -100,6 +122,8 @@ export function gateFState(env: Env = process.env, now: Date = new Date()): Gate
   if (!staging && syntheticAny) return refuse("synthetic ids belong to staging; authorize the real workout and activity");
   // Outside staging the run reads the sealed vault only, so its key must be there.
   if (!staging && !set(env, "H2G_CREDENTIALS_KEY")) return refuse("needs H2G_CREDENTIALS_KEY: credentials are used sealed only");
+  const hosted = staging ? [] : Object.keys(env).filter((k) => HOSTED.test(k) && set(env, k));
+  if (hosted.length) return refuse(`a real gate F runs on the owner's own computer, not on a hosting platform (${hosted.join(", ")} set)`);
 
   return {
     requested: true,

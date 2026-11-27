@@ -28,7 +28,12 @@ function setup(activities = [nativeActivity()], workouts: Array<Record<string, u
   const recovery = (owner = "op-B") => ({ ledger, garmin: async () => garmin.port, now: clock, sleep: async () => {}, owner });
   const run = (o: StrictSyncOptions, owner?: string) => strictInPlaceSync(deps(owner), { verifyDelayMs: 0, ...o });
   const noGarminIo = () => Object.values(garmin.calls).every((n) => n === 0);
-  return { garmin, ledger, run, recovery, noGarminIo };
+  /** Preview, then the live run bound to the previewed plan: what the gate F route does. */
+  const previewThenRun = async (owner?: string) => {
+    const p = await run({ dryRun: true, trigger: "manual", targetHevyId: PIN.hevyId, pin: PIN });
+    return run({ dryRun: false, trigger: "manual", targetHevyId: PIN.hevyId, pin: PIN, expectPlanSha256: p.plan?.planSha256 }, owner);
+  };
+  return { garmin, ledger, run, recovery, noGarminIo, previewThenRun };
 }
 
 afterEach(() => vi.unstubAllEnvs());
@@ -36,7 +41,7 @@ afterEach(() => vi.unstubAllEnvs());
 describe("gate F pin: only the authorized pair, only a manual sync", () => {
   it("the authorized workout merges into the authorized activity (one sets write, one metadata write)", async () => {
     const t = setup();
-    const r = await t.run({ dryRun: false, trigger: "manual", targetHevyId: PIN.hevyId, pin: PIN });
+    const r = await t.previewThenRun();
     expect(r.status).toBe("synced");
     expect(r.activityId).toBe(PIN.activityId);
     expect(t.garmin.calls.putSets).toBe(1);
@@ -51,6 +56,18 @@ describe("gate F pin: only the authorized pair, only a manual sync", () => {
       expect(r.status).toBe("blocked");
       expect(r.reason).toMatch(/gate F/);
       expect(t.noGarminIo()).toBe(true);
+      expect(await t.ledger.listBindings()).toEqual([]);
+    });
+  }
+
+  for (const trigger of ["batch", "cron", "webhook"] as const) {
+    it(`refuses a ${trigger} run even with the previewed plan in hand (no write)`, async () => {
+      const t = setup();
+      const plan = (await t.run({ dryRun: true, trigger: "manual", targetHevyId: PIN.hevyId, pin: PIN })).plan!;
+      const r = await t.run({ dryRun: false, trigger, targetHevyId: PIN.hevyId, pin: PIN, automaticEnabled: true, expectPlanSha256: plan.planSha256 });
+      expect(r.status).toBe("blocked");
+      expect(r.reason).toMatch(/only a manual sync/);
+      expect(t.garmin.calls.putSets + t.garmin.calls.putMeta).toBe(0);
       expect(await t.ledger.listBindings()).toEqual([]);
     });
   }
@@ -84,7 +101,7 @@ describe("gate F pin: only the authorized pair, only a manual sync", () => {
   it("a different activity than the authorized one is never written: needs review, no binding, no PUT", async () => {
     const t = setup([nativeActivity({ activityId: 9002 })]);
     for (const dryRun of [true, false]) {
-      const r = await t.run({ dryRun, trigger: "manual", targetHevyId: PIN.hevyId, pin: PIN });
+      const r = await t.run({ dryRun, trigger: "manual", targetHevyId: PIN.hevyId, pin: PIN, expectPlanSha256: "0".repeat(64) });
       expect(r.status).toBe("needs_review");
       expect(r.reason).toMatch(/authorization names activity 9001.*9002/);
     }
@@ -94,17 +111,24 @@ describe("gate F pin: only the authorized pair, only a manual sync", () => {
 
   it("no replay: a second authorized run after the verified merge writes nothing", async () => {
     const t = setup();
-    expect((await t.run({ dryRun: false, trigger: "manual", targetHevyId: PIN.hevyId, pin: PIN })).status).toBe("synced");
+    const first = await t.previewThenRun();
+    expect(first.status).toBe("synced");
     const puts = t.garmin.calls.putSets + t.garmin.calls.putMeta;
-    const again = await t.run({ dryRun: false, trigger: "manual", targetHevyId: PIN.hevyId, pin: PIN }, "sync-C");
+    // Replaying the very request that succeeded (same previewed plan).
+    const again = await t.run({ dryRun: false, trigger: "manual", targetHevyId: PIN.hevyId, pin: PIN, expectPlanSha256: first.plan!.planSha256 }, "sync-C");
     expect(again.status).toBe("already_synced");
+    // A fresh preview of a merged workout offers no plan, so no new live run can even be formed.
+    expect((await t.run({ dryRun: true, trigger: "manual", targetHevyId: PIN.hevyId, pin: PIN })).plan).toBeNull();
     expect(t.garmin.calls.putSets + t.garmin.calls.putMeta).toBe(puts);
   });
 
   it("parallel authorized runs: exactly one sets write", async () => {
     const t = setup();
+    const plan = (await t.run({ dryRun: true, trigger: "manual", targetHevyId: PIN.hevyId, pin: PIN })).plan!;
     const results = await Promise.all(
-      ["sync-1", "sync-2", "sync-3"].map((owner) => t.run({ dryRun: false, trigger: "manual", targetHevyId: PIN.hevyId, pin: PIN }, owner)),
+      ["sync-1", "sync-2", "sync-3"].map((owner) =>
+        t.run({ dryRun: false, trigger: "manual", targetHevyId: PIN.hevyId, pin: PIN, expectPlanSha256: plan.planSha256 }, owner),
+      ),
     );
     expect(results.filter((r) => r.status === "synced")).toHaveLength(1);
     expect(t.garmin.calls.putSets).toBe(1);
@@ -113,9 +137,51 @@ describe("gate F pin: only the authorized pair, only a manual sync", () => {
   it("the global hard stop still wins over the authorization", async () => {
     vi.stubEnv("H2G_STRICT_STOP", "1");
     const t = setup();
-    const r = await t.run({ dryRun: false, trigger: "manual", targetHevyId: PIN.hevyId, pin: PIN });
+    const r = await t.previewThenRun();
     expect(r.status).not.toBe("synced");
     expect(t.garmin.calls.putSets + t.garmin.calls.putMeta).toBe(0);
+  });
+});
+
+describe("gate F pin: the live run is bound to the previewed plan", () => {
+  it("a live pinned run without the previewed plan is refused before any IO", async () => {
+    const t = setup();
+    for (const expectPlanSha256 of [undefined, "", "abc", "Z".repeat(64)]) {
+      const r = await t.run({ dryRun: false, trigger: "manual", targetHevyId: PIN.hevyId, pin: PIN, expectPlanSha256 });
+      expect(r.status).toBe("blocked");
+      expect(r.reason).toMatch(/plan from the preview/);
+    }
+    expect(t.noGarminIo()).toBe(true);
+  });
+
+  it("a different plan than the previewed one writes nothing", async () => {
+    const t = setup();
+    const r = await t.run({ dryRun: false, trigger: "manual", targetHevyId: PIN.hevyId, pin: PIN, expectPlanSha256: "0".repeat(64) });
+    expect(r.status).toBe("blocked");
+    expect(r.reason).toMatch(/plan differs from the previewed one/);
+    expect(t.garmin.calls.putSets + t.garmin.calls.putMeta).toBe(0);
+    expect(await t.ledger.listBindings()).toEqual([]);
+  });
+
+  it("the workout edited in Hevy after the preview: the old plan is refused, nothing written", async () => {
+    const workouts = [hevyWorkout()];
+    const t = setup([nativeActivity()], workouts);
+    const plan = (await t.run({ dryRun: true, trigger: "manual", targetHevyId: PIN.hevyId, pin: PIN })).plan!;
+    const sets = (workouts[0].exercises as Array<{ sets: Array<{ weight_kg: number }> }>)[0].sets;
+    sets[0].weight_kg += 2.5;
+    const r = await t.run({ dryRun: false, trigger: "manual", targetHevyId: PIN.hevyId, pin: PIN, expectPlanSha256: plan.planSha256 });
+    expect(r.status).toBe("blocked");
+    expect(t.garmin.calls.putSets + t.garmin.calls.putMeta).toBe(0);
+  });
+
+  it("the plan hash covers the sets, the new name and the new description", async () => {
+    const a = setup();
+    const b = setup();
+    const pa = (await a.run({ dryRun: true, trigger: "manual", targetHevyId: PIN.hevyId, pin: PIN })).plan!;
+    const pb = (await b.run({ dryRun: true, trigger: "manual", targetHevyId: PIN.hevyId, pin: PIN, metadata: { rename: false } })).plan!;
+    expect(pa.planSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(pa.intendedSha256).toBe(pb.intendedSha256);
+    expect(pa.planSha256).not.toBe(pb.planSha256);
   });
 });
 
@@ -123,7 +189,7 @@ describe("gate F pin: recovery only for the authorized pair", () => {
   async function reviewed() {
     const t = setup();
     t.garmin.behaviour.put = "apply_dropping_names";
-    const r = await t.run({ dryRun: false, trigger: "manual", targetHevyId: PIN.hevyId, pin: PIN });
+    const r = await t.previewThenRun();
     expect(r.status).toBe("needs_review");
     t.garmin.behaviour.put = "apply";
     return { t, journalId: r.journalIds[0] };

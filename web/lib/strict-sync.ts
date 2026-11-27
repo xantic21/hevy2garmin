@@ -62,6 +62,8 @@ export interface StrictRouteOptions {
   resync?: boolean;
   /** Gate F: the owner-authorized workout and activity (only the gate F route passes it). */
   pin?: StrictPin;
+  /** Gate F: the previewed plan; a live run with a different plan writes nothing. */
+  expectPlanSha256?: string;
   /** Test seams. */
   fetchWorkouts?: () => Promise<HevyWorkout[]>;
   garminClientFactory?: () => Promise<GarminClient>;
@@ -133,6 +135,27 @@ export function gateFRecoveryPin(env: Record<string, string | undefined> = proce
   return { refusal: null, pin: { hevyId: gate.auth.hevyId, activityId: gate.auth.activityId } };
 }
 
+/**
+ * A database that holds the gate F record stays locked for live writes after
+ * gate F mode is switched off: only gate F mode itself (which then pins every
+ * call to its authorized pair) or the gate G cutover may write through it.
+ * Null = may write. Reads (preview, status, evidence) are never affected.
+ */
+export async function gateFDatabaseLock(sql: Sql, env: Record<string, string | undefined> = process.env): Promise<string | null> {
+  if (gateFState(env).requested) return null;
+  if ((env.H2G_PRODUCTION_CUTOVER ?? "").trim() === "approved-by-owner") return null;
+  let rows: Array<Record<string, unknown>>;
+  try {
+    const reg = await sql`SELECT to_regclass('public.strict_gate_f') AS r`;
+    if (!reg[0]?.r) return null;
+    rows = (await sql`SELECT hevy_id, garmin_activity_id, state FROM strict_gate_f WHERE id = 'gate_f'`) as Array<Record<string, unknown>>;
+  } catch (e) {
+    return `the gate F record could not be read (${(e as Error).message}); live writes stay off`;
+  }
+  if (!rows[0]) return null;
+  return `this database holds the gate F record (workout ${String(rows[0].hevy_id)}, activity ${String(rows[0].garmin_activity_id)}, ${String(rows[0].state)}): live writes need gate F mode with that authorization, or the gate G cutover (H2G_PRODUCTION_CUTOVER)`;
+}
+
 function blockedResult(o: StrictRouteOptions, reason: string): StrictSyncResult {
   return {
     status: "blocked",
@@ -155,6 +178,10 @@ export async function runStrictSync(sql: Sql, o: StrictRouteOptions): Promise<St
   if (gateF) return blockedResult(o, gateF);
   if (!o.dryRun && strictEnvStop()) {
     return blockedResult(o, "H2G_STRICT_STOP is set: live strict writes are stopped for this deployment");
+  }
+  if (!o.dryRun) {
+    const locked = await gateFDatabaseLock(sql);
+    if (locked) return blockedResult(o, locked);
   }
   if (!o.dryRun) {
     const schema = await strictSchemaReady(sql);
@@ -183,6 +210,7 @@ export async function runStrictSync(sql: Sql, o: StrictRouteOptions): Promise<St
     excludeHevyIds: o.excludeHevyIds,
     resync: o.resync,
     ...(o.pin ? { pin: o.pin } : {}),
+    ...(o.expectPlanSha256 !== undefined ? { expectPlanSha256: o.expectPlanSha256 } : {}),
     ...(o.timing?.verifyDelayMs !== undefined ? { verifyDelayMs: o.timing.verifyDelayMs } : {}),
   });
 }
@@ -264,6 +292,8 @@ export async function strictRestore(
   }
   const gate = gateFRecoveryPin();
   if (gate.refusal) return { status: "refused" as const, reason: gate.refusal, journalId: input.journalId, writes: 0 };
+  const locked = await gateFDatabaseLock(sql);
+  if (locked) return { status: "refused" as const, reason: locked, journalId: input.journalId, writes: 0 };
   ensureStrictFirewall();
   return restoreStrictBackup(recoveryDeps(sql, f, timing?.rateLimit), input, {
     verifyDelayMs: timing?.verifyDelayMs,
