@@ -440,7 +440,7 @@ jobs:
 
       - name: The web app created the strict ledger, with its insert-only trigger
         run: |
-          for t in strict_bindings strict_backups strict_journal strict_control; do
+          for t in strict_bindings strict_backups strict_journal strict_control strict_activity_locks strict_gate_f; do
             psql "$DATABASE_URL" -tAc "SELECT to_regclass('public.$t')" | grep -qx "$t" || { echo "missing strict table: $t"; exit 1; }
           done
           for g in strict_backups_insert_only strict_backups_no_truncate; do
@@ -562,6 +562,23 @@ jobs:
           done
           grep -q "\[staging\] synthetic staging" start.log || { echo "staging mode not announced"; cat start.log; exit 1; }
           H2G_REHEARSAL_URL=http://127.0.0.1:8120 H2G_REHEARSAL_PASSWORD="$H2G_PASSWORD" node scripts/staging-rehearsal.mjs || { cat start.log; exit 1; }
+
+      - name: Rehearse gate F over HTTP (synthetic authorization, its own database)
+        # The same production build with a synthetic gate F authorization: every
+        # other sync path locked, the typed confirmation, the one run, no repeat,
+        # evidence, restore, and only PUTs on the one authorized activity.
+        working-directory: web
+        run: |
+          psql postgresql://test:test@localhost:5432/postgres -v ON_ERROR_STOP=1 -qc "CREATE DATABASE h2g_gate_f"
+          EXP=$(node -e 'console.log(new Date(Date.now() + 3 * 3600e3).toISOString())')
+          DATABASE_URL=postgresql://test:test@localhost:5432/h2g_gate_f \
+          H2G_GATE_F=approved-by-owner H2G_GATE_F_HEVY_ID=syn-legs H2G_GATE_F_GARMIN_ACTIVITY_ID=9100001 H2G_GATE_F_EXPIRES="$EXP" \
+            npx next start --port 8122 --hostname 127.0.0.1 > gate-f.log 2>&1 &
+          for i in $(seq 1 40); do
+            sleep 1
+            curl -sf -o /dev/null http://127.0.0.1:8122/login && break
+          done
+          H2G_REHEARSAL_URL=http://127.0.0.1:8122 H2G_REHEARSAL_PASSWORD="$H2G_PASSWORD" node scripts/gate-f-rehearsal.mjs || { cat gate-f.log; exit 1; }
 
       - name: Pointed at a database with a credential, staging refuses and creates nothing
         working-directory: web

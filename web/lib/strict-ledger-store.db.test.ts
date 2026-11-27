@@ -33,7 +33,7 @@ describe.skipIf(!url)("postgresStrictLedger (real Postgres)", () => {
   // Each case starts from empty strict tables. Backups are insert-only, so
   // the test drops and recreates them rather than deleting rows.
   beforeEach(async () => {
-    await db.unsafe("DROP TABLE IF EXISTS strict_bindings, strict_backups, strict_journal, strict_control, strict_activity_locks CASCADE");
+    await db.unsafe("DROP TABLE IF EXISTS strict_bindings, strict_backups, strict_journal, strict_control, strict_activity_locks, strict_gate_f CASCADE");
     for (const s of SCHEMA_STATEMENTS) await db.unsafe(s);
   });
 

@@ -24,6 +24,7 @@ export const STAGING_TABLES = ["staging_hevy_workouts", "staging_garmin_activiti
 const USER_TABLES = [
   "synced_workouts", "sync_log", "hr_cache", "pending_uploads", "platform_credentials", "custom_mappings", "app_cache",
   "synced_routines", "routine_schedules", "strict_bindings", "strict_backups", "strict_journal", "strict_control", "strict_activity_locks",
+  "strict_gate_f",
 ] as const;
 
 export const STAGING_SCHEMA: readonly string[] = [
@@ -89,6 +90,7 @@ export async function checkStagingDatabase(client: Client, bootstrap: () => Prom
       (await count(client, "strict_backups", "WHERE hevy_id NOT LIKE 'syn-%'")) +
       (await count(client, "strict_journal", "WHERE hevy_id NOT LIKE 'syn-%'")) +
       (await count(client, "hr_cache", "WHERE hevy_id NOT LIKE 'syn-%'")) +
+      (await count(client, "strict_gate_f", "WHERE hevy_id NOT LIKE 'syn-%'")) +
       (await count(client, "pending_uploads")) +
       (await count(client, "synced_routines")) +
       (await count(client, "routine_schedules"));

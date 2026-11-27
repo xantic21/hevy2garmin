@@ -102,7 +102,7 @@ describe.skipIf(!url)("strict in-place merge end to end (Postgres + firewall + H
   });
 
   beforeEach(async () => {
-    await db.unsafe("DROP TABLE IF EXISTS strict_bindings, strict_backups, strict_journal, strict_control, strict_activity_locks CASCADE");
+    await db.unsafe("DROP TABLE IF EXISTS strict_bindings, strict_backups, strict_journal, strict_control, strict_activity_locks, strict_gate_f CASCADE");
     for (const s of SCHEMA_STATEMENTS) await db.unsafe(s);
     await db.unsafe("DELETE FROM synced_workouts WHERE hevy_id LIKE 'e2e-%'");
     server = garminServer();

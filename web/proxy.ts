@@ -1,5 +1,6 @@
 import { stagingCredentialPath, stagingMode, stagingRefusal } from "@/lib/staging-mode";
 import { quarantineViolation } from "@/lib/deploy-quarantine";
+import { gateFLockedPath, gateFMode, gateFRefusalBody } from "@/lib/gate-f";
 import { NextResponse, type NextFetchEvent, type NextRequest } from "next/server";
 import { countVisit } from "@/lib/visit-counter";
 
@@ -250,6 +251,8 @@ export async function proxy(req: NextRequest, event?: NextFetchEvent) {
       { status: 423 },
     );
   }
+  // Gate F: one owner-authorized workout through its own route; every other sync and change is locked.
+  if (gateFMode() && gateFLockedPath(pathname, req.method)) return NextResponse.json(gateFRefusalBody(), { status: 423 });
   // Synthetic staging never receives a credential: refuse before the body is read.
   if (stagingMode() && stagingCredentialPath(pathname, req.method)) return stagingRefusal("Connecting an account");
   // Before the auth gate on purpose: a demo with auth disabled is still read-only.

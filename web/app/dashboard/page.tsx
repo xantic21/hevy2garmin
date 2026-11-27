@@ -15,6 +15,8 @@ import { HEVY_TO_GARMIN } from "hevy2garmin";
 import { withBasePath } from "@/lib/base-path";
 import { UpdateBanner } from "@/components/update-banner";
 import { StrictPanel, type StrictStatusView } from "@/components/strict-panel";
+import { GateFPanel } from "@/components/gate-f-panel";
+import { gateFMode } from "@/lib/gate-f";
 import { strictModeActive } from "@/lib/strict-mode";
 import { strictStatus } from "@/lib/strict-sync";
 
@@ -249,6 +251,8 @@ export default async function DashboardPage() {
   const data = await loadDashboard();
   if (data.dbDown) return <DatabaseDownPage title="Sync status" />;
   const strict = strictModeActive();
+  // Gate F: one owner-authorized workout through its own panel; the generic sync controls are hidden (and locked server-side).
+  const gateF = gateFMode();
 
   return (
     <main className="oui-page max-w-5xl">
@@ -274,6 +278,7 @@ export default async function DashboardPage() {
         <ConnectionBadge label="Garmin Connect" connected={data.garminConnected} />
       </section>
 
+      {gateF && <GateFPanel />}
       {strict && <StrictPanel initial={data.strict ?? null} />}
 
       {data.dbConfigured && (!data.hevyConnected || !data.garminConnected) && (
@@ -321,13 +326,17 @@ export default async function DashboardPage() {
       )}
 
       {/* Sync controls (preview is dry-run; live upload is gated) */}
-      <SyncPanel ready={data.hevyConnected && data.garminConnected} strict={strict} />
-      <div className="mt-3">
-        <SyncLoop ready={data.hevyConnected && data.garminConnected} strict={strict} />
-      </div>
-      <div className="mt-3">
-        <BatchSync ready={data.hevyConnected && data.garminConnected} onServer={serverSyncSchedule() != null} strict={strict} />
-      </div>
+      {!gateF && (
+        <>
+          <SyncPanel ready={data.hevyConnected && data.garminConnected} strict={strict} />
+          <div className="mt-3">
+            <SyncLoop ready={data.hevyConnected && data.garminConnected} strict={strict} />
+          </div>
+          <div className="mt-3">
+            <BatchSync ready={data.hevyConnected && data.garminConnected} onServer={serverSyncSchedule() != null} strict={strict} />
+          </div>
+        </>
+      )}
 
       <div className="mb-8">
         {strict ? (

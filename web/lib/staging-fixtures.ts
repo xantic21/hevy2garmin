@@ -228,7 +228,7 @@ export async function seedStaging(sql: Sql, rebootstrap: () => Promise<unknown>,
   if (!stagingMode()) throw new StagingIsolationError("seeding is only possible in synthetic staging");
   const marker = (await sql`SELECT 1 FROM app_cache WHERE key = ${STAGING_MARKER_KEY}`) as unknown[];
   if (!marker.length) throw new StagingIsolationError("this database is not marked as a staging database");
-  await sql`DROP TABLE IF EXISTS strict_bindings, strict_backups, strict_journal, strict_control, strict_activity_locks CASCADE`;
+  await sql`DROP TABLE IF EXISTS strict_bindings, strict_backups, strict_journal, strict_control, strict_activity_locks, strict_gate_f CASCADE`;
   await sql`DELETE FROM synced_workouts WHERE hevy_id LIKE 'syn-%'`;
   await sql`DELETE FROM sync_log`;
   await sql`DELETE FROM hr_cache WHERE hevy_id LIKE 'syn-%'`;

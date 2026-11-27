@@ -336,3 +336,64 @@ describe("proxy: runtime quarantine (re-audit #2)", () => {
     expect((await proxy(req("/login"))).status).toBe(503);
   });
 });
+
+describe("proxy: gate F mode locks everything but the authorized merge path", () => {
+  const AUTH = {
+    H2G_GATE_F: "approved-by-owner",
+    H2G_GATE_F_HEVY_ID: "b1e2c3d4-0000-4a5b-8c9d-0123456789ab",
+    H2G_GATE_F_GARMIN_ACTIVITY_ID: "21345678901",
+    H2G_CREDENTIALS_KEY: "k".repeat(44),
+  };
+  beforeEach(() => {
+    // This file runs in the upstream (legacy) test project; gate F is strict only.
+    vi.stubEnv("H2G_SYNC_MODE", "");
+    vi.stubEnv("H2G_LEGACY_UPSTREAM_ACK", "");
+    Object.assign(process.env, AUTH, { H2G_GATE_F_EXPIRES: new Date(Date.now() + 3_600_000).toISOString() });
+  });
+  afterEach(() => {
+    for (const k of [...Object.keys(AUTH), "H2G_GATE_F_EXPIRES", "VERCEL_ENV", "VERCEL", "HEVY_API_KEY", "H2G_PRODUCTION_CUTOVER"]) delete process.env[k];
+    vi.unstubAllEnvs();
+  });
+
+  it.each([
+    ["POST", "/api/sync"],
+    ["POST", "/api/sync-one"],
+    ["POST", "/api/sync/abc"],
+    ["GET", "/api/sync/preview"],
+    ["POST", "/api/sync-run"],
+    ["GET", "/api/cron/sync"],
+    ["POST", "/api/cron/webhook"],
+    ["POST", "/api/unsync-all"],
+    ["POST", "/api/workout/x/mark-synced"],
+    ["POST", "/api/scan-duplicates"],
+  ])("%s %s answers 423 before auth", async (method, path) => {
+    const res = await proxy(req(path, { authorization: "Bearer anything" }, method));
+    expect(res.status).toBe(423);
+    const body = await res.json();
+    // Routes strict mode already locks keep that refusal; the rest get gate F's.
+    expect(body.gateF === true || body.strict === true).toBe(true);
+  });
+
+  it("the gate F route, the operator routes and sign-in reach the normal auth gate", async () => {
+    for (const path of ["/api/strict/gate-f", "/api/strict/restore", "/api/strict/freeze", "/api/connect-hevy", "/api/garmin-login"]) {
+      expect((await proxy(req(path, {}, "POST"))).status, path).toBe(401);
+    }
+    expect(passedThrough(await proxy(req("/api/login", {}, "POST")))).toBe(true);
+  });
+
+  it("a real gate F authorization on Vercel serves nothing (it runs on the owner's machine only)", async () => {
+    process.env.VERCEL_ENV = "preview";
+    expect((await proxy(req("/login"))).status).toBe(503);
+    delete process.env.VERCEL_ENV;
+    process.env.VERCEL = "1";
+    expect((await proxy(req("/login"))).status).toBe(503);
+  });
+
+  it("gate F with a plain credential or the gate G flag set serves nothing", async () => {
+    process.env.HEVY_API_KEY = "plain";
+    expect((await proxy(req("/login"))).status).toBe(503);
+    delete process.env.HEVY_API_KEY;
+    process.env.H2G_PRODUCTION_CUTOVER = "approved-by-owner";
+    expect((await proxy(req("/login"))).status).toBe(503);
+  });
+});

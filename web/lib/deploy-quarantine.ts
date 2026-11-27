@@ -5,10 +5,16 @@
  * and on every request (proxy.ts). Edge-safe: no imports.
  *
  *  - A Vercel PRODUCTION deployment runs only after the owner's separate,
- *    reviewed cutover: H2G_PRODUCTION_CUTOVER=approved-by-owner.
+ *    reviewed cutover (gate G): H2G_PRODUCTION_CUTOVER=approved-by-owner.
  *  - A Vercel PREVIEW runs only as synthetic staging (H2G_STAGING=synthetic).
  *  - Synthetic staging refuses to run with any real-credential variable set.
+ *  - Gate F (lib/gate-f.ts, one owner-authorized activity) runs only off
+ *    Vercel, on the owner's own machine; on Vercel it exists only as a
+ *    synthetic rehearsal inside staging. A gate F authorization that is
+ *    present but malformed or contradictory stops the server everywhere.
  */
+import { gateFState } from "./gate-f";
+
 type Env = Record<string, string | undefined>;
 
 export const PRODUCTION_CUTOVER_ACK = "approved-by-owner";
@@ -39,9 +45,13 @@ export const STAGING_FORBIDDEN_ENV = [
 export const STAGING_OWN_SECRETS = ["H2G_PASSWORD", "H2G_PASSWORD_HASH", "H2G_SECRET", "HEVY2GARMIN_SECRET", "CRON_SECRET"] as const;
 
 /** Why this process must not serve, or null. */
-export function quarantineViolation(env: Env = process.env): string | null {
+export function quarantineViolation(env: Env = process.env, now: Date = new Date()): string | null {
   const vercelEnv = (env.VERCEL_ENV ?? "").trim();
   const staging = (env.H2G_STAGING ?? "").trim() === "synthetic";
+  const gate = gateFState(env, now);
+  if (gate.requested && !gate.ok) return `the gate F authorization is refused: ${gate.error}`;
+  const realGateF = gate.requested && gate.ok && !gate.auth.synthetic;
+  if ((vercelEnv || (env.VERCEL ?? "").trim()) && realGateF) return "gate F runs on the owner's own machine, never as a Vercel deployment";
   if (vercelEnv === "production") {
     if (staging) return "synthetic staging must never run as a Vercel production deployment";
     if ((env.H2G_PRODUCTION_CUTOVER ?? "").trim() !== PRODUCTION_CUTOVER_ACK) {

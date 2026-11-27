@@ -122,6 +122,29 @@ export interface StrictSyncOptions {
   metadata?: { rename?: boolean; description?: boolean };
   verifyDelayMs?: number;
   leaseMs?: number;
+  /**
+   * Gate F: the one workout and the one Garmin activity the owner authorized.
+   * With a pin, only a manual sync of exactly that workout may run, and only
+   * into exactly that activity; anything else is refused before it is written.
+   */
+  pin?: StrictPin;
+}
+
+/** Gate F authorization: exactly one Hevy workout and one native Garmin activity. */
+export interface StrictPin {
+  hevyId: string;
+  activityId: number;
+}
+
+/** Why a pinned call may not run at all (checked before any IO), or null. */
+export function strictPinRefusal(pin: StrictPin, call: { trigger: StrictTrigger; targetHevyId?: string; resync?: boolean }): string | null {
+  if (typeof pin.hevyId !== "string" || !pin.hevyId || !Number.isSafeInteger(pin.activityId) || pin.activityId <= 0) {
+    return "gate F: the authorization is malformed";
+  }
+  if (call.trigger !== "manual") return `gate F: only a manual sync of the authorized workout may run (not ${call.trigger})`;
+  if (call.targetHevyId !== pin.hevyId) return `gate F: only workout ${pin.hevyId} is authorized`;
+  if (call.resync) return "gate F: a resync is not part of the authorization";
+  return null;
 }
 
 export type StrictStatus =
@@ -246,6 +269,10 @@ export async function strictInPlaceSync(deps: StrictSyncDeps, options: StrictSyn
   if (options.resync && !options.targetHevyId) {
     return result({ ...base, status: "blocked", reason: "a resync needs an explicit workout id" });
   }
+  if (options.pin) {
+    const refused = strictPinRefusal(options.pin, { trigger, targetHevyId: options.targetHevyId, resync: options.resync });
+    if (refused) return result({ ...base, status: "blocked", hevyId: options.targetHevyId ?? null, reason: refused });
+  }
 
   // 1. The stop switch and any unreconciled write. Read-only, so a dry run
   //    reports it too; a live run stops here.
@@ -336,6 +363,13 @@ export async function strictInPlaceSync(deps: StrictSyncDeps, options: StrictSyn
   const activity = decision.match.activity;
   const activityId = activity.activityId;
   const actBase = { ...idBase, activityId, issues: intent.issues };
+  if (options.pin && activityId !== options.pin.activityId) {
+    return result({
+      ...actBase,
+      status: "needs_review",
+      reason: `gate F: the authorization names activity ${options.pin.activityId}, but the one matching native activity is ${activityId}; nothing was written`,
+    });
+  }
 
   // The reverse question: does another Hevy workout claim the same session?
   const startMs = Date.parse(String(workout.start_time));
@@ -839,11 +873,14 @@ export interface StrictRecoveryResult {
 export async function reconcileStrictJournal(
   deps: StrictRecoveryDeps,
   journalId: string,
-  options: { leaseMs?: number } = {},
+  options: { leaseMs?: number; pin?: StrictPin } = {},
 ): Promise<StrictRecoveryResult> {
   const now = (deps.now ?? (() => new Date()))();
   const entry = await deps.ledger.getJournal(journalId);
   if (!entry) return { status: "not_open", reason: "no such journal entry", journalId, writes: 0 };
+  if (options.pin && (entry.hevyId !== options.pin.hevyId || entry.garminActivityId !== options.pin.activityId)) {
+    return { status: "refused", reason: "gate F: this journal entry is not for the authorized workout and activity", journalId, writes: 0 };
+  }
   if (entry.phase === "intent") {
     if (now.getTime() - Date.parse(entry.createdAt) <= (options.leaseMs ?? DEFAULT_LEASE_MS)) {
       return { status: "refused", reason: "the writer may still be running; try again after its lease", journalId, writes: 0 };
@@ -957,7 +994,7 @@ export async function reconcileStrictJournal(
 export async function restoreStrictBackup(
   deps: StrictRecoveryDeps,
   input: { journalId: string; source: "pre_write" | "original"; confirm: boolean },
-  options: { leaseMs?: number; verifyDelayMs?: number } = {},
+  options: { leaseMs?: number; verifyDelayMs?: number; pin?: StrictPin } = {},
 ): Promise<StrictRecoveryResult> {
   const { ledger } = deps;
   const refuse = (reason: string, journalId = input.journalId): StrictRecoveryResult => ({ status: "refused", reason, journalId, writes: 0 });
@@ -965,6 +1002,9 @@ export async function restoreStrictBackup(
   if (strictHardStopActive()) return refuse("H2G_STRICT_STOP is set: every Garmin write is refused, restores included");
   const first = await ledger.getJournal(input.journalId);
   if (!first) return { status: "not_open", reason: "no such journal entry", journalId: input.journalId, writes: 0 };
+  if (options.pin && (first.hevyId !== options.pin.hevyId || first.garminActivityId !== options.pin.activityId)) {
+    return refuse("gate F: this journal entry is not for the authorized workout and activity");
+  }
   const activityId = first.garminActivityId;
   const clock = deps.now ?? (() => new Date());
   const owner = deps.owner ?? `restore-${randomUUID()}`;

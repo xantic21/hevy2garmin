@@ -14,6 +14,7 @@ import { authEnabled, productionRuntime, SESSION_COOKIE, verifySession } from ".
 import { bearerMatches } from "./bearer";
 import { getDb } from "./db";
 import { getSessionEpoch } from "./session-epoch";
+import { gateFMode, gateFRefusalBody } from "./gate-f";
 import { runStrictSync, type StrictRouteOptions } from "./strict-sync";
 
 type Sql = ReturnType<typeof getDb>;
@@ -120,7 +121,14 @@ function db(): Sql | NextResponse {
 }
 
 /** POST /api/sync-one and /api/sync/[hevyId] in strict mode. Dry run unless live AND authorized. */
+/** Gate F mode: the generic sync routes never run (the gate F route is the only merge path). */
+function gateFLocked(): NextResponse | null {
+  return gateFMode() ? NextResponse.json(gateFRefusalBody(), { status: 423 }) : null;
+}
+
 export async function strictSyncRoute(request: Request, target?: string): Promise<NextResponse> {
+  const locked = gateFLocked();
+  if (locked) return locked;
   const body = await readBody(request);
   if (!body) return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
   const live = flag(request, body, "live");
@@ -144,6 +152,8 @@ export async function strictSyncRoute(request: Request, target?: string): Promis
 
 /** POST /api/sync (the batch) in strict mode: never dispatches to GitHub Actions. */
 export async function strictBatchRoute(request: Request): Promise<NextResponse> {
+  const locked = gateFLocked();
+  if (locked) return locked;
   const body = await readBody(request);
   if (!body) return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
   const live = flag(request, body, "live");
@@ -215,6 +225,8 @@ export async function strictBatchRoute(request: Request): Promise<NextResponse> 
  * and then never more than the strict engine allows.
  */
 export async function strictAutomaticRoute(request: Request, trigger: "cron" | "webhook"): Promise<NextResponse> {
+  const locked = gateFLocked();
+  if (locked) return locked;
   const secret = process.env.CRON_SECRET ?? "";
   if (!secret) return NextResponse.json({ ok: false, error: "CRON_SECRET is unset." }, { status: 503 });
   if (!bearerMatches(request.headers.get("authorization"), secret)) {

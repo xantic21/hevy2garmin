@@ -22,11 +22,13 @@ import {
   auditDuplicates,
   gatherActivities,
   STRICT_LISTING_LIMIT,
+  type StrictPin,
   type StrictSyncOptions,
   type StrictSyncResult,
   type StrictTrigger,
   type RateLimitOptions,
 } from "hevy2garmin";
+import { gateFState } from "./gate-f";
 import type { GarminClient } from "garmin-auth";
 import { vaultStatus } from "./credential-vault";
 import { installStagingTransport } from "./staging-simulator";
@@ -58,6 +60,8 @@ export interface StrictRouteOptions {
   targetHevyId?: string;
   excludeHevyIds?: string[];
   resync?: boolean;
+  /** Gate F: the owner-authorized workout and activity (only the gate F route passes it). */
+  pin?: StrictPin;
   /** Test seams. */
   fetchWorkouts?: () => Promise<HevyWorkout[]>;
   garminClientFactory?: () => Promise<GarminClient>;
@@ -105,22 +109,52 @@ export function strictEnvStop(env: Record<string, string | undefined> = process.
   return strictHardStopActive(env);
 }
 
+/**
+ * Gate F: in gate F mode only a call carrying exactly the authorized pin may
+ * run (only the gate F route passes one), a live run only before the
+ * authorization expires; outside gate F mode a pin is refused. Null = may run.
+ */
+export function gateFSyncRefusal(o: Pick<StrictRouteOptions, "pin" | "dryRun">, env: Record<string, string | undefined> = process.env): string | null {
+  const gate = gateFState(env);
+  if (!gate.requested) return o.pin ? "a gate F pin is refused outside gate F mode" : null;
+  if (!gate.ok) return `the gate F authorization is refused: ${gate.error}`;
+  if (!o.pin || o.pin.hevyId !== gate.auth.hevyId || o.pin.activityId !== gate.auth.activityId) {
+    return "gate F mode: only the authorized workout may be synced, through the gate F panel";
+  }
+  if (!o.dryRun && gate.expired) return "the gate F authorization has expired; nothing more is merged";
+  return null;
+}
+
+/** Gate F: recovery (restore, reconcile, resolve) only for the authorized pair; also after expiry. */
+export function gateFRecoveryPin(env: Record<string, string | undefined> = process.env): { refusal: string | null; pin?: StrictPin } {
+  const gate = gateFState(env);
+  if (!gate.requested) return { refusal: null };
+  if (!gate.ok) return { refusal: `the gate F authorization is refused: ${gate.error}` };
+  return { refusal: null, pin: { hevyId: gate.auth.hevyId, activityId: gate.auth.activityId } };
+}
+
+function blockedResult(o: StrictRouteOptions, reason: string): StrictSyncResult {
+  return {
+    status: "blocked",
+    reason,
+    trigger: o.trigger,
+    dryRun: o.dryRun,
+    hevyId: o.targetHevyId ?? null,
+    title: null,
+    activityId: null,
+    journalIds: [],
+    writes: 0,
+    plan: null,
+    issues: [],
+  };
+}
+
 export async function runStrictSync(sql: Sql, o: StrictRouteOptions): Promise<StrictSyncResult> {
   ensureStrictFirewall();
+  const gateF = gateFSyncRefusal(o);
+  if (gateF) return blockedResult(o, gateF);
   if (!o.dryRun && strictEnvStop()) {
-    return {
-      status: "blocked",
-      reason: "H2G_STRICT_STOP is set: live strict writes are stopped for this deployment",
-      trigger: o.trigger,
-      dryRun: false,
-      hevyId: o.targetHevyId ?? null,
-      title: null,
-      activityId: null,
-      journalIds: [],
-      writes: 0,
-      plan: null,
-      issues: [],
-    };
+    return blockedResult(o, "H2G_STRICT_STOP is set: live strict writes are stopped for this deployment");
   }
   if (!o.dryRun) {
     const schema = await strictSchemaReady(sql);
@@ -148,6 +182,7 @@ export async function runStrictSync(sql: Sql, o: StrictRouteOptions): Promise<St
     targetHevyId: o.targetHevyId,
     excludeHevyIds: o.excludeHevyIds,
     resync: o.resync,
+    ...(o.pin ? { pin: o.pin } : {}),
     ...(o.timing?.verifyDelayMs !== undefined ? { verifyDelayMs: o.timing.verifyDelayMs } : {}),
   });
 }
@@ -207,8 +242,11 @@ function recoveryDeps(sql: Sql, garminClientFactory?: () => Promise<GarminClient
   };
 }
 
-export const strictReconcile = (sql: Sql, journalId: string, f?: () => Promise<GarminClient>, rateLimit?: RateLimitOptions) =>
-  reconcileStrictJournal(recoveryDeps(sql, f, rateLimit), journalId);
+export async function strictReconcile(sql: Sql, journalId: string, f?: () => Promise<GarminClient>, rateLimit?: RateLimitOptions) {
+  const gate = gateFRecoveryPin();
+  if (gate.refusal) return { status: "refused" as const, reason: gate.refusal, journalId, writes: 0 };
+  return reconcileStrictJournal(recoveryDeps(sql, f, rateLimit), journalId, gate.pin ? { pin: gate.pin } : {});
+}
 
 /**
  * Controlled recovery. The DATABASE stop switch does not block it (recovering
@@ -224,12 +262,25 @@ export async function strictRestore(
   if (strictEnvStop()) {
     return { status: "refused" as const, reason: "H2G_STRICT_STOP is set: every Garmin write is refused, restores included", journalId: input.journalId, writes: 0 };
   }
+  const gate = gateFRecoveryPin();
+  if (gate.refusal) return { status: "refused" as const, reason: gate.refusal, journalId: input.journalId, writes: 0 };
   ensureStrictFirewall();
-  return restoreStrictBackup(recoveryDeps(sql, f, timing?.rateLimit), input, { verifyDelayMs: timing?.verifyDelayMs });
+  return restoreStrictBackup(recoveryDeps(sql, f, timing?.rateLimit), input, {
+    verifyDelayMs: timing?.verifyDelayMs,
+    ...(gate.pin ? { pin: gate.pin } : {}),
+  });
 }
 
-export const strictResolve = (sql: Sql, journalId: string, note: string) =>
-  resolveStrictJournal(postgresStrictLedger(sql), journalId, note);
+export async function strictResolve(sql: Sql, journalId: string, note: string): Promise<boolean> {
+  const ledger = postgresStrictLedger(sql);
+  const gate = gateFRecoveryPin();
+  if (gate.refusal) return false;
+  if (gate.pin) {
+    const entry = await ledger.getJournal(journalId);
+    if (!entry || entry.hevyId !== gate.pin.hevyId || entry.garminActivityId !== gate.pin.activityId) return false;
+  }
+  return resolveStrictJournal(ledger, journalId, note);
+}
 
 export const strictSetFrozen = (sql: Sql, frozen: boolean, reason: string | null) =>
   postgresStrictLedger(sql).setFrozen(frozen, reason);

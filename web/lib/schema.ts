@@ -172,6 +172,23 @@ export const SCHEMA_STATEMENTS: readonly string[] = [
      reason TEXT,
      updated_at TIMESTAMPTZ
    )`,
+  // Gate F (lib/gate-f-run.ts): one owner-authorized activity per database. The
+  // single row is claimed by one statement; once a write was journaled it is
+  // done for good, so the authorization cannot be replayed or re-pointed.
+  `CREATE TABLE IF NOT EXISTS strict_gate_f (
+     id TEXT PRIMARY KEY CHECK (id = 'gate_f'),
+     hevy_id TEXT NOT NULL,
+     garmin_activity_id BIGINT NOT NULL,
+     state TEXT NOT NULL CHECK (state IN ('armed', 'running', 'done')),
+     attempts INTEGER NOT NULL DEFAULT 0,
+     run_owner TEXT,
+     started_at TIMESTAMPTZ,
+     finished_at TIMESTAMPTZ,
+     authorized_until TIMESTAMPTZ NOT NULL,
+     last_result JSONB,
+     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+   )`,
 ];
 
 /**
