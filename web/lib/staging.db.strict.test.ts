@@ -231,13 +231,21 @@ describe.skipIf(!url)("synthetic staging rehearsal (real runtime, simulated Hevy
     expect((await raw`SELECT count(*)::int AS n FROM staging_requests WHERE host = 'example.com' AND note = 'refused'`)[0].n).toBe(1);
   });
 
-  it("H2G_STRICT_STOP still refuses every write in staging", async () => {
+  it("H2G_STRICT_STOP: a live sync is refused before the database, Hevy or Garmin is touched", async () => {
+    const requests = async () => (await raw`SELECT count(*)::int AS n FROM staging_requests`)[0].n as number;
+    const journal = async () => (await raw`SELECT count(*)::int AS n FROM strict_journal`)[0].n as number;
+    // Measured on an unfrozen deployment, so it is the hard stop and nothing else that refuses.
+    if ((await m.sync.strictStatus(sql())).control.frozen) await m.sync.strictSetFrozen(sql(), false, null);
+    expect((await m.sync.strictStatus(sql())).control.frozen).toBe(false);
+    const [r0, j0] = [await requests(), await journal()];
     vi.stubEnv("H2G_STRICT_STOP", "1");
     try {
       expect((await live("syn-core")).status).toBe("blocked");
     } finally {
       vi.stubEnv("H2G_STRICT_STOP", "");
     }
+    expect(await requests()).toBe(r0); // not even a read
+    expect(await journal()).toBe(j0);
   });
 
   it("no request ever reached the process network", () => {

@@ -575,7 +575,7 @@ jobs:
             sleep 1
             curl -sf -o /dev/null http://127.0.0.1:8121/login && break
           done
-          if H2G_REHEARSAL_URL=http://127.0.0.1:8121 H2G_REHEARSAL_PASSWORD="$H2G_PASSWORD" node scripts/staging-rehearsal.mjs > foreign-rehearsal.txt; then
+          if H2G_REHEARSAL_URL=http://127.0.0.1:8121 H2G_REHEARSAL_PASSWORD="$H2G_PASSWORD" node scripts/staging-rehearsal.mjs > foreign-rehearsal.txt 2>&1; then
             echo "the rehearsal ran against a database holding a credential"; cat foreign-rehearsal.txt; exit 1
           fi
           grep -q "STOP: not a synthetic staging deployment" foreign-rehearsal.txt || { cat foreign-rehearsal.txt; exit 1; }

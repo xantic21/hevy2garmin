@@ -526,6 +526,46 @@ describe("review round 2: hard stop, recovery exclusivity, full verification", (
     expect(restored.status).toBe("restored");
   });
 
+  it("1: H2G_STRICT_STOP stops a live sync before the ledger is touched (no claim, backup, journal or lock)", async () => {
+    // The engine plans from reads first; the dashboard refuses even those (web: runStrictSync, staging test).
+    const t = setup();
+    const r = await withStop(() => t.run({ dryRun: false }));
+    expect(r).toMatchObject({ status: "blocked", writes: 0 });
+    expect(r.reason).toMatch(/H2G_STRICT_STOP/);
+    expect(await t.ledger.listBindings()).toEqual([]);
+    expect(await t.ledger.listJournalForActivity(9001)).toEqual([]);
+    expect(await t.ledger.getActivityLock(9001)).toBeNull();
+    expect(await t.ledger.getOriginalBackup(9001)).toBeNull(); // no backup taken either
+    expect(t.garmin.writes()).toBe(0);
+  });
+
+  it("1: H2G_STRICT_STOP set DURING a live sync (after the backup) still stops the write before any journal entry", async () => {
+    const t = setup();
+    const ledger = t.deps.ledger;
+    // The operator sets the stop switch while this run is between its backup and its write.
+    t.deps.ledger = new Proxy(ledger, {
+      get(target, prop, receiver) {
+        const v = Reflect.get(target, prop, receiver);
+        if (prop !== "saveBackup" || typeof v !== "function") return typeof v === "function" ? v.bind(target) : v;
+        return async (...a: unknown[]) => {
+          const out = await (v as (...x: unknown[]) => unknown).apply(target, a);
+          process.env.H2G_STRICT_STOP = "1";
+          return out;
+        };
+      },
+    });
+    try {
+      const r = await t.run({ dryRun: false });
+      expect(r.status).toBe("blocked");
+      expect(r.reason).toMatch(/H2G_STRICT_STOP/);
+    } finally {
+      delete process.env.H2G_STRICT_STOP;
+    }
+    expect(t.garmin.writes()).toBe(0);
+    expect(await ledger.listJournalForActivity(9001)).toEqual([]);
+    expect(await ledger.getActivityLock(9001)).toBeNull(); // released on the way out
+  });
+
   it("1: the firewall refuses even a capability-scoped write while the hard stop is set", async () => {
     const { createStrictFetch, withGarminWriteCapability, isStrictModeViolation } = await import("../../src/strict");
     let network = 0;
