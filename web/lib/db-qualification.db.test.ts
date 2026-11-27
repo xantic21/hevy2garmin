@@ -49,9 +49,23 @@ async function digest(db: ReturnType<typeof postgres>, table: string, columns?: 
   return String(rows[0].d);
 }
 
+/**
+ * pg_dump/pg_restore must match the SERVER's major version: a newer pg_dump
+ * writes settings an older server rejects on restore (found in CI: pg_dump 18
+ * against Postgres 16). PG_BINDIR points at the matching client tools.
+ */
+const bin = (tool: string) => (process.env.PG_BINDIR ? join(process.env.PG_BINDIR, tool) : tool);
+const run = (tool: string, args: string[], input?: Buffer) => {
+  try {
+    return execFileSync(bin(tool), args, { input, maxBuffer: 64 * 1024 * 1024, stdio: ["pipe", "pipe", "pipe"] });
+  } catch (e) {
+    const err = e as { stderr?: Buffer };
+    throw new Error(`${tool} failed: ${err.stderr?.toString() ?? String(e)}`);
+  }
+};
 const hasPgDump = (() => {
   try {
-    execFileSync("pg_dump", ["--version"], { stdio: "pipe" });
+    execFileSync(bin("pg_dump"), ["--version"], { stdio: "pipe" });
     return true;
   } catch {
     return false;
@@ -136,8 +150,8 @@ describe.skipIf(!url)("database qualification on synthetic data", () => {
     const tables = [...SCHEMA_TABLES, ...STRICT_SCHEMA_TABLES];
     const before = Object.fromEntries(await Promise.all(tables.map(async (t) => [t, await digest(db, t)] as const)));
 
-    const dump = execFileSync("pg_dump", ["--format=custom", "--no-owner", urlFor(DBS.legacy)], { maxBuffer: 64 * 1024 * 1024 });
-    execFileSync("pg_restore", ["--no-owner", "--exit-on-error", `--dbname=${urlFor(DBS.restore)}`], { input: dump });
+    const dump = run("pg_dump", ["--format=custom", "--no-owner", urlFor(DBS.legacy)]);
+    run("pg_restore", ["--no-owner", "--exit-on-error", `--dbname=${urlFor(DBS.restore)}`], dump);
 
     const restored = connect(DBS.restore);
     for (const t of tables) expect(await digest(restored, t), `${t} differs after restore`).toBe(before[t]);

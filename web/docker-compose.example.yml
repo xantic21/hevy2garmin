@@ -57,6 +57,11 @@ services:
   # Auto-sync. The web app has no timer of its own; something has to call
   # GET /api/cron/sync with the cron secret. Every 2 hours by default, which
   # matches the default 120-minute grace period.
+  #
+  # Strict in-place mode (the default): the endpoint answers 423 "strict_locked"
+  # until the owner sets H2G_STRICT_AUTOMATIC=enabled-by-owner on `web`, after
+  # the accepted real-activity test. Until then this loop changes nothing; you
+  # may also leave the service out entirely.
   cron:
     image: curlimages/curl:8.16.0
     restart: unless-stopped
