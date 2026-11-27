@@ -79,9 +79,9 @@ export default async function MappingsPage() {
   if (data.dbDown) return <DatabaseDownPage title="Exercise mappings" />;
 
   return (
-    <main className="mx-auto max-w-5xl px-4 py-8 md:px-6">
+    <main className="oui-page max-w-5xl">
       <header className="mb-6">
-        <h1 className="text-2xl font-bold text-text">Exercise mappings</h1>
+        <h1 className="oui-title">Exercise mappings</h1>
         <p className="mt-1 text-sm text-text-secondary">
           {data.builtin.length} Hevy exercises mapped to Garmin FIT categories.
           When you upload a workout, each exercise is translated so it displays

@@ -4,9 +4,9 @@
  */
 export function DatabaseDownPage({ title }: { title: string }) {
   return (
-    <main className="mx-auto max-w-5xl px-4 py-8 md:px-6">
+    <main className="oui-page max-w-5xl">
       <header className="mb-6">
-        <h1 className="text-2xl font-bold text-text">{title}</h1>
+        <h1 className="oui-title">{title}</h1>
       </header>
       <div role="alert" className="rounded-lg border border-danger/40 bg-danger/10 p-4 text-sm text-danger">
         The database is not answering, so this page cannot show your data right now. Nothing is

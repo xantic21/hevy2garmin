@@ -5,6 +5,8 @@ import { useState } from "react";
 import { withBasePath } from "@/lib/base-path";
 
 interface Props {
+  /** Strict in-place mode: the strategy is fixed and GitHub Actions sync is off. */
+  strict?: boolean;
   /** A GitHub token is saved (platform_credentials 'github'); the value itself is never sent to the browser. */
   githubTokenSet?: boolean;
   /** A self-hosted server's own sync schedule (lib/server-schedule.ts). When set, the
@@ -184,7 +186,7 @@ export function SettingsForm(p: Props) {
 
   return (
     <form onSubmit={submit} className="space-y-6">
-      {!p.serverSchedule && <div className={cardCls}>
+      {!p.serverSchedule && !p.strict && <div className={cardCls}>
         <label className={labelCls} htmlFor="github_pat">GitHub token (auto-sync on your fork)</label>
         <input id="github_pat" type="password" autoComplete="off" value={githubPat} onChange={(e) => setGithubPat(e.target.value)}
           placeholder={p.githubTokenSet ? "•••• saved — enter a new one to replace it" : "ghp_… (repo + workflow scope)"} className={controlCls} />
@@ -192,7 +194,15 @@ export function SettingsForm(p: Props) {
       </div>}
       {/* Sync */}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        {p.serverSchedule ? (
+        {p.strict ? (
+          <div className={cardCls}>
+            <span className="text-sm font-semibold text-text">Auto-sync</span>
+            <p className="mt-0.5 text-xs text-text-muted">
+              Off in strict in-place mode until the owner has accepted a real activity and sets
+              H2G_STRICT_AUTOMATIC on the server. GitHub Actions sync is never used.
+            </p>
+          </div>
+        ) : p.serverSchedule ? (
           <div className={cardCls}>
             <span className="text-sm font-semibold text-text">Auto-sync</span>
             <p className="mt-0.5 text-xs text-text-muted">
@@ -283,16 +293,26 @@ export function SettingsForm(p: Props) {
       <div>
         <h3 className="mb-2 text-sm font-semibold text-text">Watch activities</h3>
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <Toggle label="Enhance watch activities" checked={mergeMode} onChange={setMergeMode} hint="Merge Hevy sets/reps into a same-time Garmin watch activity instead of uploading a separate strength activity." />
-          <Toggle label="Activity description" checked={descEnabled} onChange={setDescEnabled} hint="Write the exercise/sets summary into the Garmin activity's description." />
+          {p.strict ? (
+            <div className={cardCls}>
+              <span className="text-sm font-semibold text-text">Strict in-place merge</span>
+              <p className="mt-0.5 text-xs text-text-muted">
+                Always on: sets go into the one native strength activity your watch recorded, verified by read-back.
+                Replace and upload strategies do not exist in this mode.
+              </p>
+            </div>
+          ) : (
+            <Toggle label="Enhance watch activities" checked={mergeMode} onChange={setMergeMode} hint="Merge Hevy sets/reps into a same-time Garmin watch activity instead of uploading a separate strength activity." />
+          )}
+          <Toggle label="Activity description" checked={descEnabled} onChange={setDescEnabled} hint={p.strict ? "Add a marked Hevy summary below your own notes, which are kept as written. No estimated heart rate or calories." : "Write the exercise/sets summary into the Garmin activity's description."} />
         </div>
-        <div className={`${cardCls} mt-4`}>
+        {!p.strict && <div className={`${cardCls} mt-4`}>
           <label className={labelCls} htmlFor="sf-strategy">Merge watch strategy</label>
           <select id="sf-strategy" value={strategy} onChange={(e) => setStrategy(e.target.value)} className={controlCls}>
             {STRATEGIES.map((s) => (<option key={s.value} value={s.value}>{s.label}</option>))}
           </select>
           <p className="mt-1.5 text-xs text-text-muted">How a Hevy workout is combined with a same-time watch activity.</p>
-        </div>
+        </div>}
       </div>
 
       {/* Advanced */}

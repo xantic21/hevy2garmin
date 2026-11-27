@@ -1,8 +1,5 @@
 @import "tailwindcss";
-/* The canonical ecosystem design system, shared with soma + the standalone UIs.
-   Direct relative paths — Tailwind v4's CSS @import doesn't resolve the package's
-   exports subpath. base.css = tokens + element foundation; components.css =
-   typography scale + glass surfaces + border-glow. */
-@import "../node_modules/soma-style/css/base.css";
-@import "../node_modules/soma-style/css/components.css";
-@source "../node_modules/soma-style/dist";
+/* xantform Design System 2.0, light (One UI 9.5 inspired). Local, no package:
+   it replaces upstream's soma-style, keeping its token and class names so every
+   component renders in the new system unchanged. */
+@import "../styles/xantform.css";

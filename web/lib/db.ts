@@ -31,7 +31,10 @@ export function getDb(): SqlTag {
     // old message demanded: Vercel Storage sets POSTGRES_URL (#615).
     throw new Error(`No Postgres connection string. Set one of: ${DATABASE_URL_HINT}`);
   }
-  const client = postgres(url, { prepare: false });
+  // `onnotice` silenced: every start re-runs the idempotent schema, and each
+  // CREATE ... IF NOT EXISTS would otherwise log an expected "already exists"
+  // notice, burying real warnings in operations logs. Errors still throw.
+  const client = postgres(url, { prepare: false, onnotice: () => {} });
 
   // Every query waits for the one-time schema bootstrap (#475), so the first
   // write on a fresh database cannot outrun the CREATE TABLE statements.

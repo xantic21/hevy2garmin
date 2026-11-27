@@ -1,0 +1,316 @@
+/**
+ * xantform Design System 2.0 — hevy2garmin, light (One UI 9.5 inspired).
+ *
+ * Replaces the upstream `soma-style` package (a dark blue-slate theme that
+ * also pulled react-native, metro and image-size into the web install). The
+ * token NAMES are kept, so every component that says bg-surface, text-teal or
+ * text-text-secondary keeps working and simply renders in the light system.
+ *
+ * Palette (docs/brand/ICON_PROVENANCE.md, DS 2.0, 25 Nov 2026):
+ *   tile #E6F3EE · ink #1F5A4D (7.01:1 on tile) · medium #A4C7B7 · dark #253F38
+ *
+ * One UI principles applied: a quiet light-grey canvas, content in white
+ * rounded cards (26 px, the icon's own corner ratio), a large title area at
+ * the top of each page, pill-shaped controls, generous touch targets, and
+ * navigation within thumb reach on phones.
+ *
+ * Contrast (WCAG 2.2, computed; on #FFFFFF / on canvas #F3F6F5 / on tile #E6F3EE):
+ *   text #14201C 16.8 / 15.4 / 14.7 · secondary #3F4E48 8.8 / 8.1 / 7.7
+ *   muted #56655F 6.1 / 5.6 / 5.4 · faint #606E68 5.3 / 4.9 / 4.7
+ *   accent #1F5A4D 8.0 / 7.4 / 7.0 · success #17663F 7.0 · warning #8A5300 6.3
+ *   danger #B42318 6.6 · white on accent 8.0 · signal #309780 3.6 (non-text only)
+ */
+@theme {
+  /* Surfaces: canvas → card → raised */
+  --color-base: #f3f6f5;
+  --color-surface: #ffffff;
+  --color-surface-elevated: #ffffff;
+  --color-surface-hover: #eef4f1;
+  --color-surface-active: #e6f3ee;
+
+  /* Hairlines */
+  --color-border: #d6e1dc;
+  --color-border-subtle: #e6ece9;
+  --color-border-glow: #cfe0d8;
+
+  /* Text */
+  --color-text: #14201c;
+  --color-text-secondary: #3f4e48;
+  --color-text-muted: #56655f;
+  --color-text-faint: #606e68;
+  --color-on-accent: #ffffff;
+
+  /* Primary accent: the brand ink. The class names say "teal" for upstream compatibility. */
+  --color-teal: #1f5a4d;
+  --color-teal-light: #2b6f60;
+  --color-teal-dim: #a4c7b7;
+  --color-teal-bg: #e6f3ee;
+  --color-accent-signal: #309780; /* graphics and focus only (3.6:1), never body text */
+
+  /* Secondary hues for data and categories */
+  --color-warm: #8f4f22;
+  --color-warm-light: #a8622f;
+  --color-warm-dim: #d9b8a0;
+  --color-warm-bg: #f8eee6;
+  --color-indigo: #3e4b8b;
+  --color-indigo-light: #5361a8;
+  --color-indigo-dim: #b9c0e3;
+  --color-indigo-bg: #eceefa;
+  --color-lime: #4a6d1f;
+  --color-lime-dim: #b7d08f;
+  --color-lime-bg: #eff6e4;
+
+  /* Status */
+  --color-success: #17663f;
+  --color-warning: #8a5300;
+  --color-danger: #b42318;
+
+  /* Data aliases */
+  --color-calories: #1f5a4d;
+  --color-protein: #8f4f22;
+  --color-carbs: #3e4b8b;
+  --color-fat: #4a6d1f;
+  --color-fiber: #2b6f60;
+
+  /* One UI geometry: rounder containers, pill controls */
+  --radius-lg: 0.875rem;
+  --radius-xl: 1.25rem;
+  --radius-2xl: 1.625rem;
+  --radius-3xl: 2rem;
+
+  --font-sans: "SamsungOne", "One UI Sans", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+:root {
+  color-scheme: light;
+  --shadow-card: 0 1px 2px rgba(20, 32, 28, 0.04), 0 10px 28px -18px rgba(20, 32, 28, 0.22);
+  --shadow-raised: 0 2px 6px rgba(20, 32, 28, 0.06), 0 18px 40px -22px rgba(20, 32, 28, 0.28);
+  --focus-ring: 0 0 0 3px rgba(48, 151, 128, 0.35);
+}
+
+body {
+  background: var(--color-base);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent-signal);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: #cfe7dc;
+  color: var(--color-text);
+}
+
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background: var(--color-border);
+  border-radius: 999px;
+  height: 6px;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--color-teal);
+  border: 3px solid #ffffff;
+  box-shadow: var(--shadow-card);
+  cursor: pointer;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 999px;
+}
+
+/* === Typography (same class names as soma-style) ======================== */
+.t-display {
+  font-size: 2.75rem;
+  line-height: 1.02;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+}
+@media (min-width: 768px) {
+  .t-display {
+    font-size: 3.5rem;
+  }
+}
+.t-headline {
+  font-size: 1.5rem;
+  line-height: 1.15;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.t-title {
+  font-size: 1.125rem;
+  line-height: 1.3;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+.t-body {
+  font-size: 0.9375rem;
+  line-height: 1.55;
+  font-weight: 400;
+}
+.t-caption {
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  font-weight: 500;
+}
+.t-eyebrow {
+  font-size: 0.75rem;
+  line-height: 1.1;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+.t-micro {
+  font-size: 0.6875rem;
+  line-height: 1.25;
+  font-weight: 500;
+  color: var(--color-text-muted);
+}
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* === Surfaces: One UI cards replace the frosted dark glass ============== */
+.glass,
+.glass-elevated,
+.glass-subtle {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-subtle);
+  box-shadow: var(--shadow-card);
+}
+.glass-elevated {
+  box-shadow: var(--shadow-raised);
+}
+.glass-subtle {
+  background: #f8fbfa;
+  box-shadow: none;
+}
+.border-glow {
+  border: 1px solid var(--color-border-glow);
+  box-shadow: var(--shadow-card);
+}
+
+/* === One UI page frame ================================================== */
+/* The "viewing area": a large title with breathing room above it, then the
+   "interaction area" below. Used by every page's <main> and <h1>. */
+.oui-page {
+  margin-inline: auto;
+  width: 100%;
+  padding: 2.25rem 1rem 3rem;
+}
+@media (min-width: 768px) {
+  .oui-page {
+    padding: 3rem 1.5rem 4rem;
+  }
+}
+.oui-title {
+  font-size: 2rem;
+  line-height: 1.1;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  color: var(--color-text);
+}
+@media (min-width: 768px) {
+  .oui-title {
+    font-size: 2.375rem;
+  }
+}
+@media (max-width: 767px) {
+  /* One UI: the title sits low, so the top third of a phone is reading space. */
+  .oui-page > header:first-child,
+  .oui-page > div:first-child:has(> .oui-title) {
+    padding-top: 1.5rem;
+  }
+}
+
+/* Cards and groups */
+.oui-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-2xl);
+  box-shadow: var(--shadow-card);
+  padding: 1.25rem;
+}
+.oui-group {
+  background: var(--color-surface);
+  border-radius: var(--radius-2xl);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+.oui-group > * + * {
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+/* Pills: buttons, status chips */
+.oui-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  border-radius: 999px;
+  padding: 0.25rem 0.75rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.oui-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-height: 2.75rem;
+  border-radius: 999px;
+  padding: 0.625rem 1.25rem;
+  font-weight: 650;
+  font-size: 0.9375rem;
+  transition: background-color 150ms ease, box-shadow 150ms ease, opacity 150ms ease;
+}
+.oui-button-primary {
+  background: var(--color-teal);
+  color: var(--color-on-accent);
+}
+.oui-button-primary:hover {
+  background: var(--color-teal-light);
+}
+.oui-button-tonal {
+  background: var(--color-teal-bg);
+  color: var(--color-teal);
+}
+.oui-button-tonal:hover {
+  background: #d8ece3;
+}
+.oui-button-danger {
+  background: #fdecea;
+  color: var(--color-danger);
+}
+.oui-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

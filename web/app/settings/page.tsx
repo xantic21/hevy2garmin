@@ -4,6 +4,7 @@ import { demoSettings } from "@/lib/demo-data";
 import { DatabaseDownPage } from "@/components/database-down";
 import { ifNoTable } from "@/lib/missing-table";
 import { SettingsForm } from "@/components/settings-form";
+import { strictModeActive } from "@/lib/strict-mode";
 import { DangerZone } from "@/components/danger-zone";
 import { SessionsCard } from "@/components/sessions-card";
 import { ScanDuplicates } from "@/components/scan-duplicates";
@@ -151,9 +152,9 @@ export default async function SettingsPage() {
   const numOrNull = (v: unknown): number | null => (v == null || v === "" ? null : Number(v));
 
   return (
-    <main className="mx-auto max-w-5xl px-4 py-8 md:px-6">
+    <main className="oui-page max-w-5xl">
       <header className="mb-4">
-        <h1 className="text-2xl font-bold text-text">Settings</h1>
+        <h1 className="oui-title">Settings</h1>
         <p className="mt-1 text-sm text-text-secondary">
           Configuration and connection status.
         </p>
@@ -217,6 +218,7 @@ export default async function SettingsPage() {
       <section className="mb-8">
         <h2 className="mb-3 text-lg font-semibold text-text">Configuration</h2>
         <SettingsForm
+          strict={strictModeActive()}
           githubTokenSet={data.platforms.some((r) => r.platform === "github" && r.status === "active")}
           serverSchedule={serverSyncSchedule()}
           autoSyncEnabled={Boolean(autoSync.enabled)}
@@ -297,11 +299,13 @@ export default async function SettingsPage() {
         <ScanDuplicates />
       </section>
 
-      {/* Danger zone */}
-      <section className="mt-8">
-        <h2 className="mb-3 text-lg font-semibold text-danger">Danger zone</h2>
-        <DangerZone syncedCount={data.syncedCount} />
-      </section>
+      {/* Danger zone: unsync-all is locked in strict mode (it would let workouts be written twice). */}
+      {!strictModeActive() && (
+        <section className="mt-8">
+          <h2 className="mb-3 text-lg font-semibold text-danger">Danger zone</h2>
+          <DangerZone syncedCount={data.syncedCount} />
+        </section>
+      )}
     </main>
   );
 }

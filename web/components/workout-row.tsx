@@ -96,10 +96,13 @@ export function WorkoutRow({
   item,
   edited = false,
   onResyncOutcome,
+  strict = false,
 }: {
   item: WorkoutItem;
   edited?: boolean;
   onResyncOutcome?: (hevyId: string, outcome: ResyncOutcome) => void;
+  /** Strict in-place mode: no unsync, and a legacy in-flight upload is quarantined, never replayed. */
+  strict?: boolean;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -115,7 +118,8 @@ export function WorkoutRow({
   const [resyncResult, setResyncResult] = useState<ResyncOutcome | null>(null);
   const canHr = Boolean(item.garmin_activity_id);
   const canResolve = item.kind === "pending";
-  const canUnsync = item.kind === "terminal";
+  // Strict mode keeps every binding: unsync would let a workout be written twice.
+  const canUnsync = !strict && (item.kind === "terminal");
   const resynced = resyncedLabel(item.resynced_at, fmtDate);
 
   async function toggle() {
@@ -430,7 +434,32 @@ export function WorkoutRow({
         </div>
       )}
 
-      {resolving && (
+      {resolving && strict && (
+        <div className="mt-2 rounded-2xl border border-warm-dim/60 bg-warm-bg p-3">
+          <p className="text-xs text-text">
+            A legacy upload from before strict mode is still in flight for this workout. Strict mode quarantines it: it is
+            never retried, finalized or deleted automatically. Check the activity on Garmin Connect; skipping only changes
+            this dashboard.
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => resolve("skip")}
+              disabled={acting}
+              className="rounded-full bg-surface px-3 py-1.5 text-xs font-medium text-text-secondary ring-1 ring-border transition-colors hover:bg-surface-hover disabled:opacity-50"
+            >
+              Skip
+            </button>
+            {actionErr && (
+              <span className="text-xs text-danger" role="alert">
+                {actionErr}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {resolving && !strict && (
         <div className="mt-2 rounded-lg border border-border bg-surface p-3">
           <p className="text-xs text-text-muted">
             This workout is still in-flight. Mark it synced, skip it, or abandon

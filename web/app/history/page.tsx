@@ -136,9 +136,9 @@ export default async function HistoryPage() {
   if (data.dbDown) return <DatabaseDownPage title="Sync history" />;
 
   return (
-    <main className="mx-auto max-w-5xl px-4 py-8 md:px-6">
+    <main className="oui-page max-w-5xl">
       <header className="mb-6">
-        <h1 className="text-2xl font-bold text-text">Sync history</h1>
+        <h1 className="oui-title">Sync history</h1>
         <p className="mt-1 text-sm text-text-secondary">
           {data.total} {data.total === 1 ? "workout" : "workouts"} resolved
           {data.total > LIMIT && <span> · showing the {LIMIT} most recent</span>}

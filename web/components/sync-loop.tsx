@@ -45,7 +45,7 @@ async function recordRun(state: LoopState): Promise<void> {
   }
 }
 
-export function SyncLoop({ ready }: { ready: boolean }) {
+export function SyncLoop({ ready, strict = false }: { ready: boolean; strict?: boolean }) {
   const router = useRouter();
   const [state, setState] = useState<LoopState>(initialLoopState);
   const [running, setRunning] = useState(false);
@@ -110,7 +110,9 @@ export function SyncLoop({ ready }: { ready: boolean }) {
         <div>
           <h3 className="text-sm font-semibold text-text">Sync all</h3>
           <p className="mt-0.5 text-xs text-text-muted">
-            Upload every pending Hevy workout to Garmin, one at a time, with live progress.
+            {strict
+              ? "Merge every unsynced workout into its watch activity, one at a time, with live progress. Workouts without a watch activity are passed over."
+              : "Upload every pending Hevy workout to Garmin, one at a time, with live progress."}
           </p>
         </div>
         {running ? (
@@ -134,7 +136,7 @@ export function SyncLoop({ ready }: { ready: boolean }) {
         ) : (
           <div className="flex items-center gap-2">
             <span className="text-xs text-text-muted">Upload all pending to Garmin?</span>
-            <button type="button" onClick={runLoop} className="rounded-lg bg-teal px-3 py-1.5 text-xs font-medium text-black">
+            <button type="button" onClick={runLoop} className="rounded-lg bg-teal px-3 py-1.5 text-xs font-medium text-on-accent">
               Start
             </button>
             <button type="button" onClick={() => setConfirming(false)} className="text-xs text-text-muted underline">

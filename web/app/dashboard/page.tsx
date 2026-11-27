@@ -14,6 +14,9 @@ import { PipelineDiagram } from "@/components/pipeline-diagram";
 import { HEVY_TO_GARMIN } from "hevy2garmin";
 import { withBasePath } from "@/lib/base-path";
 import { UpdateBanner } from "@/components/update-banner";
+import { StrictPanel, type StrictStatusView } from "@/components/strict-panel";
+import { strictModeActive } from "@/lib/strict-mode";
+import { strictStatus } from "@/lib/strict-sync";
 
 import { connection } from "next/server";
 
@@ -58,6 +61,8 @@ interface DashboardData {
   syncLog: SyncLogEntry[];
   autoSyncEnabled: boolean;
   autoSyncInterval: number;
+  /** Strict in-place mode's live status, or null when it could not be read. */
+  strict?: StrictStatusView | null;
 }
 
 const EMPTY: DashboardData = {
@@ -168,6 +173,7 @@ async function loadDashboard(): Promise<DashboardData> {
       })),
       autoSyncEnabled: Boolean(autoSyncValue.enabled),
       autoSyncInterval: Number(autoSyncValue.interval_minutes) || 120,
+      strict: strictModeActive() ? ((await strictStatus(sql).catch(() => null)) as StrictStatusView | null) : null,
     };
   } catch (error) {
     console.error("[loadDashboard] the database did not answer:", (error as Error)?.message ?? error);
@@ -242,17 +248,19 @@ export default async function DashboardPage() {
   if (!demoMode()) await connection();
   const data = await loadDashboard();
   if (data.dbDown) return <DatabaseDownPage title="Sync status" />;
+  const strict = strictModeActive();
 
   return (
-    <main className="mx-auto max-w-5xl px-4 py-8 md:px-6">
+    <main className="oui-page max-w-5xl">
       <header className="mb-6">
-        <h1 className="text-2xl font-bold text-text">Sync status</h1>
+        <h1 className="oui-title">Sync status</h1>
         <p className="mt-1 text-sm text-text-secondary">
           Your Hevy workouts flowing into Garmin Connect.
         </p>
       </header>
 
-      <UpdateBanner />
+      {/* Strict mode: pulling upstream code into this fork is disabled, so no update banner. */}
+      {!strict && <UpdateBanner />}
 
       {!data.dbConfigured && (
         <div className="mb-6 rounded-lg border border-warm/40 bg-warm/10 p-4 text-sm text-warm">
@@ -265,6 +273,8 @@ export default async function DashboardPage() {
         <ConnectionBadge label="Hevy" connected={data.hevyConnected} />
         <ConnectionBadge label="Garmin Connect" connected={data.garminConnected} />
       </section>
+
+      {strict && <StrictPanel initial={data.strict ?? null} />}
 
       {data.dbConfigured && (!data.hevyConnected || !data.garminConnected) && (
         <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warm/40 bg-warm/10 p-4">
@@ -311,23 +321,32 @@ export default async function DashboardPage() {
       )}
 
       {/* Sync controls (preview is dry-run; live upload is gated) */}
-      <SyncPanel ready={data.hevyConnected && data.garminConnected} />
+      <SyncPanel ready={data.hevyConnected && data.garminConnected} strict={strict} />
       <div className="mt-3">
-        <SyncLoop ready={data.hevyConnected && data.garminConnected} />
+        <SyncLoop ready={data.hevyConnected && data.garminConnected} strict={strict} />
       </div>
       <div className="mt-3">
-        <BatchSync ready={data.hevyConnected && data.garminConnected} onServer={serverSyncSchedule() != null} />
+        <BatchSync ready={data.hevyConnected && data.garminConnected} onServer={serverSyncSchedule() != null} strict={strict} />
       </div>
 
       <div className="mb-8">
-        {serverSyncSchedule() ? (
+        {strict ? (
+          <div className="oui-card flex flex-col gap-1">
+            <span className="t-eyebrow">Automatic sync</span>
+            <p className="text-sm text-text">
+              {data.strict?.automaticEnabled
+                ? "Enabled by the owner: scheduled and webhook runs use the strict merge only."
+                : "Off. Scheduled and webhook runs stay locked until the owner has accepted a real activity and enables them deliberately."}
+            </p>
+          </div>
+        ) : serverSyncSchedule() ? (
           <ServerSchedule schedule={serverSyncSchedule() ?? ""} />
         ) : (
           <AutoSyncToggle enabled={data.autoSyncEnabled} interval={data.autoSyncInterval} />
         )}
       </div>
 
-      <PipelineDiagram mappingCount={Object.keys(HEVY_TO_GARMIN).length} />
+      {!strict && <PipelineDiagram mappingCount={Object.keys(HEVY_TO_GARMIN).length} />}
 
       {/* Recent synced workouts */}
       <section className="mb-8">

@@ -53,7 +53,7 @@ function LoginForm() {
 
   return (
     <main className="mx-auto flex min-h-screen max-w-sm flex-col justify-center px-6">
-      <h1 className="mb-1 text-2xl font-bold text-text">hevy2garmin</h1>
+      <h1 className="oui-title mb-1">hevy2garmin</h1>
       <p className="mb-6 text-sm text-text-secondary">Enter your dashboard password.</p>
       <form onSubmit={onSubmit} className="flex flex-col gap-3">
         <input
@@ -74,7 +74,7 @@ function LoginForm() {
           type="submit"
           data-testid="login-submit"
           disabled={loading || password.length === 0}
-          className="rounded-lg bg-teal px-4 py-3 font-medium text-black transition-opacity disabled:opacity-50"
+          className="rounded-lg bg-teal px-4 py-3 font-medium text-on-accent transition-opacity disabled:opacity-50"
         >
           {loading ? "Signing in…" : "Sign in"}
         </button>

@@ -17,6 +17,7 @@ import {
   strictInPlaceSync,
   strictWriteBlock,
   firewallStats,
+  firewallSelfTest,
   auditDuplicates,
   gatherActivities,
   STRICT_LISTING_LIMIT,
@@ -164,7 +165,9 @@ export async function strictStatus(sql: Sql) {
     mode: "strict_inplace" as const,
     automaticEnabled: strictAutomaticEnabled(),
     envStop: strictEnvStop(),
-    firewall: { installed: isStrictFirewallInstalled(globalThis), ...firewallStats() },
+    // Enforcement, proven by a network-free self-test against the live global
+    // fetch (not just a marker, which a later wrapper such as Next's would hide).
+    firewall: { installed: await firewallSelfTest(globalThis), outermost: isStrictFirewallInstalled(globalThis), ...firewallStats() },
     schema,
     writeBlock: block,
     control,

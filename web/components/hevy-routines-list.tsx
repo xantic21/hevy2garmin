@@ -289,7 +289,7 @@ export function HevyRoutinesList({ syncedIds = [] }: { syncedIds?: string[] }) {
             ) : (
               <span className="flex items-center gap-2">
                 <span className="text-xs text-text-muted">Sync {filtered.length} to Garmin?</span>
-                <button type="button" onClick={syncAll} className="rounded-lg bg-teal px-3 py-2 text-xs font-medium text-black">
+                <button type="button" onClick={syncAll} className="rounded-lg bg-teal px-3 py-2 text-xs font-medium text-on-accent">
                   Start
                 </button>
                 <button type="button" onClick={() => setConfirmAll(false)} className="text-xs text-text-muted underline">

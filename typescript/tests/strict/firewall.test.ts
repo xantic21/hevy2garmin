@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   classifyGarminRequest,
   createStrictFetch,
+  firewallSelfTest,
   installStrictGarminFirewall,
   isStrictFirewallInstalled,
   StrictModeViolation,
@@ -137,5 +138,54 @@ describe("installStrictGarminFirewall over the real Garmin functions", () => {
     } finally {
       globalThis.fetch = original;
     }
+  });
+});
+
+describe("one process, several copies of the engine (bundlers)", () => {
+  it("a capability opened by one copy is honoured by a firewall another copy installed", async () => {
+    const { vi: v } = await import("vitest");
+    v.resetModules();
+    const copyA = await import("../../src/strict/firewall");
+    v.resetModules();
+    const copyB = await import("../../src/strict/firewall");
+    expect(copyA).not.toBe(copyB);
+    const network = v.fn(async () => new Response(null, { status: 204 }));
+    const target = { fetch: network as unknown as typeof fetch };
+    copyA.installStrictGarminFirewall(target);
+    const url = "https://connectapi.garmin.com/activity-service/activity/5/exerciseSets";
+    const init = { method: "POST", headers: { "X-HTTP-Method-Override": "PUT" }, body: JSON.stringify({ activityId: 5, exerciseSets: [] }) };
+    await copyB.withGarminWriteCapability({ activityId: 5, allow: new Set(["exercise_sets"]) }, () => target.fetch(url, init));
+    expect(network).toHaveBeenCalledTimes(1);
+    // A refusal thrown by copy A is recognised by copy B.
+    const err = await target.fetch("https://connectapi.garmin.com/upload-service/upload/.fit", { method: "POST" }).catch((e) => e);
+    expect(copyB.isStrictModeViolation(err)).toBe(true);
+    // Counters are shared too.
+    expect(copyA.firewallStats().blocked).toBe(copyB.firewallStats().blocked);
+  });
+
+  it("the self-test proves enforcement without touching the network", async () => {
+    const { vi: v } = await import("vitest");
+    const network = v.fn(async () => {
+      throw new TypeError("getaddrinfo ENOTFOUND h2g-firewall-selftest.invalid");
+    });
+    const bare = { fetch: network as unknown as typeof fetch };
+    expect(await firewallSelfTest(bare)).toBe(false);
+    installStrictGarminFirewall(bare);
+    const before = network.mock.calls.length;
+    expect(await firewallSelfTest(bare)).toBe(true);
+    expect(network.mock.calls.length).toBe(before);
+  });
+
+  it("re-wraps when something else became the outer fetch, so the policy is always first", async () => {
+    const { vi: v } = await import("vitest");
+    const network = v.fn(async () => new Response(null, { status: 200 }));
+    const target = { fetch: network as unknown as typeof fetch };
+    installStrictGarminFirewall(target);
+    const inner = target.fetch;
+    target.fetch = ((i: RequestInfo | URL, init?: RequestInit) => inner(i, init)) as typeof fetch; // e.g. Next's cache patch
+    expect(isStrictFirewallInstalled(target)).toBe(false);
+    installStrictGarminFirewall(target);
+    expect(isStrictFirewallInstalled(target)).toBe(true);
+    expect(await firewallSelfTest(target)).toBe(true);
   });
 });

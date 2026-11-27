@@ -40,10 +40,39 @@ export interface GarminWriteScope {
   readonly allow: ReadonlySet<GarminWriteKind>;
 }
 
-const scopeStore = new AsyncLocalStorage<GarminWriteScope>();
+/**
+ * Process-wide state, shared by EVERY copy of this module.
+ *
+ * A bundler can load the engine more than once in one process (Next.js
+ * compiles instrumentation.ts separately from the app). If each copy had its
+ * own AsyncLocalStorage, a capability opened by the app's copy would be
+ * invisible to the fetch wrapper installed by instrumentation's copy, and every
+ * legitimate strict write would be refused; the counters would disagree too.
+ * Keyed with Symbol.for so all copies resolve the same objects.
+ */
+interface SharedFirewallState {
+  scopes: AsyncLocalStorage<GarminWriteScope>;
+  blocked: number;
+  recent: FirewallEvent[];
+  installs: number;
+}
+const SHARED = Symbol.for("hevy2garmin.strictFirewall.state");
+const shared: SharedFirewallState = ((globalThis as Record<symbol, unknown>)[SHARED] ??= {
+  scopes: new AsyncLocalStorage<GarminWriteScope>(),
+  blocked: 0,
+  recent: [],
+  installs: 0,
+}) as SharedFirewallState;
+const scopeStore = shared.scopes;
 
 /** Garmin's own hosts: garmin.com, garmin.cn and every subdomain. */
 const GARMIN_HOST = /(^|\.)garmin\.(com|cn)$/i;
+/**
+ * The self-test host: classified as Garmin, but in the RFC 2606 `.invalid`
+ * TLD, which never resolves. A firewall that is missing from the chain makes
+ * the self-test fail with a DNS error, so no real request can ever leave.
+ */
+export const FIREWALL_SELFTEST_HOST = "h2g-firewall-selftest.invalid";
 const AUTH_HOSTS = /^(sso|diauth)\.garmin\.(com|cn)$/i;
 const SETS_PATH = /^\/activity-service\/activity\/(\d+)\/exerciseSets\/?$/;
 const ACTIVITY_PATH = /^\/activity-service\/activity\/(\d+)\/?$/;
@@ -98,7 +127,7 @@ function jsonBody(init: RequestInit | undefined): Record<string, unknown> | null
 export function classifyGarminRequest(input: unknown, init?: RequestInit): GarminRequestClass {
   const url = urlOf(input);
   if (!url) return { kind: "not_garmin" };
-  if (!GARMIN_HOST.test(url.hostname)) return { kind: "not_garmin" };
+  if (!GARMIN_HOST.test(url.hostname) && url.hostname !== FIREWALL_SELFTEST_HOST) return { kind: "not_garmin" };
 
   const req = input && typeof input === "object" && "method" in (input as object) ? (input as Request) : null;
   const method = String(init?.method ?? req?.method ?? "GET").toUpperCase();
@@ -158,27 +187,31 @@ export interface FirewallEvent {
   path: string;
 }
 
-const recent: FirewallEvent[] = [];
-let blockedCount = 0;
-
 /** Blocked attempts since process start, for the dashboard's health panel. */
 export function firewallStats(): { blocked: number; recent: FirewallEvent[] } {
-  return { blocked: blockedCount, recent: recent.slice() };
+  return { blocked: shared.blocked, recent: shared.recent.slice() };
+}
+
+/** True for a StrictModeViolation from ANY copy of this module (instanceof is per copy). */
+export function isStrictModeViolation(e: unknown): boolean {
+  return e instanceof StrictModeViolation || (e as { code?: unknown } | null)?.code === "STRICT_MODE_VIOLATION";
 }
 
 function block(input: unknown, init: RequestInit | undefined, reason: string): never {
   const url = urlOf(input);
-  blockedCount += 1;
-  recent.unshift({
-    at: new Date().toISOString(),
-    verdict: "blocked",
-    reason,
-    method: String(init?.method ?? "GET").toUpperCase(),
-    host: url?.hostname ?? "?",
-    // The path only: query strings can carry tokens.
-    path: url?.pathname ?? "?",
-  });
-  recent.length = Math.min(recent.length, 20);
+  if (url?.hostname !== FIREWALL_SELFTEST_HOST) {
+    shared.blocked += 1;
+    shared.recent.unshift({
+      at: new Date().toISOString(),
+      verdict: "blocked",
+      reason,
+      method: String(init?.method ?? "GET").toUpperCase(),
+      host: url?.hostname ?? "?",
+      // The path only: query strings can carry tokens.
+      path: url?.pathname ?? "?",
+    });
+    shared.recent.length = Math.min(shared.recent.length, 20);
+  }
   throw new StrictModeViolation(`Garmin request refused by strict mode firewall: ${reason}`);
 }
 
@@ -216,15 +249,32 @@ export function isStrictFirewallInstalled(target: { fetch: typeof fetch } = glob
 }
 
 /**
- * Replace `target.fetch` with the strict wrapper. Idempotent. Returns a
- * function that restores the previous fetch (tests only; a server never
- * uninstalls it).
+ * Make the strict wrapper the OUTERMOST fetch. Idempotent when it already is.
+ * When something wrapped it since (Next.js patches the global fetch for its
+ * cache), it wraps again on top: the policy is idempotent, so a request still
+ * meets it exactly once before the network. Returns a function that restores
+ * the previous fetch (tests only; a server never uninstalls it).
  */
 export function installStrictGarminFirewall(target: { fetch: typeof fetch } = globalThis): () => void {
   if (isStrictFirewallInstalled(target)) return () => {};
   const previous = target.fetch;
   target.fetch = createStrictFetch(previous.bind(target));
+  shared.installs += 1;
   return () => {
     target.fetch = previous;
   };
+}
+
+/**
+ * Prove, without any network access, that `target.fetch` refuses a FIT upload.
+ * It sends a request to the never-resolving self-test host: refused by the
+ * firewall → enforced; anything else (a DNS failure, a response) → not.
+ */
+export async function firewallSelfTest(target: { fetch: typeof fetch } = globalThis): Promise<boolean> {
+  try {
+    await target.fetch(`https://${FIREWALL_SELFTEST_HOST}/upload-service/upload/.fit`, { method: "POST", body: "selftest" });
+    return false;
+  } catch (e) {
+    return isStrictModeViolation(e);
+  }
 }

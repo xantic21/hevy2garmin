@@ -1,3 +1,4 @@
+import { strictModeActive } from "@/lib/strict-mode";
 import { getDb } from "@/lib/db";
 import { HevyRoutinesList } from "@/components/hevy-routines-list";
 import { RoutineSchedules } from "@/components/routine-schedules";
@@ -129,13 +130,20 @@ export default async function RoutinesPage() {
   const data = await loadRoutines();
 
   return (
-    <main className="mx-auto max-w-5xl px-4 py-8 md:px-6">
+    <main className="oui-page max-w-5xl">
       <header className="mb-4">
-        <h1 className="text-2xl font-bold text-text">Routines</h1>
+        <h1 className="oui-title">Routines</h1>
         <p className="mt-1 text-sm text-text-secondary">
           Hevy routines synced to Garmin as planned workouts.
         </p>
       </header>
+
+      {strictModeActive() && (
+        <div role="note" className="oui-card mb-6 border-warm-dim/60 bg-warm-bg text-sm text-text">
+          Strict in-place mode: routines are listed, but nothing is created, scheduled or removed on Garmin from here.
+          Routine writes are a separate path that is not qualified for this deployment.
+        </div>
+      )}
 
       <div className="mb-6 rounded-lg border border-border bg-surface p-4 text-sm text-text-muted">
         Sync a Hevy routine to Garmin as a planned workout and add it to a

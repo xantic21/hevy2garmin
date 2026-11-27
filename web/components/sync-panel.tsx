@@ -62,7 +62,7 @@ function fmtDuration(s: number): string {
  * confirmation, and the server independently requires authorization before it
  * will run live.
  */
-export function SyncPanel({ ready }: { ready: boolean }) {
+export function SyncPanel({ ready, strict = false }: { ready: boolean; strict?: boolean }) {
   const router = useRouter();
   const [result, setResult] = useState<SyncResult | null>(null);
   const [busy, setBusy] = useState<null | "preview" | "live">(null);
@@ -99,8 +99,9 @@ export function SyncPanel({ ready }: { ready: boolean }) {
         <div>
           <h2 className="text-lg font-semibold text-text">Run a sync</h2>
           <p className="mt-0.5 text-sm text-text-secondary">
-            Preview shows what the next sync would do. Nothing is uploaded until
-            you choose Sync now.
+            {strict
+              ? "Preview shows which watch activity the next workout would merge into. Nothing is written until you choose Sync now, and then only the sets, name and description, each verified."
+              : "Preview shows what the next sync would do. Nothing is uploaded until you choose Sync now."}
           </p>
         </div>
         <div className="flex items-center gap-2">

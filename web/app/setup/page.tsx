@@ -88,9 +88,9 @@ function StatusDot({
    (#550), so the connect forms would only fail. Say what to do instead. */
 function SetPasswordFirst() {
   return (
-    <main className="mx-auto max-w-3xl px-4 py-8 md:px-6">
+    <main className="oui-page max-w-3xl">
       <header className="mb-6">
-        <h1 className="text-2xl font-bold text-text">Set a password first</h1>
+        <h1 className="oui-title">Set a password first</h1>
         <p className="mt-1 text-sm text-text-secondary">
           This deployment has no dashboard password, so it serves nothing but this page.
         </p>
@@ -133,9 +133,9 @@ export default async function SetupPage() {
   const garminConnected = data.garmin.connected;
 
   return (
-    <main className="mx-auto max-w-3xl px-4 py-8 md:px-6">
+    <main className="oui-page max-w-3xl">
       <header className="mb-6">
-        <h1 className="text-2xl font-bold text-text">Setup</h1>
+        <h1 className="oui-title">Setup</h1>
         <p className="mt-1 text-sm text-text-secondary">
           Connect Hevy and Garmin so your workouts can sync.
         </p>

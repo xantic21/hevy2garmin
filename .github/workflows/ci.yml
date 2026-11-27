@@ -378,6 +378,29 @@ jobs:
             exit 1
           fi
 
+          # Strict in-place mode on the production server itself: the network
+          # firewall is ENFORCED (a network-free self-test, which a marker check
+          # cannot fake once Next.js wraps fetch), the ledger is ready, automatic
+          # runs are locked without the owner gate, and destructive routes answer 423.
+          grep -q "\[strict\] Garmin network firewall installed" start.log || { echo "firewall not installed at start"; cat start.log; exit 1; }
+          curl -s -H "Cookie: $COOKIE" http://127.0.0.1:8100/api/strict/status > strict.json
+          python3 - <<'PYCHECK'
+          import json
+          s = json.load(open("strict.json"))["status"]
+          assert s["mode"] == "strict_inplace", s["mode"]
+          assert s["firewall"]["installed"] is True, s["firewall"]
+          assert s["schema"]["ready"] is True, s["schema"]
+          assert s["automaticEnabled"] is False
+          print("strict status OK:", s["firewall"], s["schema"])
+          PYCHECK
+          for p in /api/unsync-all /api/routines/sync /api/update-fork /api/setup-actions /api/toggle-autosync; do
+            c=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Cookie: $COOKIE" "http://127.0.0.1:8100$p")
+            [ "$c" = "423" ] || { echo "$p answered $c, expected 423"; exit 1; }
+          done
+          c=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:8100/api/sync-one?live=1" -d '{}')
+          [ "$c" = "401" ] || { echo "anonymous live sync answered $c, expected 401"; exit 1; }
+          echo "strict locks verified on the production server"
+
       - name: The web app created the nine tables itself
         run: |
           for t in synced_workouts sync_log hr_cache pending_uploads platform_credentials custom_mappings app_cache synced_routines routine_schedules; do

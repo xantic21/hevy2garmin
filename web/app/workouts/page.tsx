@@ -2,6 +2,7 @@ import { getDb } from "@/lib/db";
 import { demoMode } from "@/lib/demo";
 import { demoWorkouts } from "@/lib/demo-data";
 import { WorkoutList } from "@/components/workout-list";
+import { strictModeActive } from "@/lib/strict-mode";
 import { CandidatesList } from "@/components/candidates-list";
 
 import { connection } from "next/server";
@@ -116,9 +117,9 @@ export default async function WorkoutsPage() {
   const data = await loadWorkouts();
 
   return (
-    <main className="mx-auto max-w-5xl px-4 py-8 md:px-6">
+    <main className="oui-page max-w-5xl">
       <header className="mb-4">
-        <h1 className="text-2xl font-bold text-text">Workouts</h1>
+        <h1 className="oui-title">Workouts</h1>
         <p className="mt-1 text-sm text-text-secondary">
           Terminal and in-flight workouts recorded in the database.
         </p>
@@ -148,7 +149,7 @@ export default async function WorkoutsPage() {
           </p>
         </div>
       ) : (
-        <WorkoutList items={data.items} />
+        <WorkoutList items={data.items} strict={strictModeActive()} />
       )}
     </main>
   );

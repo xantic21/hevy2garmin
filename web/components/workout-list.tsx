@@ -14,7 +14,7 @@ import { WorkoutRow, type WorkoutItem } from "./workout-row";
  * A successful Resync takes its row's badge away at once; the ledger row it
  * rewrote keeps it away after a reload.
  */
-export function WorkoutList({ items }: { items: WorkoutItem[] }) {
+export function WorkoutList({ items, strict = false }: { items: WorkoutItem[]; strict?: boolean }) {
   const [editedIds, setEditedIds] = useState<ReadonlySet<string>>(new Set());
 
   useEffect(() => {
@@ -45,6 +45,7 @@ export function WorkoutList({ items }: { items: WorkoutItem[] }) {
           item={w}
           edited={showsEditedBadge(w, editedIds)}
           onResyncOutcome={onResyncOutcome}
+          strict={strict}
         />
       ))}
     </ul>

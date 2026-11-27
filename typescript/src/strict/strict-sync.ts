@@ -34,8 +34,7 @@ import { selectStrictMergeMatch } from "../strict-merge-policy";
 import type { SyncStore } from "../sync/store";
 import type { DedupWorkout } from "../sync/types";
 import { mergeDescription, strictDescriptionBlock } from "./description";
-import { StrictModeViolation } from "./errors";
-import { withGarminWriteCapability, type GarminWriteKind } from "./firewall";
+import { isStrictModeViolation, withGarminWriteCapability, type GarminWriteKind } from "./firewall";
 import { blockingIssues, buildStrictIntent, type StrictIntentIssue } from "./intent";
 import { BLOCKING_PHASES, type JournalPhase, type JournalStep, type StrictLedger } from "./ledger";
 import { encodeStrictPayload, type StrictSetsPayload } from "./payload";
@@ -555,10 +554,11 @@ async function guardedWrite(w: GuardedWriteInput): Promise<GuardedOutcome> {
     await withGarminWriteCapability({ activityId, allow: new Set([w.kind]) }, w.perform);
     await ledger.advanceJournal(entry.id, ["put_sent"], "put_acknowledged");
   } catch (e) {
-    if (e instanceof StrictModeViolation) {
+    if (isStrictModeViolation(e)) {
       // Refused before any byte left the process.
-      await ledger.advanceJournal(entry.id, ["put_sent"], "aborted", { error: e.message });
-      return { status: "failed", reason: e.message, journalId: entry.id, sent: false };
+      const message = (e as Error).message;
+      await ledger.advanceJournal(entry.id, ["put_sent"], "aborted", { error: message });
+      return { status: "failed", reason: message, journalId: entry.id, sent: false };
     }
     sendError = (e as Error).message.slice(0, 500);
     await ledger.advanceJournal(entry.id, ["put_sent"], "uncertain", { error: sendError });
@@ -803,7 +803,7 @@ export async function restoreStrictBackup(
       await call();
       writes += 1;
     } catch (e) {
-      if (!(e instanceof StrictModeViolation)) writes += 1; // it may have reached Garmin
+      if (!isStrictModeViolation(e)) writes += 1; // it may have reached Garmin
       throw e;
     }
   };
