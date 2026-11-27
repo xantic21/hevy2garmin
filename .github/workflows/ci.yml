@@ -289,6 +289,36 @@ jobs:
           done
           echo "dashboard did not answer on /login"; cat start.log; exit 1
 
+  check-web-container:
+    # The self-hosting image (web/Dockerfile), built the way the docs say, from the
+    # repository root so it compiles the fork-local strict engine. Built and run
+    # locally on the runner only: never tagged for or pushed to any registry.
+    name: Container image (web, strict engine)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Build the image (engine compiled and identity-verified inside)
+        run: docker build -f web/Dockerfile -t h2g-web-ci:local .
+
+      - name: Boot it with a bare environment; strict firewall at start, login answers
+        run: |
+          docker run -d --name h2g -p 127.0.0.1:8096:8096 -e H2G_PASSWORD=ci-test-password \
+            -e HEVY2GARMIN_SECRET=ci-test-secret-32-chars-abcdefgh h2g-web-ci:local
+          for i in $(seq 1 40); do
+            sleep 1
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8096/login || true)
+            case "$code" in 2*|3*) break;; esac
+          done
+          docker logs h2g > container.log 2>&1
+          cat container.log
+          [ "$code" = "200" ] || { echo "GET /login -> $code"; exit 1; }
+          grep -q "\[strict\] Garmin network firewall installed" container.log || { echo "firewall not installed in the image"; exit 1; }
+          [ "$(docker inspect -f '{{.Config.User}}' h2g)" = "node" ] || { echo "image does not run as the unprivileged node user"; exit 1; }
+          docker rm -f h2g
+
   check-web-empty-db:
     # The gap that let #475 through. check-web runs the Playwright smoke with NO
     # DATABASE_URL, and check-fresh-fork-web never provisions a database, so

@@ -23,6 +23,8 @@ This repository is an **independently held fork**, not an original xantform prod
 
 **Code status:** quarantined modernization candidate, based on upstream `b44bdc7c3a34a40fac77c5ec5dd18209f02f6d21`. Not approved for deployment. The existing production installation is not changed by this branch. See the [migration contract](docs/STRICT_MERGE_MIGRATION.md).
 
+**Strict in-place mode (this fork's default):** Hevy sets are written only into the one activity your watch recorded, after a verified backup and with a full read-back. No FIT uploads, no deletions, no automatic runs until the owner approves them. Operations, gates and evidence: [STRICT_OPERATIONS.md](docs/STRICT_OPERATIONS.md).
+
 ## Getting started
 
 For requirements, setup, available deployments, maintenance and security guidance, start with the **current [upstream documentation](https://github.com/drkostas/hevy2garmin#readme)**. An older snapshot of this fork's previous detailed README is retained for historical reference below. Do not rely on its legacy instructions for indefinitely valid broad-scope GitHub tokens; prefer current least-privilege, expiring credentials.

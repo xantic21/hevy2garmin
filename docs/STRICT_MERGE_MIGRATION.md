@@ -22,3 +22,20 @@ The initial pure matching and capability helpers are NOT wired into any live pat
 
 ## Gates
 A: snapshot and quarantine; B: end-to-end strict mode; C: synthetic migration and full CI; D: independent review; E: isolated staging; F: one owner-accepted activity; G: separate production activation. No live credentials, paid resources, package publishing or real workout data in this public repository. No production deployment until all relevant gates pass.
+
+## Implementation status (development branch, synthetic data only)
+
+Recorded by the single writer of `migration/strict-inplace-20261127`. The inputs and contract above are unchanged. Details and evidence: [STRICT_OPERATIONS.md](STRICT_OPERATIONS.md); independent review: [STRICT_REAUDIT.md](STRICT_REAUDIT.md).
+
+| Item | Status | Where |
+| --- | --- | --- |
+| 1 one unambiguous native original, defer otherwise | implemented | `typescript/src/strict/strict-sync.ts`, `strict-merge-policy.ts` |
+| 2 exclusive binding, atomic claims, no upload/delete on any path, guard at the network boundary | implemented | `strict/ledger.ts`, `web/lib/strict-ledger-store.ts`, `strict/firewall.ts`, `web/instrumentation.ts`, `web/proxy.ts`, route guards, `src/hevy2garmin/strict_mode.py` |
+| 3 verified immutable backup, journal, full read-back, block on uncertainty, controlled recovery | implemented | `strict/strict-sync.ts` (reconcile, confirmed restore), `strict_backups` triggers |
+| 4 dashboard runs the exact local engine | implemented | `file:../typescript` copy install, `web/scripts/verify-engine.mjs`, CI |
+| 5 destructive routes and alternate paths off; dry run zero writes; automatic off | implemented | 423 routes and proxy, library guards, Python guard, owner gate |
+| 6 read-only duplicate audit | implemented | `strict/duplicate-audit.ts`, `/api/strict/duplicate-audit` |
+| 7 auth, credentials, schema, backup/restore, migration, rollback on synthetic data; #473/#475 | qualified on synthetic data | `web/lib/db-qualification.db.test.ts`, login hardening, CI production checks |
+| 8 adversarial tests, CI incl. exact runtime, synthetic Postgres and integration | implemented | `typescript/tests/strict/*`, `web/**/*.strict.test.ts`, `*.db.test.ts` |
+| 9 isolated staging, one approved real activity, separate activation | **owner gates E–G** | procedure in STRICT_OPERATIONS.md §7–8 |
+| 10 follow-ups | partly | dashboard redesign done; Expo SDK major and mapping coverage growth remain |
