@@ -15,6 +15,8 @@ import { bearerMatches } from "@/lib/bearer";
 // Runs the sync at request time — never at build.
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+// One workout per request with paced, read-back-verified Garmin calls; within every Vercel plan.
+export const maxDuration = 60;
 
 /**
  * GET /api/cron/sync  —  the scheduled-trigger entry (Vercel cron / any

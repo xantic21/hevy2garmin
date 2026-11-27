@@ -39,6 +39,7 @@ deliberately, and a missing or misspelled one keeps the safe state.
 | `H2G_CREDENTIALS_KEY` | **required in strict mode** to store or use a Garmin token, Hevy key or GitHub token: base64 of 32 random bytes (`openssl rand -base64 32`). Its own secret: equal to `HEVY2GARMIN_SECRET`, `H2G_SECRET`, `CRON_SECRET`, `H2G_PASSWORD` or `H2G_BACKUP_KEY` is refused. One key per environment (staging ≠ production) |
 | `H2G_CREDENTIALS_KEYS_PREVIOUS` | comma-separated previous keys, decrypt only, during a rotation (§13) |
 | `H2G_BACKUP_KEY` | **not a deployment variable**: lives on the operator's machine / password manager and encrypts database backups (§5) |
+| `H2G_STAGING=synthetic` | gate E only: synthetic staging (§7). Hevy and Garmin simulated in-process, no external network, no credential accepted or stored, refuses a database with real data; refuses to start as a Vercel production deployment |
 
 ## 3. Gates (contract § Gates)
 
@@ -48,23 +49,36 @@ deliberately, and a missing or misspelled one keeps the safe state.
 | B end-to-end strict mode | done (synthetic) | engine 533 tests, web 802 tests + real-Postgres cases, e2e through firewall + Postgres |
 | C synthetic migration and full CI | done | `web/lib/db-qualification.db.test.ts` (fresh DB, previous fork-main schema, pg_dump/restore); all CI jobs |
 | D independent review | done, 9/9 findings closed | `docs/STRICT_REAUDIT.md`; no upload/delete path found |
-| E isolated staging | **owner** | procedure §7; synthetic data only |
+| E isolated staging | prepared (conditional GO): synthetic staging mode, CI rehearsal, Vercel preview path | §7; the owner opens the preview and runs the rehearsal |
 | F one owner-accepted real activity | **owner** | procedure §8 |
 | G production activation | **owner** | set `H2G_STRICT_AUTOMATIC` only after F; keep stop switches documented |
 
-## 4. Deployment (quarantined)
+## 4. Deployment path (cost-neutral; production still quarantined)
 
-- Build the container from the repository root:
-  `docker build -f web/Dockerfile -t hevy2garmin-web .` The image compiles
-  the engine from `typescript/`, installs it into `web/node_modules` as a copy
-  and fails the build unless `web/scripts/verify-engine.mjs` proves the
-  installed engine is the private fork build of this commit's source.
-- At start the log must show
-  `[strict] Garmin network firewall installed`; `GET /api/strict/status`
-  (signed in) must report `firewall.installed: true` (a network-free
-  self-test), `schema.ready: true`, `automaticEnabled: false`.
-- Vercel stays disabled. The quarantine guards are removed only in a separate,
-  reviewed cutover.
+The simplest permanently available setup that costs nothing and uses what
+already exists:
+
+| Part | Where | Cost | Notes |
+| --- | --- | --- | --- |
+| Dashboard + API | **Vercel Hobby**, one project, Root Directory `web`, "Include files outside the Root Directory" on | free (personal use) | `web/vercel.json` installs and builds the engine first (`installCommand`), automatic Git deployments off, no Vercel crons |
+| Database | **Neon free plan**: production = the existing database; staging = a **separate, empty** database (e.g. `h2g_staging` in the same project) | free | never a branch of production (it would copy credentials; the staging guard refuses it anyway) |
+| Garmin sign-in (production only) | **own Cloudflare Worker** (`GARMIN_LOGIN_WORKER_URL`, Workers free plan) or `H2G_DIRECT_GARMIN_LOGIN=1` | free | credentials never go to the shared upstream Worker; staging needs neither |
+| Scheduler (after gate G only) | GitHub Actions `schedule` or a Cloudflare Worker cron trigger calling `/api/cron/sync` with `CRON_SECRET` | free | Vercel Hobby crons are limited, and automatic runs stay off until gate G anyway |
+| Backups | operator machine: `pg_dump … \| backup-crypt.mjs encrypt` (§5) | free | before every gate and monthly |
+
+**What Vercel may build.** Exactly one thing until the cutover: a *preview*
+deployment with `H2G_STAGING=synthetic`. Enforced twice:
+`web/scripts/vercel-ignore.mjs` (Ignored Build Step: anything else is skipped)
+and `web/next.config.ts` (anything else fails the build). Production builds stay
+refused; the quarantine is lifted only in a separate, reviewed cutover after
+gate F. Long routes declare `maxDuration = 60` (within every plan).
+
+**Container (self-hosting alternative).** `docker build -f web/Dockerfile -t
+hevy2garmin-web .` from the repository root; the image compiles the engine and
+fails unless `verify-engine.mjs` proves it is this commit's build. At start the
+log shows `[strict] Garmin network firewall installed`; `GET /api/strict/status`
+must report `firewall.installed: true`, `schema.ready: true`,
+`automaticEnabled: false`.
 
 ## 5. Database
 
@@ -112,12 +126,55 @@ deliberately, and a missing or misspelled one keeps the safe state.
   choose original or pre-write → type `RESTORE <id>`. One sets PUT and, if
   needed, one name/description PUT, both read back.
 
-## 7. Isolated staging (gate E, owner)
+## 7. Isolated staging with synthetic data (gate E)
 
-Separate Postgres with synthetic data only; separate deployment with
-`H2G_STRICT_STOP` unset, no `H2G_STRICT_AUTOMATIC`, a Garmin test account if
-available. Check: start log, `/api/strict/status`, every locked route 423,
-dry-run preview of a synthetic workout, duplicate audit (read-only).
+**What it is.** The production build with `H2G_STAGING=synthetic`
+(`web/lib/staging-mode.ts`): the real strict engine, ledger, firewall and
+dashboard; Hevy and Garmin Connect simulated in-process at the HTTP level
+(`web/lib/staging-simulator.ts`), installed as the firewall's transport so
+every request meets the production firewall first and nothing leaves the
+process. Credential routes answer 423 before reading the body, the vault
+refuses every write, and the database guard (`web/lib/staging-guard.ts`)
+refuses — before even the schema bootstrap — any database holding a
+credential or non-synthetic history. A banner on every page says it is
+synthetic.
+
+**Scenarios** (`web/lib/staging-fixtures.ts`, ids `syn-*`, activities 9100001–9100010):
+clean merge · read-back mismatch → needs review → restore · lost response →
+read-back verifies · lost response + 60 s outage → uncertain → reconcile ·
+synthesized timing (plank, set-count mismatch) · two candidates → needs review ·
+no recording → waits · rejected write → not applied · legacy upload → audit
+duplicate, strict leaves it alone.
+
+**Qualified in CI** (job "Synthetic staging rehearsal (gate E)"): the
+production server in staging mode is driven over HTTP by
+`web/scripts/staging-rehearsal.mjs` (37 checks), and pointed at a database with
+a credential it refuses every query and creates nothing. On Postgres:
+`web/lib/staging.db.strict.test.ts` (the process network replaced by a
+tripwire that no request reaches).
+
+**On Vercel** (no new resources):
+
+1. Neon: create an empty database for staging (or any other free, empty
+   Postgres). Not a branch of production.
+2. Vercel project (Root Directory `web`): environment variables scoped to
+   **Preview**, ideally to the branch `migration/strict-inplace-20261127`:
+   `H2G_STAGING=synthetic`, `DATABASE_URL=<staging database>`,
+   `H2G_PASSWORD=<staging-only password>`, `HEVY2GARMIN_SECRET=<random>`,
+   `CRON_SECRET=<random>`. Make sure no Preview-scoped `POSTGRES_URL` /
+   `DATABASE_URL` of production applies to that branch (a branch-specific value
+   wins; the guard refuses a production database regardless). Never set Garmin
+   or Hevy credentials, `H2G_STRICT_AUTOMATIC` or `GARMIN_LOGIN_WORKER_URL` there.
+3. Create a preview deployment of the branch (Git deployments are off, so it is
+   created explicitly: dashboard "Redeploy"/CLI `vercel deploy`/API). Keep
+   Vercel Deployment Protection on.
+4. Run the rehearsal against it:
+   `H2G_REHEARSAL_URL=https://<preview> H2G_REHEARSAL_PASSWORD=<staging password> node web/scripts/staging-rehearsal.mjs`
+   (add `H2G_REHEARSAL_BYPASS` when Deployment Protection is on). It refuses to
+   run unless the target reports itself as synthetic staging.
+5. Click through the dashboard: the banner, Preview, Sync now, the strict panel
+   (stop, lift, reconcile, restore), the duplicate audit. `GET
+   /api/staging/status` shows every simulated request.
 
 ## 8. One owner-accepted real activity (gate F, owner)
 

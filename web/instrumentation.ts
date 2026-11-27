@@ -7,8 +7,14 @@
  */
 export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
+  const { assertStagingEnvironment, stagingMode } = await import("./lib/staging-mode");
+  // Synthetic staging refuses to start as a production deployment or outside strict mode.
+  assertStagingEnvironment();
   const { ensureStrictFirewall } = await import("./lib/strict-sync");
   if (ensureStrictFirewall()) {
     console.log("[strict] Garmin network firewall installed: uploads, deletes and non-merge writes are refused");
+  }
+  if (stagingMode()) {
+    console.log("[staging] synthetic staging: Hevy and Garmin are simulated in-process; no external network, no credentials");
   }
 }

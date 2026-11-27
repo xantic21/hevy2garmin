@@ -7,6 +7,8 @@ import { verifySession, SESSION_COOKIE, authEnabled } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+// One workout per request with paced, read-back-verified Garmin calls; within every Vercel plan.
+export const maxDuration = 60;
 
 /**
  * POST /api/sync-run  { synced, skipped, failed }

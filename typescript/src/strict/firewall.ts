@@ -55,6 +55,13 @@ interface SharedFirewallState {
   blocked: number;
   recent: FirewallEvent[];
   installs: number;
+  /**
+   * Where a request the policy lets through goes. Null (always, outside the
+   * synthetic staging mode): the next fetch in the chain, i.e. the network.
+   * In staging: an in-process simulator, so nothing ever leaves the process,
+   * while every request still meets this policy first.
+   */
+  transport?: typeof fetch | null;
 }
 const SHARED = Symbol.for("hevy2garmin.strictFirewall.state");
 const shared: SharedFirewallState = ((globalThis as Record<symbol, unknown>)[SHARED] ??= {
@@ -244,7 +251,7 @@ export function createStrictFetch(base: typeof fetch): typeof fetch {
       case "not_garmin":
       case "read":
       case "auth":
-        return base(input, init);
+        return (shared.transport ?? base)(input, init);
       case "forbidden":
         return block(input, init, verdict.reason);
       case "write": {
@@ -256,7 +263,7 @@ export function createStrictFetch(base: typeof fetch): typeof fetch {
           return block(input, init, `capability is for activity ${scope.activityId}, not ${verdict.activityId}`);
         }
         if (!scope.allow.has(verdict.write)) return block(input, init, `${verdict.write} not granted by capability`);
-        return base(input, init);
+        return (shared.transport ?? base)(input, init);
       }
     }
   }) as typeof fetch;
@@ -265,6 +272,22 @@ export function createStrictFetch(base: typeof fetch): typeof fetch {
 }
 
 const STRICT_MARK = Symbol.for("hevy2garmin.strictFetch");
+
+/**
+ * Route every request the policy allows to `transport` instead of the network
+ * (null restores the network). Only the synthetic staging mode sets it, to an
+ * in-process simulator; refused requests never reach it. Returns the previous
+ * transport.
+ */
+export function setStrictTransport(transport: typeof fetch | null): typeof fetch | null {
+  const previous = shared.transport ?? null;
+  shared.transport = transport;
+  return previous;
+}
+
+export function strictTransportActive(): boolean {
+  return Boolean(shared.transport);
+}
 
 /** True when `globalThis.fetch` (or `target.fetch`) is already the strict wrapper. */
 export function isStrictFirewallInstalled(target: { fetch: typeof fetch } = globalThis): boolean {

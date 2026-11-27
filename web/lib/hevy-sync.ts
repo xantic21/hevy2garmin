@@ -17,6 +17,9 @@
 import { HevyClient, HevyAuthError } from "hevy2garmin";
 import { getDb } from "./db";
 import { CredentialVaultError, readCredentials } from "./credential-vault";
+import { stagingMode } from "./staging-mode";
+import { STAGING_HEVY_KEY } from "./staging-simulator";
+import { ensureStrictFirewall } from "./strict-sync";
 
 /**
  * Read the stored Hevy API key from platform_credentials (platform='hevy'),
@@ -44,6 +47,8 @@ async function keyFromDb(): Promise<string | null> {
 
 /** Resolve the Hevy API key (arg → env → DB), or null. Exposed for raw calls. */
 export async function resolveHevyKey(key?: string | null): Promise<string | null> {
+  // Synthetic staging: a placeholder key the simulator answers; no real key is ever read.
+  if (stagingMode()) return STAGING_HEVY_KEY;
   const explicit = key?.trim();
   const fromEnv = process.env.HEVY_API_KEY?.trim();
   return explicit || fromEnv || (await keyFromDb());
@@ -55,6 +60,10 @@ export async function resolveHevyKey(key?: string | null): Promise<string | null
  * can be found so callers can surface a clear "connect Hevy first" error.
  */
 export async function getHevyClient(key?: string | null): Promise<HevyClient> {
+  if (stagingMode()) {
+    ensureStrictFirewall(); // routes Hevy traffic to the simulator
+    return new HevyClient(STAGING_HEVY_KEY);
+  }
   const explicit = key?.trim();
   const fromEnv = process.env.HEVY_API_KEY?.trim();
   const apiKey = explicit || fromEnv || (await keyFromDb());

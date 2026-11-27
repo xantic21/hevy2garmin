@@ -2,8 +2,11 @@ import type { NextConfig } from "next";
 
 // Quarantined migration candidate: even a manually requested Vercel build fails closed.
 // Remove only in a separately reviewed cutover after strict-merge qualification.
-if (process.env.VERCEL_ENV) {
-  throw new Error("Migration candidate is not approved for Vercel deployment");
+// The one exception is gate E: a PREVIEW build in synthetic staging mode
+// (H2G_STAGING=synthetic, lib/staging-mode.ts), which can hold no credential and
+// reaches no external service. A production build stays refused.
+if (process.env.VERCEL_ENV && !(process.env.VERCEL_ENV === "preview" && process.env.H2G_STAGING === "synthetic")) {
+  throw new Error("Migration candidate is not approved for Vercel deployment (only a synthetic-staging preview is)");
 }
 
 // Optional path prefix for a self-hosted dashboard behind a reverse proxy

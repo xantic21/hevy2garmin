@@ -218,3 +218,50 @@ describe("closed re-audit finding #2", () => {
     expect(classifyGarminRequest(`${API}/activity-service/activity/123`, { method: "PUT", headers: { "X-HTTP-Method-Override": "DELETE" }, body }).kind).toBe("forbidden");
   });
 });
+
+describe("staging transport (review round 2, synthetic staging)", () => {
+  afterEach(async () => {
+    const { setStrictTransport } = await import("../../src/strict");
+    setStrictTransport(null);
+  });
+
+  it("allowed requests go to the transport, never to the network; refused ones reach neither", async () => {
+    const { setStrictTransport, strictTransportActive } = await import("../../src/strict");
+    const network = vi.fn(async () => new Response("network"));
+    const transport = vi.fn(async () => new Response("simulated"));
+    const f = createStrictFetch(network as unknown as typeof fetch);
+    expect(strictTransportActive()).toBe(false);
+    setStrictTransport(transport as unknown as typeof fetch);
+    expect(strictTransportActive()).toBe(true);
+
+    expect(await (await f(`${API}/activity-service/activity/7`)).text()).toBe("simulated");
+    expect(await (await f("https://api.hevyapp.com/v1/workouts")).text()).toBe("simulated");
+    await withGarminWriteCapability({ activityId: 7, allow: ["exercise_sets"] }, async () => {
+      await f(`${API}/activity-service/activity/7/exerciseSets`, put({ activityId: 7, exerciseSets: [] }));
+    });
+    await expect(f(`${API}/upload-service/upload/.fit`, { method: "POST", body: "x" })).rejects.toBeInstanceOf(StrictModeViolation);
+    await expect(f(`${API}/activity-service/activity/7`, { method: "DELETE" })).rejects.toBeInstanceOf(StrictModeViolation);
+    expect(transport).toHaveBeenCalledTimes(3);
+    expect(network).not.toHaveBeenCalled();
+    expect(await firewallSelfTest({ fetch: f })).toBe(true);
+
+    setStrictTransport(null);
+    expect(await (await f(`${API}/activity-service/activity/7`)).text()).toBe("network");
+  });
+
+  it("the hard stop still beats the transport", async () => {
+    const { setStrictTransport } = await import("../../src/strict");
+    const transport = vi.fn(async () => new Response("simulated"));
+    setStrictTransport(transport as unknown as typeof fetch);
+    const f = createStrictFetch(vi.fn() as unknown as typeof fetch);
+    vi.stubEnv("H2G_STRICT_STOP", "1");
+    try {
+      await withGarminWriteCapability({ activityId: 7, allow: ["exercise_sets"] }, async () => {
+        await expect(f(`${API}/activity-service/activity/7/exerciseSets`, put({ activityId: 7, exerciseSets: [] }))).rejects.toBeInstanceOf(StrictModeViolation);
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(transport).not.toHaveBeenCalled();
+  });
+});

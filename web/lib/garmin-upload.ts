@@ -21,6 +21,8 @@ import { EncryptedTokenStore } from "./encrypted-token-store";
 import { resolveDatabaseUrl } from "./database-url";
 import { ensureStrictFirewall } from "./strict-sync";
 import { strictModeActive } from "./strict-mode";
+import { stagingMode } from "./staging-mode";
+import { stagingGarminClient } from "./staging-simulator";
 
 /** The DI tokens live in platform_credentials at this platform key. */
 export const GARMIN_TOKEN_PLATFORM = "garmin_tokens";
@@ -62,6 +64,8 @@ export async function normalizeGarminTokenRow(sql: ReturnType<typeof getDb>): Pr
 export async function getGarminClient(databaseUrl?: string): Promise<GarminClient> {
   // Strict mode: no Garmin client exists without the network firewall in front of it.
   ensureStrictFirewall();
+  // Synthetic staging: synthetic tokens, answered by the simulator only; no credential is read.
+  if (stagingMode()) return stagingGarminClient();
   if (cachedClient) return cachedClient;
   const url = databaseUrl ?? resolveDatabaseUrl();
   if (!url) throw new Error("DATABASE_URL not set (cannot load Garmin tokens)");

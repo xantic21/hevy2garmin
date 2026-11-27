@@ -288,3 +288,22 @@ describe("proxy: DEMO_MODE makes an unconfigured deploy browsable (#634)", () =>
     expect(new URL(res.headers.get("location") as string).pathname).toBe("/login");
   });
 });
+
+describe("proxy: synthetic staging never receives a credential (gate E)", () => {
+  afterEach(() => {
+    delete process.env.H2G_STAGING;
+  });
+  it.each(["/api/garmin-login", "/api/garmin-login-mfa", "/api/garmin-ticket", "/api/garmin-ticket-exchange", "/api/connect-hevy", "/api/validate-hevy", "/api/setup-actions", "/api/strict/credentials"])(
+    "%s answers 423 before auth or body",
+    async (path) => {
+      process.env.H2G_STAGING = "synthetic";
+      const res = await proxy(req(path, { "content-type": "application/json" }, "POST"));
+      expect(res.status).toBe(423);
+      expect((await res.json()).staging).toBe(true);
+    },
+  );
+  it("outside staging the same route reaches the normal auth gate", async () => {
+    const res = await proxy(req("/api/connect-hevy", {}, "POST"));
+    expect(res.status).toBe(401);
+  });
+});

@@ -1,6 +1,8 @@
 import postgres from "postgres";
-import { ensureSchema } from "./schema";
+import { ensureSchema, SCHEMA_STATEMENTS } from "./schema";
 import { resolveDatabaseUrl, DATABASE_URL_HINT } from "./database-url";
+import { stagingMode } from "./staging-mode";
+import { ensureStagingDatabase, STAGING_SCHEMA } from "./staging-guard";
 
 /**
  * Tagged-template SQL function matching the @neondatabase/serverless shape
@@ -22,6 +24,7 @@ type SqlTag = {
 };
 
 let cached: SqlTag | null = null;
+let rawClient: ReturnType<typeof postgres> | null = null;
 
 export function getDb(): SqlTag {
   if (cached) return cached;
@@ -35,11 +38,15 @@ export function getDb(): SqlTag {
   // CREATE ... IF NOT EXISTS would otherwise log an expected "already exists"
   // notice, burying real warnings in operations logs. Errors still throw.
   const client = postgres(url, { prepare: false, onnotice: () => {} });
+  rawClient = client;
 
   // Every query waits for the one-time schema bootstrap (#475), so the first
   // write on a fresh database cannot outrun the CREATE TABLE statements.
+  // Synthetic staging: the database guard runs first, before even the additive
+  // bootstrap, and a refusal fails every query (lib/staging-guard.ts).
+  const ready = () => (stagingMode() ? ensureStagingDatabase(client, () => ensureSchema(client)) : ensureSchema(client));
   const tag = ((strings: TemplateStringsArray, ...values: unknown[]) =>
-    ensureSchema(client)
+    ready()
       .then(() => (client as unknown as (s: TemplateStringsArray, ...v: unknown[]) => Promise<unknown[]>)(strings, ...values))
       .then((rows) => Array.from(rows) as Row[])) as SqlTag;
 
@@ -47,4 +54,15 @@ export function getDb(): SqlTag {
 
   cached = tag;
   return cached;
+}
+
+/**
+ * Synthetic staging only: re-run the schema (and the simulator tables) after
+ * the staging seed dropped the ledger tables, which the memoised per-process
+ * bootstrap would not re-create. Refused outside staging.
+ */
+export async function stagingRebootstrap(): Promise<void> {
+  if (!stagingMode()) throw new Error("stagingRebootstrap is only available in synthetic staging");
+  getDb();
+  for (const s of [...SCHEMA_STATEMENTS, ...STAGING_SCHEMA]) await rawClient!.unsafe(s);
 }

@@ -23,6 +23,7 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import type { getDb } from "./db";
 import { strictModeActive } from "./strict-mode";
+import { stagingMode } from "./staging-mode";
 
 type Sql = ReturnType<typeof getDb>;
 type Env = Record<string, string | undefined>;
@@ -208,6 +209,7 @@ export async function writeCredentials(
   meta: { authType: string; status?: string; touchConnectedAt?: boolean },
   env: Env = process.env,
 ): Promise<void> {
+  if (stagingMode(env)) throw new CredentialVaultError("synthetic staging never stores a credential");
   const ring = loadKeyring(env);
   let stored: unknown;
   if (ring.current) stored = seal(platform, value, ring);

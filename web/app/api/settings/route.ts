@@ -1,3 +1,4 @@
+import { stagingMode, stagingRefusal } from "@/lib/staging-mode";
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { getDb } from "@/lib/db";
@@ -169,6 +170,7 @@ export async function POST(request: Request) {
   // GitHub token (#458): not app_cache config — the platform_credentials row the Python
   // dashboard writes from its Settings page. Blank = keep the current one.
   const githubPat = typeof body.github_pat === "string" ? body.github_pat.trim() : "";
+  if (githubPat && stagingMode()) return stagingRefusal("Saving a GitHub token");
   const keys = Object.keys(changes);
   if (keys.length === 0 && !githubPat) {
     return NextResponse.json({ error: "No editable config provided." }, { status: 400 });

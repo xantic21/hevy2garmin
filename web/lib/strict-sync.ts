@@ -29,6 +29,7 @@ import {
 } from "hevy2garmin";
 import type { GarminClient } from "garmin-auth";
 import { vaultStatus } from "./credential-vault";
+import { installStagingTransport } from "./staging-simulator";
 import { getGarminClient } from "./garmin-upload";
 import { fetchAllWorkouts, fetchAllWorkoutsReadOnly, type HevyWorkout } from "./hevy-sync";
 import type { Sql } from "./pending-store";
@@ -45,6 +46,8 @@ import { strictAutomaticEnabled, strictModeActive } from "./strict-mode";
  */
 export function ensureStrictFirewall(): boolean {
   if (!strictModeActive()) return false;
+  // Synthetic staging: what the firewall allows goes to the in-process simulator, never the network.
+  installStagingTransport();
   if (!isStrictFirewallInstalled(globalThis)) installStrictGarminFirewall(globalThis);
   return true;
 }

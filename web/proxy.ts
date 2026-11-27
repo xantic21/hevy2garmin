@@ -1,3 +1,4 @@
+import { stagingCredentialPath, stagingMode, stagingRefusal } from "@/lib/staging-mode";
 import { NextResponse, type NextFetchEvent, type NextRequest } from "next/server";
 import { countVisit } from "@/lib/visit-counter";
 
@@ -245,6 +246,8 @@ export async function proxy(req: NextRequest, event?: NextFetchEvent) {
       { status: 423 },
     );
   }
+  // Synthetic staging never receives a credential: refuse before the body is read.
+  if (stagingMode() && stagingCredentialPath(pathname, req.method)) return stagingRefusal("Connecting an account");
   // Before the auth gate on purpose: a demo with auth disabled is still read-only.
   if (
     demoMode() &&

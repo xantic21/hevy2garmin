@@ -3,6 +3,8 @@ import { strictDuplicateAudit } from "@/lib/strict-sync";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+// One workout per request with paced, read-back-verified Garmin calls; within every Vercel plan.
+export const maxDuration = 60;
 
 /**
  * GET /api/strict/duplicate-audit?days=90 — the read-only historical

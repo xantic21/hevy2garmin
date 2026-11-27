@@ -18,6 +18,8 @@ import { bearerMatches } from "@/lib/bearer";
 // Reads live Hevy + Postgres (and, on the live path, Garmin) at request time.
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+// One workout per request with paced, read-back-verified Garmin calls; within every Vercel plan.
+export const maxDuration = 60;
 
 /**
  * POST /api/sync  —  batch sync of ALL candidates. DRY-RUN BY DEFAULT.

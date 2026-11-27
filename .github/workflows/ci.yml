@@ -493,3 +493,93 @@ jobs:
         run: |
           TEST_DATABASE_URL="${DATABASE_URL:?}" npx vitest run --project upstream lib/strict-ledger-store.db.test.ts
           TEST_DATABASE_URL="${DATABASE_URL:?}" npx vitest run --project strict lib/strict-e2e.db.strict.test.ts lib/strict-duplicate-audit.db.strict.test.ts
+          # Review round 2: sealed credentials (vault, token store, rotation) and synthetic staging.
+          TEST_DATABASE_URL="${DATABASE_URL:?}" npx vitest run --project strict lib/credential-vault.db.strict.test.ts lib/staging.db.strict.test.ts
+
+  check-staging-rehearsal:
+    # Gate E rehearsed in CI: the production build in synthetic staging mode
+    # (H2G_STAGING=synthetic) against an empty Postgres, driven over HTTP by the
+    # same script that rehearses the Vercel staging preview: credential routes
+    # locked, every scenario (merge, mismatch and restore, lost response,
+    # outage and reconcile, ambiguous, missing, rejected, legacy duplicate),
+    # and the evidence that only the simulated hosts were contacted. Then the
+    # isolation proof: pointed at a database holding a credential, the staging
+    # server refuses every query and creates nothing in it.
+    name: Synthetic staging rehearsal (gate E)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: h2g_staging
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://test:test@localhost:5432/h2g_staging
+      H2G_PASSWORD: ci-staging-password
+      HEVY2GARMIN_SECRET: ci-staging-secret-32-chars-abcdefgh
+      H2G_STAGING: synthetic
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build the fork-local engine
+        working-directory: typescript
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install and build the web app
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Rehearse every scenario over HTTP
+        working-directory: web
+        run: |
+          npx next start --port 8120 --hostname 127.0.0.1 > start.log 2>&1 &
+          for i in $(seq 1 40); do
+            sleep 1
+            curl -sf -o /dev/null http://127.0.0.1:8120/login && break
+          done
+          grep -q "\[staging\] synthetic staging" start.log || { echo "staging mode not announced"; cat start.log; exit 1; }
+          H2G_REHEARSAL_URL=http://127.0.0.1:8120 H2G_REHEARSAL_PASSWORD="$H2G_PASSWORD" node scripts/staging-rehearsal.mjs || { cat start.log; exit 1; }
+
+      - name: Pointed at a database with a credential, staging refuses and creates nothing
+        working-directory: web
+        run: |
+          psql postgresql://test:test@localhost:5432/postgres -v ON_ERROR_STOP=1 -qc "CREATE DATABASE h2g_foreign"
+          F=postgresql://test:test@localhost:5432/h2g_foreign
+          psql "$F" -v ON_ERROR_STOP=1 -qc "CREATE TABLE platform_credentials (platform VARCHAR(50) PRIMARY KEY, auth_type VARCHAR(20), credentials JSONB NOT NULL DEFAULT '{}', status VARCHAR(20))" \
+            -c "INSERT INTO platform_credentials VALUES ('hevy', 'api_key', '{\"api_key\": \"synthetic\"}', 'active')"
+          DATABASE_URL="$F" npx next start --port 8121 --hostname 127.0.0.1 > foreign.log 2>&1 &
+          for i in $(seq 1 40); do
+            sleep 1
+            curl -sf -o /dev/null http://127.0.0.1:8121/login && break
+          done
+          if H2G_REHEARSAL_URL=http://127.0.0.1:8121 H2G_REHEARSAL_PASSWORD="$H2G_PASSWORD" node scripts/staging-rehearsal.mjs > foreign-rehearsal.txt; then
+            echo "the rehearsal ran against a database holding a credential"; cat foreign-rehearsal.txt; exit 1
+          fi
+          grep -q "STOP: not a synthetic staging deployment" foreign-rehearsal.txt || { cat foreign-rehearsal.txt; exit 1; }
+          grep -q "refusing: this database holds 1 stored credential" foreign-rehearsal.txt || { cat foreign-rehearsal.txt; exit 1; }
+          T=$(psql "$F" -tAc "SELECT string_agg(tablename, ',' ORDER BY tablename) FROM pg_tables WHERE schemaname = 'public'")
+          [ "$T" = "platform_credentials" ] || { echo "staging created tables in a foreign database: $T"; exit 1; }
+          echo "isolation proven: refused before any change"
