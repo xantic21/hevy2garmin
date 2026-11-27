@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { directGarminLogin } from "@/lib/direct-login-flag";
-import { localGarminLogin } from "@/lib/garmin-login-worker";
+import { exchangeTicket } from "@/lib/garmin-login-worker";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -16,9 +15,8 @@ export const runtime = "nodejs";
  * /api/garmin-ticket exactly as on the Worker path. Off, the route answers 404.
  */
 export async function POST(request: Request) {
-  if (!directGarminLogin()) {
-    return NextResponse.json({ error: "Direct Garmin login is off on this server." }, { status: 404 });
-  }
+  // Fork: the exchange always runs here (direct, or via the owner's own Worker),
+  // so the browser never posts a Garmin ticket to a third-party service.
   let ticket = "";
   try {
     const body = (await request.json()) as { ticket?: unknown };
@@ -29,7 +27,7 @@ export async function POST(request: Request) {
   if (!ticket.startsWith("ST-")) {
     return NextResponse.json({ error: "Missing or malformed ticket." }, { status: 400 });
   }
-  const r = await localGarminLogin().exchange(ticket);
+  const r = await exchangeTicket(ticket);
   if (r.status !== "success" || !r.di_token || !r.di_refresh_token || !r.di_client_id) {
     return NextResponse.json({ error: r.message ?? "That ticket could not be exchanged." }, { status: 502 });
   }

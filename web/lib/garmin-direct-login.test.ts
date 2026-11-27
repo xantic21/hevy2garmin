@@ -121,21 +121,33 @@ describe("direct login on: only Garmin is contacted", () => {
   });
 });
 
-describe("direct login off: nothing changes", () => {
-  it("the login goes to the shared Worker, as before", async () => {
+describe("direct login off and no owner Worker: fail closed (fork hardening)", () => {
+  it("the login is refused and no Worker, shared or otherwise, is contacted", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      hosts.push(new URL(String(input)).host);
+      return new Response(JSON.stringify({ status: "invalid_credentials" }));
+    }));
+    const r = await workerLogin("athlete@example.com", "pw");
+    expect(r.status).toBe("error");
+    expect(r.message).toMatch(/never sent to a shared third-party service/);
+    expect(hosts).toEqual([]);
+  });
+
+  it("the ticket exchange is refused on this server, and nothing is contacted", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const res = await ticketExchange(exchangeRequest({ ticket: "ST-9" }));
+    expect(res.status).toBe(502);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("an owner-configured Worker is the only Worker ever used", async () => {
+    process.env.GARMIN_LOGIN_WORKER_URL = "https://owner-worker.example.dev";
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       hosts.push(new URL(String(input)).host);
       return new Response(JSON.stringify({ status: "invalid_credentials" }));
     }));
     await workerLogin("athlete@example.com", "pw");
-    expect(hosts).toEqual(["garmin-auth-sso.gkos.workers.dev"]);
-  });
-
-  it("the ticket-exchange route answers 404", async () => {
-    const fetchSpy = vi.fn();
-    vi.stubGlobal("fetch", fetchSpy);
-    const res = await ticketExchange(exchangeRequest({ ticket: "ST-9" }));
-    expect(res.status).toBe(404);
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(hosts).toEqual(["owner-worker.example.dev"]);
   });
 });

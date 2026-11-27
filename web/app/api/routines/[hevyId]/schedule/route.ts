@@ -5,6 +5,7 @@ import { getDb } from "@/lib/db";
 import { verifySession, SESSION_COOKIE, authEnabled } from "@/lib/auth";
 import { recurringDates } from "@/lib/recurring-dates";
 import { strictGuard } from "@/lib/strict-mode";
+import { bearerMatches } from "@/lib/bearer";
 
 // Writes a Garmin calendar entry at request time.
 export const dynamic = "force-dynamic";
@@ -21,9 +22,8 @@ export const runtime = "nodejs";
 async function isAuthorized(request: Request): Promise<boolean> {
   const cronSecret = process.env.CRON_SECRET;
   if (cronSecret) {
-    const auth = request.headers.get("authorization") ?? "";
-    const m = auth.match(/^Bearer\s+(.+)$/i);
-    if (m && m[1] === cronSecret) return true;
+    // Constant-time (fork hardening): a plain === leaks the secret's prefix by timing.
+    if (bearerMatches(request.headers.get("authorization"), cronSecret)) return true;
   }
   if (!authEnabled()) return true;
   const store = await cookies();

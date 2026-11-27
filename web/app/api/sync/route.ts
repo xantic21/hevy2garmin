@@ -13,6 +13,7 @@ import { getGithubPat, getGithubRepo, triggerViaActions } from "@/lib/github";
 import { verifySession, SESSION_COOKIE, authEnabled } from "@/lib/auth";
 import { strictModeActive } from "@/lib/strict-mode";
 import { strictBatchRoute } from "@/lib/strict-routes";
+import { bearerMatches } from "@/lib/bearer";
 
 // Reads live Hevy + Postgres (and, on the live path, Garmin) at request time.
 export const dynamic = "force-dynamic";
@@ -40,9 +41,8 @@ const CAP = 50; // never loop the inline engine more than this many times
 async function isAuthorized(request: Request): Promise<boolean> {
   const cronSecret = process.env.CRON_SECRET;
   if (cronSecret) {
-    const auth = request.headers.get("authorization") ?? "";
-    const m = auth.match(/^Bearer\s+(.+)$/i);
-    if (m && m[1] === cronSecret) return true;
+    // Constant-time (fork hardening): a plain === leaks the secret's prefix by timing.
+    if (bearerMatches(request.headers.get("authorization"), cronSecret)) return true;
   }
   if (!authEnabled()) return true;
   const store = await cookies();

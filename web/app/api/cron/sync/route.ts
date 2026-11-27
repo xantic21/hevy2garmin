@@ -10,6 +10,7 @@ import { postgresLockBackend } from "@/lib/sync-lock-store";
 import { getGithubPat, getGithubRepo, triggerViaActions } from "@/lib/github";
 import { strictModeActive } from "@/lib/strict-mode";
 import { strictAutomaticRoute } from "@/lib/strict-routes";
+import { bearerMatches } from "@/lib/bearer";
 
 // Runs the sync at request time — never at build.
 export const dynamic = "force-dynamic";
@@ -30,10 +31,9 @@ const CAP = 50;
 export async function GET(request: Request) {
   // Strict in-place mode: locked until the owner gate, then strict engine only.
   if (strictModeActive()) return strictAutomaticRoute(request, "cron");
-  const secret = process.env.CRON_SECRET;
-  const auth = request.headers.get("authorization") ?? "";
-  const m = auth.match(/^Bearer\s+(.+)$/i);
-  if (!secret || !m || m[1] !== secret) {
+  const secret = process.env.CRON_SECRET ?? "";
+  // Constant-time (fork hardening); an empty secret never matches.
+  if (!bearerMatches(request.headers.get("authorization"), secret)) {
     return NextResponse.json({ ok: false, error: "Unauthorized." }, { status: 401 });
   }
 

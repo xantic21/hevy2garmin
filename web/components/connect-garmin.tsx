@@ -28,10 +28,6 @@ const GARMIN_SSO_URL =
   "&source=https://sso.garmin.com/sso/embed" +
   "&redirectAfterAccountLoginUrl=https://sso.garmin.com/sso/embed" +
   "&redirectAfterAccountCreationUrl=https://sso.garmin.com/sso/embed";
-// The ticket exchange on the shared Garmin SSO worker (garmin-auth's
-// DEFAULT_SSO_WORKER_URL). The old hevy2garmin-exchange-di worker was deleted
-// in 2026-09 (garmin-auth#47) and answers 404.
-export const WORKER_EXCHANGE_URL = "https://garmin-auth-sso.gkos.workers.dev/exchange";
 
 /** Pull the ST-… ticket out of a pasted embed URL, or accept a raw ticket. */
 function extractTicket(raw: string): string | null {
@@ -146,7 +142,9 @@ export function ConnectGarmin({ connected, directLogin = false }: { connected: b
     try {
       // Exchange the ticket for DI tokens: at the CF Worker, or on this server
       // when direct login is on, so the ticket goes nowhere but Garmin.
-      const ex = await fetch(directLogin ? withBasePath("/api/garmin-ticket-exchange") : WORKER_EXCHANGE_URL, {
+      // Fork: always through this server, which uses direct login or the owner's own
+      // Worker; the browser never sends the ticket to a shared third-party service.
+      const ex = await fetch(withBasePath("/api/garmin-ticket-exchange"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ticket }),

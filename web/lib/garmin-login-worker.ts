@@ -29,9 +29,39 @@ export function localGarminLogin(): SsoWorkerClient {
   return localClient;
 }
 
+/**
+ * The login Worker THIS deployment's owner configured, or null.
+ *
+ * Fork hardening: garmin-auth falls back to the upstream author's shared
+ * Worker when no URL is set, which would send a user's Garmin email and
+ * password to a third party by default. This fork never uses that fallback:
+ * sign-in runs on this server (H2G_DIRECT_GARMIN_LOGIN) or through a Worker
+ * the owner names explicitly in GARMIN_LOGIN_WORKER_URL, and otherwise fails
+ * closed with an explanation.
+ */
+export function configuredLoginWorker(env: Record<string, string | undefined> = process.env): string | null {
+  const url = (env.GARMIN_LOGIN_WORKER_URL ?? "").trim();
+  return /^https:\/\/[^\s/]+/i.test(url) ? url.replace(/\/$/, "") : null;
+}
+
+export const NO_LOGIN_SERVICE =
+  "No Garmin sign-in service is configured. Set H2G_DIRECT_GARMIN_LOGIN=1 (self-hosted) or GARMIN_LOGIN_WORKER_URL to your own Worker. Credentials are never sent to a shared third-party service.";
+
+function refusingClient(): SsoWorkerClient {
+  const refuse = async () => ({ status: "error" as const, message: NO_LOGIN_SERVICE });
+  return { workerUrl: "", login: refuse, loginMfa: refuse, exchange: refuse } as unknown as SsoWorkerClient;
+}
+
 function client(fetchImpl?: FetchImpl) {
   if (directGarminLogin()) return localGarminLogin();
-  return createSsoWorkerClient({ workerUrl: process.env.GARMIN_LOGIN_WORKER_URL, fetchImpl });
+  const workerUrl = configuredLoginWorker();
+  if (!workerUrl) return refusingClient();
+  return createSsoWorkerClient({ workerUrl, fetchImpl });
+}
+
+/** The manual-ticket exchange, always run by this server so the browser never contacts a Worker. */
+export function exchangeTicket(ticket: string, fetchImpl?: FetchImpl): Promise<WorkerLoginResult> {
+  return client(fetchImpl).exchange(ticket) as Promise<WorkerLoginResult>;
 }
 
 /** Step 1: submit email + password. */

@@ -88,8 +88,32 @@ async function strictOptions(sql: Sql): Promise<Pick<StrictSyncOptions, "customM
   };
 }
 
+/**
+ * The deployment-level stop switch: H2G_STRICT_STOP=1 blocks every live strict
+ * write regardless of the database (which may be the thing that is broken).
+ * The DB stop switch (strict_control) is the operator's in-app equivalent.
+ */
+export function strictEnvStop(env: Record<string, string | undefined> = process.env): boolean {
+  return /^(1|true|yes|on)$/i.test((env.H2G_STRICT_STOP ?? "").trim());
+}
+
 export async function runStrictSync(sql: Sql, o: StrictRouteOptions): Promise<StrictSyncResult> {
   ensureStrictFirewall();
+  if (!o.dryRun && strictEnvStop()) {
+    return {
+      status: "blocked",
+      reason: "H2G_STRICT_STOP is set: live strict writes are stopped for this deployment",
+      trigger: o.trigger,
+      dryRun: false,
+      hevyId: o.targetHevyId ?? null,
+      title: null,
+      activityId: null,
+      journalIds: [],
+      writes: 0,
+      plan: null,
+      issues: [],
+    };
+  }
   if (!o.dryRun) {
     const schema = await strictSchemaReady(sql);
     if (!schema.ready) {
@@ -139,6 +163,7 @@ export async function strictStatus(sql: Sql) {
   return {
     mode: "strict_inplace" as const,
     automaticEnabled: strictAutomaticEnabled(),
+    envStop: strictEnvStop(),
     firewall: { installed: isStrictFirewallInstalled(globalThis), ...firewallStats() },
     schema,
     writeBlock: block,

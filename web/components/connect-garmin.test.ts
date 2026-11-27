@@ -1,14 +1,20 @@
-import { describe, it, expect, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { describe, it, expect } from "vitest";
 import { DEFAULT_SSO_WORKER_URL } from "garmin-auth";
 
-vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: () => {}, push: () => {} }) }));
-
-import { WORKER_EXCHANGE_URL } from "./connect-garmin";
-
-// The browser sign-in posted its ticket to a deleted worker, so every attempt
-// failed. It must use the shared worker that garmin-auth itself points at.
+// Fork hardening: the browser sign-in never posts a Garmin ticket to a shared
+// third-party Worker. It always asks this server's /api/garmin-ticket-exchange,
+// which uses direct login or the owner's own Worker and otherwise refuses.
 describe("Garmin browser sign-in", () => {
-  it("exchanges the ticket on the shared SSO worker", () => {
-    expect(WORKER_EXCHANGE_URL).toBe(`${DEFAULT_SSO_WORKER_URL}/exchange`);
+  const source = readFileSync(join(__dirname, "connect-garmin.tsx"), "utf8");
+
+  it("exchanges the ticket only on this server", () => {
+    expect(source).toContain('fetch(withBasePath("/api/garmin-ticket-exchange")');
+  });
+
+  it("contains no reference to the shared SSO Worker", () => {
+    expect(source).not.toContain(new URL(DEFAULT_SSO_WORKER_URL).host);
+    expect(source).not.toMatch(/workers\.dev/);
   });
 });

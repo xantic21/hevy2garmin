@@ -18,8 +18,10 @@ function stub(status: number, payload: unknown) {
   return { impl, calls };
 }
 
+const OWNER = "https://owner-worker.example.dev";
 beforeEach(() => {
-  delete process.env.GARMIN_LOGIN_WORKER_URL;
+  // Fork: a Worker is used only when the owner names one; the shared default never is.
+  process.env.GARMIN_LOGIN_WORKER_URL = OWNER;
 });
 afterEach(() => vi.unstubAllGlobals());
 
@@ -35,7 +37,8 @@ describe("workerLogin", () => {
     const r = await workerLogin("me@x.com", "pw", impl);
     expect(r).toEqual(payload);
     expect(calls).toHaveLength(1);
-    expect(calls[0].url).toBe(`${DEFAULT_GARMIN_LOGIN_WORKER_URL}/login`);
+    expect(calls[0].url).toBe(`${OWNER}/login`);
+    expect(calls[0].url.startsWith(DEFAULT_GARMIN_LOGIN_WORKER_URL)).toBe(false);
     const init = calls[0].init as { method: string; body: string };
     expect(init.method).toBe("POST");
     expect(JSON.parse(init.body)).toEqual({ email: "me@x.com", password: "pw" });
@@ -76,7 +79,7 @@ describe("workerLoginMfa", () => {
     const { impl, calls } = stub(200, { status: "success", di_token: "a", di_refresh_token: "b", di_client_id: "c" });
     const r = await workerLoginMfa("s1", "123456", impl);
     expect(r.status).toBe("success");
-    expect(calls[0].url).toBe(`${DEFAULT_GARMIN_LOGIN_WORKER_URL}/login-mfa`);
+    expect(calls[0].url).toBe(`${OWNER}/login-mfa`);
     expect(JSON.parse((calls[0].init as { body: string }).body)).toEqual({
       session_id: "s1",
       mfa_code: "123456",

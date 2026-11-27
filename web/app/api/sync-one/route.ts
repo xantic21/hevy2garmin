@@ -8,6 +8,7 @@ import { tallyForLog } from "@/lib/sync-tally";
 import { verifySession, SESSION_COOKIE, authEnabled } from "@/lib/auth";
 import { strictModeActive } from "@/lib/strict-mode";
 import { strictSyncRoute } from "@/lib/strict-routes";
+import { bearerMatches } from "@/lib/bearer";
 
 // Reads live Hevy + Postgres (and, on the live path, Garmin) at request time.
 export const dynamic = "force-dynamic";
@@ -35,9 +36,8 @@ async function isAuthorized(request: Request): Promise<boolean> {
   // CRON_SECRET via Bearer token (for scheduled/cron invocations).
   const cronSecret = process.env.CRON_SECRET;
   if (cronSecret) {
-    const auth = request.headers.get("authorization") ?? "";
-    const m = auth.match(/^Bearer\s+(.+)$/i);
-    if (m && m[1] === cronSecret) return true;
+    // Constant-time (fork hardening): a plain === leaks the secret's prefix by timing.
+    if (bearerMatches(request.headers.get("authorization"), cronSecret)) return true;
   }
   // Session cookie (a logged-in dashboard user). When auth is disabled (no
   // password / secret configured), the app has no session gate — treat as
