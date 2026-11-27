@@ -1,26 +1,48 @@
 #!/usr/bin/env python3
 """Read-only portfolio health/release intelligence; optionally dedupe CI blocker issues."""
+
 import argparse
-from datetime import datetime, timedelta, timezone
 import json
 import os
-import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta, timezone
 
 POLICY = {
-    "coffee-lab": {"qa": ["quality.yml"], "schedules": {"safe-branch-cleanup.yml": 7, "hacc-maintenance.yml": 7}},
-    "nfl-pulse": {"qa": ["quality.yml"], "schedules": {"safe-branch-cleanup.yml": 7, "nfl-data-vintages.yml": 1}},
-    "henning-hub": {"qa": ["hacc-quality.yml"], "schedules": {"safe-branch-cleanup.yml": 7, "hacc-maintenance.yml": 7}},
+    "coffee-lab": {
+        "qa": ["quality.yml"],
+        "schedules": {"safe-branch-cleanup.yml": 7, "hacc-maintenance.yml": 7},
+    },
+    "nfl-pulse": {
+        "qa": ["quality.yml"],
+        "schedules": {"safe-branch-cleanup.yml": 7, "nfl-data-vintages.yml": 1},
+    },
+    "henning-hub": {
+        "qa": ["hacc-quality.yml"],
+        "schedules": {"safe-branch-cleanup.yml": 7, "hacc-maintenance.yml": 7},
+    },
     "stride": {"qa": ["stride-ci.yml"], "schedules": {"safe-branch-cleanup.yml": 7}},
-    "garmin-chatgpt-cockpit": {"qa": ["offline-tests.yml"], "schedules": {"safe-branch-cleanup.yml": 7, "daily-integrity.yml": 1, "garmin-readonly-sync.yml": 1, "garmin-incremental-backfill.yml": 1}},
+    "garmin-chatgpt-cockpit": {
+        "qa": ["offline-tests.yml"],
+        "schedules": {
+            "safe-branch-cleanup.yml": 7,
+            "daily-integrity.yml": 1,
+            "garmin-readonly-sync.yml": 1,
+            "garmin-incremental-backfill.yml": 1,
+        },
+    },
     "hevy2garmin": {"qa": ["ci.yml"], "schedules": {"safe-branch-cleanup.yml": 7}},
     "xantic21": {"qa": [], "schedules": {"safe-branch-cleanup.yml": 7}},
 }
 FIRST_RUN_GRACE_END = datetime(2026, 12, 8, tzinfo=timezone.utc)
 BLOCKER_PREFIX = "[Portfolio CI]"
 REQUEST_TIMEOUT = 20
+# Failures a read-only GitHub check can meet: transport/HTTP (URLError and HTTPError are
+# OSError), undecodable JSON (ValueError), a missing token (RuntimeError) and an unexpected
+# response shape. They are reported as "unknown", which never opens or closes an issue; any
+# other exception is a defect and fails the job loudly instead of being swallowed.
+API_ERRORS = (OSError, ValueError, RuntimeError, KeyError, TypeError, AttributeError)
 
 
 def parse_date(raw):
@@ -33,13 +55,20 @@ def parse_date(raw):
 
 
 def failing_twice(runs, now):
-    completed = [run for run in runs if run.get("status") == "completed"
-                 and run.get("conclusion") in ("success", "failure", "timed_out", "cancelled")]
+    completed = [
+        run
+        for run in runs
+        if run.get("status") == "completed"
+        and run.get("conclusion") in ("success", "failure", "timed_out", "cancelled")
+    ]
     if len(completed) < 2:
         return False
     when = parse_date(completed[0].get("updated_at"))
-    return bool(when and now - when < timedelta(days=14) and
-                all(run.get("conclusion") in ("failure", "timed_out") for run in completed[:2]))
+    return bool(
+        when
+        and now - when < timedelta(days=14)
+        and all(run.get("conclusion") in ("failure", "timed_out") for run in completed[:2])
+    )
 
 
 def success_twice(runs):
@@ -71,11 +100,14 @@ def api(repository, path, method="GET", payload=None):
     request = urllib.request.Request(
         "https://api.github.com/repos/" + repository + "/" + path.lstrip("/"),
         method=method,
-        headers={"Authorization": "Bearer " + token,
-                 "Accept": "application/vnd.github+json",
-                 "X-GitHub-Api-Version": "2022-11-28",
-                 "User-Agent": "xantic21-portfolio-ops"},
-        data=json.dumps(payload).encode("utf-8") if payload is not None else None)
+        headers={
+            "Authorization": "Bearer " + token,
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "xantic21-portfolio-ops",
+        },
+        data=json.dumps(payload).encode("utf-8") if payload is not None else None,
+    )
     with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
         return json.load(response)
 
@@ -90,17 +122,30 @@ def checks(repository, policy, now):
             blocker = failing_twice(runs, now)
             found["qa:" + name] = True if blocker else (False if success_twice(runs) else None)
             latest = runs[0].get("conclusion") or runs[0].get("status") if runs else "no run"
-            rows.append(("QA " + name, "BLOCKER: 2 consecutive failures" if blocker else str(latest)))
-        except Exception as exc:
+            rows.append(
+                ("QA " + name, "BLOCKER: 2 consecutive failures" if blocker else str(latest))
+            )
+        except API_ERRORS as exc:
             rows.append(("QA " + name, "unknown; API error " + type(exc).__name__))
     for name, days in policy["schedules"].items():
         try:
             wf = api(repository, "actions/workflows/" + name)
             runs = api(repository, "actions/workflows/" + name + "/runs?event=schedule&per_page=10")
             problem = schedule_problem(wf.get("state"), runs.get("workflow_runs", []), days, now)
-            found["schedule:" + name] = True if problem else (False if any(r.get("event") == "schedule" and r.get("conclusion") == "success" for r in runs.get("workflow_runs", [])[:1]) else None)
+            found["schedule:" + name] = (
+                True
+                if problem
+                else (
+                    False
+                    if any(
+                        r.get("event") == "schedule" and r.get("conclusion") == "success"
+                        for r in runs.get("workflow_runs", [])[:1]
+                    )
+                    else None
+                )
+            )
             rows.append(("Scheduled " + name, problem or "configured / within grace"))
-        except Exception as exc:
+        except API_ERRORS as exc:
             rows.append(("Scheduled " + name, "unknown; API error " + type(exc).__name__))
     return found, rows
 
@@ -117,16 +162,19 @@ def issue_sync(repository, blockers, now):
             continue  # An ambiguous/single-failure result never closes an existing blocker.
         marker = "<!-- portfolio-ops:" + key + " -->"
         matches = [i for i in issues if marker in (i.get("body") or "") and "pull_request" not in i]
-        issue = sorted(matches, key=lambda x: x["number"], reverse=True)[0] if matches else None
+        issue = max(matches, key=lambda x: x["number"]) if matches else None
         if is_bad:
             if issue and issue.get("state") == "open":
                 continue
             title = BLOCKER_PREFIX + " " + key + " requires investigation"
-            body = (marker + "\nPersistent failure or missed schedule confirmed by the daily GitHub-only "
-                    "maintenance check. Do not remove signing, release or security gates. "
-                    "See Actions run logs and latest workflow state. "
-                    "The issue closes automatically only after confirmed recovery or "
-                    "the schedule recovers. Recorded at " + now.isoformat() + ".")
+            body = (
+                marker
+                + "\nPersistent failure or missed schedule confirmed by the daily GitHub-only "
+                "maintenance check. Do not remove signing, release or security gates. "
+                "See Actions run logs and latest workflow state. "
+                "The issue closes automatically only after confirmed recovery or "
+                "the schedule recovers. Recorded at " + now.isoformat() + "."
+            )
             if issue:
                 api(repository, "issues/" + str(issue["number"]), "PATCH", {"state": "open"})
                 logs.append("Reopened #" + str(issue["number"]) + " for " + key)
@@ -147,13 +195,20 @@ def readiness(repository, policy):
     prs = api(repository, "pulls?state=open&per_page=100")
     releases = api(repository, "releases?per_page=5")
     artifacts = api(repository, "actions/artifacts?per_page=1")
-    lines = ["## Release preparation — " + repository, "",
-             "**Evidence-only. NOT a production, signing or deployment authorization.**", "",
-             "- Main SHA: `" + current_sha + "`",
-             "- Open pull requests: " + str(len(prs)),
-             "- Dependabot PRs: " + str(sum("dependabot" in ((p.get("user") or {}).get("login") or "").lower() for p in prs)),
-             "- Latest published release: " + next((r.get("tag_name", "unknown") for r in releases if not r.get("draft")), "none"),
-             "- Actions artifacts (repository total, not billing): " + str(artifacts.get("total_count", "unknown"))]
+    lines = [
+        "## Release preparation — " + repository,
+        "",
+        "**Evidence-only. NOT a production, signing or deployment authorization.**",
+        "",
+        "- Main SHA: `" + current_sha + "`",
+        "- Open pull requests: " + str(len(prs)),
+        "- Dependabot PRs: "
+        + str(sum("dependabot" in ((p.get("user") or {}).get("login") or "").lower() for p in prs)),
+        "- Latest published release: "
+        + next((r.get("tag_name", "unknown") for r in releases if not r.get("draft")), "none"),
+        "- Actions artifacts (repository total, not billing): "
+        + str(artifacts.get("total_count", "unknown")),
+    ]
     stale = False
     for name in policy["qa"]:
         data = api(repository, "actions/workflows/" + name + "/runs?branch=main&per_page=10")
@@ -165,14 +220,27 @@ def readiness(repository, policy):
         run = runs[0]
         fresh = run.get("head_sha") == current_sha and run.get("conclusion") == "success"
         stale |= not fresh
-        lines.append("- " + name + ": " + ("PASS at main SHA" if fresh else "NOT CURRENT/GREEN") +
-                     " — run #" + str(run.get("id")))
+        lines.append(
+            "- "
+            + name
+            + ": "
+            + ("PASS at main SHA" if fresh else "NOT CURRENT/GREEN")
+            + " — run #"
+            + str(run.get("id"))
+        )
     if metadata.get("private"):
         lines.append("- Private repository: yes; no data, secrets, logs or APKs uploaded")
-    lines.extend(["", "**Human release GO remains mandatory**. Verify product-specific "
-                  "device acceptance, latest gated CI, signer continuity, backups, "
-                  "immutable release receipts and any Cloudflare Access controls. "
-                  "No release tags, signing or deployment actions are executed."])
+    lines.extend(
+        [
+            "",
+            (
+                "**Human release GO remains mandatory**. Verify product-specific "
+                "device acceptance, latest gated CI, signer continuity, backups, "
+                "immutable release receipts and any Cloudflare Access controls. "
+                "No release tags, signing or deployment actions are executed."
+            ),
+        ]
+    )
     if stale:
         lines.append("**Readiness finding:** stale or missing CI evidence; do not publish.")
     return lines
@@ -205,14 +273,20 @@ def main():
         summarize(readiness(repository, policy))
         return
     blockers, rows = checks(repository, policy, now)
-    output = ["## Portfolio operations — " + repository,
-              "", "Schedule: daily read/check, issue only for sustained blockers.", ""]
+    output = [
+        "## Portfolio operations — " + repository,
+        "",
+        "Schedule: daily read/check, issue only for sustained blockers.",
+        "",
+    ]
     output.extend("- **" + title + "**: " + value for title, value in rows)
     if args.mode == "health":
         try:
             changes = issue_sync(repository, blockers, now)
-            output.extend(["", "### Issue transitions"] + ["- " + x for x in changes] if changes else [])
-        except Exception as exc:
+            output.extend(
+                ["", "### Issue transitions"] + ["- " + x for x in changes] if changes else []
+            )
+        except API_ERRORS as exc:
             output.append("Issue synchronisation unavailable: " + type(exc).__name__)
     summarize(output)
 
