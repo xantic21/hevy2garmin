@@ -36,9 +36,11 @@ const post = (url: string, body: unknown = {}, headers: Record<string, string> =
 const params = (hevyId: string) => ({ params: Promise.resolve({ hevyId }) });
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  // Reset, not clear: a queued mockResolvedValueOnce must never leak into the next test.
+  vi.resetAllMocks();
+  vi.unstubAllEnvs();
   vi.stubEnv("CRON_SECRET", "cron-secret-for-tests");
-  vi.stubEnv("H2G_PASSWORD", "");
+  for (const k of ["H2G_PASSWORD", "H2G_PASSWORD_HASH", "H2G_SECRET", "HEVY2GARMIN_SECRET", "VERCEL"]) vi.stubEnv(k, "");
   vi.stubEnv("NODE_ENV", "test");
   strict.runStrictSync.mockResolvedValue(strictResult({ status: "none" }));
 });
@@ -123,6 +125,17 @@ describe("sync paths reach the strict engine only", () => {
     expect(body.strict.hevyId).toBe("c");
     expect(body.passedOver).toHaveLength(2);
     expect(strict.runStrictSync.mock.calls[2][1].excludeHevyIds).toEqual(["a", "b"]);
+  });
+});
+
+describe("authorization fails closed", () => {
+  it("a production runtime without a password refuses every live sync (401)", async () => {
+    vi.stubEnv("VERCEL", "1");
+    const one = await import("./sync-one/route");
+    const batch = await import("./sync/route");
+    expect((await one.POST(post("http://x/api/sync-one?live=1"))).status).toBe(401);
+    expect((await batch.POST(post("http://x/api/sync?live=1"))).status).toBe(401);
+    expect(strict.runStrictSync).not.toHaveBeenCalled();
   });
 });
 
