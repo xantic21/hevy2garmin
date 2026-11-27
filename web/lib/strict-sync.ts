@@ -28,6 +28,7 @@ import {
   type RateLimitOptions,
 } from "hevy2garmin";
 import type { GarminClient } from "garmin-auth";
+import { vaultStatus } from "./credential-vault";
 import { getGarminClient } from "./garmin-upload";
 import { fetchAllWorkouts, fetchAllWorkoutsReadOnly, type HevyWorkout } from "./hevy-sync";
 import type { Sql } from "./pending-store";
@@ -155,12 +156,13 @@ export async function strictCandidates(sql: Sql, o: Pick<StrictRouteOptions, "fe
 /** Everything the dashboard shows about strict mode. Read-only. */
 export async function strictStatus(sql: Sql) {
   const ledger = postgresStrictLedger(sql);
-  const [schema, block, control, open, bindings] = await Promise.all([
+  const [schema, block, control, open, bindings, credentials] = await Promise.all([
     strictSchemaReady(sql),
     strictWriteBlock(ledger).catch((e: Error) => ({ blocked: true, reason: e.message })),
     ledger.getControl().catch(() => ({ frozen: false, reason: null, updatedAt: null })),
     ledger.listOpenJournal().catch(() => []),
     ledger.listBindings().catch(() => []),
+    vaultStatus(sql),
   ]);
   const counts = { claimed: 0, verified: 0, needs_review: 0 } as Record<string, number>;
   for (const b of bindings) counts[b.state] = (counts[b.state] ?? 0) + 1;
@@ -174,6 +176,8 @@ export async function strictStatus(sql: Sql) {
     schema,
     writeBlock: block,
     control,
+    // Counts only: whether every stored credential is sealed with the current key.
+    credentials,
     openJournal: open.map((e) => ({
       id: e.id,
       hevyId: e.hevyId,

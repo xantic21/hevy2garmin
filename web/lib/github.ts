@@ -9,6 +9,7 @@
 import sodium from "libsodium-wrappers";
 import type { getDb } from "./db";
 import { assertLegacyGarminWrites } from "./strict-mode";
+import { readCredentials, writeCredentials } from "./credential-vault";
 
 type Sql = ReturnType<typeof getDb>;
 
@@ -16,9 +17,7 @@ type Sql = ReturnType<typeof getDb>;
 export async function getGithubPat(sql: Sql | null): Promise<string | null> {
   if (sql) {
     try {
-      const rows = (await sql`SELECT credentials FROM platform_credentials WHERE platform = 'github' LIMIT 1`) as { credentials: unknown }[];
-      const c = rows[0]?.credentials;
-      const creds = typeof c === "string" ? (JSON.parse(c) as Record<string, unknown>) : (c as Record<string, unknown> | undefined);
+      const creds = await readCredentials(sql, "github");
       const pat = creds?.pat;
       if (typeof pat === "string" && pat.trim()) return pat.trim();
     } catch { /* fall through to env */ }
@@ -27,12 +26,9 @@ export async function getGithubPat(sql: Sql | null): Promise<string | null> {
   return env || null;
 }
 
-/** Store the token the way the Python dashboard does (same row, same keys). */
+/** Store the token in the same row and keys as the Python dashboard, sealed by the credential vault when a key is set. */
 export async function saveGithubPat(sql: Sql, pat: string): Promise<void> {
-  await sql`
-    INSERT INTO platform_credentials (platform, auth_type, credentials, status)
-    VALUES ('github', 'pat', ${sql.json({ pat })}, 'active')
-    ON CONFLICT (platform) DO UPDATE SET credentials = EXCLUDED.credentials, status = 'active'`;
+  await writeCredentials(sql, "github", { pat }, { authType: "pat", status: "active" });
 }
 
 /** "owner/repo": GITHUB_REPO, else Vercel's git metadata (a fork deployed from GitHub). */

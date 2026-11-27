@@ -16,8 +16,14 @@
  */
 import { HevyClient, HevyAuthError } from "hevy2garmin";
 import { getDb } from "./db";
+import { CredentialVaultError, readCredentials } from "./credential-vault";
 
-/** Read the stored Hevy API key from platform_credentials (platform='hevy'). */
+/**
+ * Read the stored Hevy API key from platform_credentials (platform='hevy'),
+ * decrypted by the credential vault. A database that is unreachable or has no
+ * table yet means "no key"; a vault refusal (plaintext in strict mode, a
+ * missing or wrong key, a tampered row) is reported as itself.
+ */
 async function keyFromDb(): Promise<string | null> {
   let sql: ReturnType<typeof getDb>;
   try {
@@ -25,16 +31,14 @@ async function keyFromDb(): Promise<string | null> {
   } catch {
     return null;
   }
-  const rows = await sql`
-    SELECT credentials
-    FROM platform_credentials
-    WHERE platform = 'hevy'
-    LIMIT 1
-  `.catch(() => [] as Array<{ credentials: unknown }>);
-  const creds = rows[0]?.credentials;
-  const parsed =
-    typeof creds === "string" ? (JSON.parse(creds) as Record<string, unknown>) : (creds as Record<string, unknown> | undefined);
-  const apiKey = parsed?.api_key;
+  let creds: Record<string, unknown> | null;
+  try {
+    creds = await readCredentials(sql, "hevy");
+  } catch (err) {
+    if (err instanceof CredentialVaultError) throw err;
+    return null;
+  }
+  const apiKey = creds?.api_key;
   return typeof apiKey === "string" && apiKey.trim() ? apiKey.trim() : null;
 }
 

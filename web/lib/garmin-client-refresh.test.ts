@@ -19,14 +19,15 @@ vi.mock("./db", () => {
   return { getDb: () => tag };
 });
 
-vi.mock("garmin-auth", async (importOriginal) => {
-  const real = await importOriginal<typeof import("garmin-auth")>();
-  class DBTokenStore {
+// The credential row behind the store (encrypted-token-store.ts, sealed by the vault) is not
+// what this test is about; an in-memory store with the same interface stands in for it.
+vi.mock("./encrypted-token-store", () => {
+  class EncryptedTokenStore {
     async load() { return h.stored; }
     async save(t: string | Record<string, unknown>) { h.stored = typeof t === "string" ? t : JSON.stringify(t); h.saves++; }
     async delete() { h.stored = ""; }
   }
-  return { ...real, DBTokenStore };
+  return { EncryptedTokenStore };
 });
 
 import { getGarminClient, resetGarminClient } from "./garmin-upload";

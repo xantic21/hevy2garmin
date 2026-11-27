@@ -3,9 +3,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("@/lib/auth", () => ({ authEnabled: () => false, verifySession: async () => true, SESSION_COOKIE: "h2g_session" }));
 const state: { pat: string | null } = { pat: null };
 vi.mock("@/lib/db", () => {
-  const tag = (async (strings: TemplateStringsArray) => {
+  const tag = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
     const q = strings.join("?");
-    if (q.includes("FROM platform_credentials WHERE platform = 'github'")) return state.pat ? [{ credentials: { pat: state.pat } }] : [];
+    // The credential vault reads the row by a bound platform name.
+    if (q.includes("FROM platform_credentials WHERE platform = ?") && values[0] === "github") return state.pat ? [{ credentials: { pat: state.pat } }] : [];
     throw new Error("unexpected query: " + q);
   }) as unknown as { (): unknown; json: <T>(v: T) => T };
   tag.json = (v) => v;

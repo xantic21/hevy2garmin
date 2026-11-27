@@ -103,6 +103,9 @@ def load_config() -> dict[str, Any]:
                             if isinstance(row["credentials"], dict)
                             else json.loads(row["credentials"])
                         )
+                        if credentials_sealed(creds):
+                            _warn_sealed(row["platform"])
+                            continue
                         if row["platform"] == "hevy" and creds.get("api_key"):
                             config["hevy_api_key"] = creds["api_key"]
                         elif row["platform"] == "garmin":
@@ -222,6 +225,27 @@ def is_configured() -> bool:
     return True
 
 
+SEALED_CREDENTIALS_VERSION = "h2g-aesgcm-v1"
+
+
+def credentials_sealed(creds: object) -> bool:
+    """True when a ``platform_credentials`` value is the web dashboard's AES-256-GCM envelope.
+
+    The web dashboard seals stored credentials (``web/lib/credential-vault.ts``). The Python
+    package has no access to that key by design: it reads the environment variables instead and
+    never mistakes the envelope for a credential.
+    """
+    return isinstance(creds, dict) and creds.get("h2g_enc") == SEALED_CREDENTIALS_VERSION
+
+
+def _warn_sealed(platform: str) -> None:
+    logger.warning(
+        "platform_credentials '%s' is encrypted by the web dashboard; the Python package cannot read it. "
+        "Set HEVY_API_KEY / GITHUB_PAT in the environment for CLI use.",
+        platform,
+    )
+
+
 def get_github_pat() -> str | None:
     """Return the GitHub personal access token, DB value taking precedence.
 
@@ -249,6 +273,9 @@ def get_github_pat() -> str | None:
                         if isinstance(row["credentials"], dict)
                         else json.loads(row["credentials"])
                     )
+                    if credentials_sealed(creds):
+                        _warn_sealed("github")
+                        creds = {}
                     pat = (creds or {}).get("pat")
                     if pat and pat.strip():
                         return pat.strip()

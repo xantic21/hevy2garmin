@@ -17,7 +17,8 @@ Hevy data. Each of those needs the owner's separate approval (gates E–G).
 | Immutable original backup, verified before any write | `strict_backups` insert-only triggers, one `original` per activity, SHA-256 read back before the PUT | contract + DB tests (UPDATE/DELETE/TRUNCATE refused, also after restore) |
 | Write-ahead journal; uncertain ⇒ blocked; no blind retry | `put_sent` durable before the request; read-back decides `verified` / `not_applied` / `needs_review` (+ freeze) | strict-sync tests: lost response, timeout, partial read-back, crash after `put_sent`, concurrent runs |
 | Native timing, HR and metrics preserved; user notes kept; no estimated HR/kcal in text | payload overlays watch timing when set counts match; 19 native metric paths compared after every write; description block appended between markers | model tests, e2e test |
-| Dry run writes nothing to Garmin and no sync state to the database | default `dryRun: true`; plan from reads only; Hevy read without key-status bookkeeping. Only possible DB writes: refreshed Garmin tokens (keeps the session valid) and the idempotent schema bootstrap | dry-run tests compare full ledger dumps / row counts; re-audit #7 |
+| Dry run: no Garmin activity write, no sync state, no credential change unless Garmin rotates the tokens | default `dryRun: true`; plan from reads only; Hevy read without key-status bookkeeping; credential reads issue SELECT only; unchanged Garmin tokens are not re-saved. **Not zero-write in every case** — the exact residuals are listed in §12a | e2e dry-run test (every table's rows byte-identical), `credential-vault.db.strict.test.ts` (SELECT-only reads, client build leaves the row identical); re-audit #7, round 2 #5 |
+| Stored credentials encrypted at rest | AES-256-GCM envelope per row (`web/lib/credential-vault.ts`), AAD bound to the platform, key id per row, separate key `H2G_CREDENTIALS_KEY`; strict mode refuses to store or use plaintext | `credential-vault.strict.test.ts`, `credential-vault.db.strict.test.ts`, `credential-routes.strict.test.ts`, `db-qualification.db.test.ts` (pg_dump holds no secret) |
 | Automatic paths off | `H2G_STRICT_AUTOMATIC=enabled-by-owner` required; otherwise 423 | route matrix, CI production check |
 | Legacy pending uploads quarantined | strict engine refuses them; retry/abandon/finalize routes 423; skip only for untouched workouts | strict-sync + matrix tests; re-audit #8 |
 | Python CLI cannot write | `refuse_if_strict` at every sync-engine entry point and ledger-changing CLI command, and before every Garmin/intervals.icu write | `tests/test_strict_mode.py`; re-audit #1 |
@@ -35,6 +36,9 @@ deliberately, and a missing or misspelled one keeps the safe state.
 | `H2G_SYNC_MODE=legacy_upstream` **and** `H2G_LEGACY_UPSTREAM_ACK=uploads-and-deletes-allowed` | upstream behaviour (uploads, replace = delete). Both, exactly. Never for this deployment |
 | `H2G_DIRECT_GARMIN_LOGIN=1` or `GARMIN_LOGIN_WORKER_URL=<your own Worker>` | how Garmin sign-in runs. With neither, sign-in is refused; credentials are never sent to the shared upstream Worker |
 | `H2G_UPDATE_CHECK=off` | recommended: no calls to the GitHub API for the update banner (the banner is hidden in strict mode anyway) |
+| `H2G_CREDENTIALS_KEY` | **required in strict mode** to store or use a Garmin token, Hevy key or GitHub token: base64 of 32 random bytes (`openssl rand -base64 32`). Its own secret: equal to `HEVY2GARMIN_SECRET`, `H2G_SECRET`, `CRON_SECRET`, `H2G_PASSWORD` or `H2G_BACKUP_KEY` is refused. One key per environment (staging ≠ production) |
+| `H2G_CREDENTIALS_KEYS_PREVIOUS` | comma-separated previous keys, decrypt only, during a rotation (§13) |
+| `H2G_BACKUP_KEY` | **not a deployment variable**: lives on the operator's machine / password manager and encrypts database backups (§5) |
 
 ## 3. Gates (contract § Gates)
 
@@ -68,10 +72,26 @@ deliberately, and a missing or misspelled one keeps the safe state.
   insert-only triggers, one partial unique index. Idempotent; never drops or
   alters an upstream table. Live strict writes are blocked unless
   `strictSchemaReady` confirms tables, triggers and index.
-- **Backup**: `pg_dump --format=custom --no-owner "$DATABASE_URL" > h2g-$(date +%F).dump`
-  with client tools of the **same major version as the server** (CI found that
-  pg_dump 18 output cannot be restored into Postgres 16).
-- **Restore** into an empty database: `pg_restore --no-owner --exit-on-error --dbname="$TARGET" h2g.dump`;
+- **Backup, encrypted** (from the operator's machine, client tools of the
+  **same major version as the server** — CI found that pg_dump 18 output
+  cannot be restored into Postgres 16):
+
+  ```bash
+  pg_dump --format=custom --no-owner "$DATABASE_URL" | node web/scripts/backup-crypt.mjs encrypt - "h2g-$(date +%F).dump.h2gbak"
+  ```
+
+  AES-256-GCM with `H2G_BACKUP_KEY`; magic and header are authenticated
+  (AAD), the tag is checked before the output exists. `verify` checks a file
+  without writing anything. Credentials inside the dump are additionally
+  sealed with `H2G_CREDENTIALS_KEY`, so a leaked backup needs both keys.
+- **Restore** into an empty database:
+
+  ```bash
+  node web/scripts/backup-crypt.mjs decrypt h2g.dump.h2gbak h2g.dump && pg_restore --no-owner --exit-on-error --dbname="$TARGET" h2g.dump
+  ```
+
+  A wrong key, a changed byte or a truncated file fails and leaves no output;
+  delete the decrypted `h2g.dump` after the restore.
   then check `GET /api/strict/status` → `schema.ready` and that
   `DELETE FROM strict_backups` is refused. Qualified on synthetic data, the
   stop switch state survives the round-trip.
@@ -121,9 +141,11 @@ dry-run preview of a synthetic workout, duplicate audit (read-only).
   `H2G_PASSWORD`, whose comparison is constant-time but length-revealing).
   Login rate limit per IP (5 failures) and global (50).
 - Cron/webhook: bearer `CRON_SECRET`, constant-time everywhere.
-- Garmin tokens and the Hevy key live in `platform_credentials` as JSON, not
-  encrypted at rest by the app: database access equals account access. Keep
-  the database private, credentials scoped, and backups encrypted.
+- Garmin tokens, the Hevy key and a GitHub token are sealed in
+  `platform_credentials` (AES-256-GCM, §13). This protects against a leaked
+  database, branch, dump or backup **without** the deployment's environment.
+  It does not protect against a compromised deployment (the key and the
+  database URL are both there): keep environment access to the owner.
 - No third-party telemetry by default: the visit/error collector runs only
   when `COLLECTOR_URL` and `COLLECTOR_TOKEN` are both set.
 - No live credentials in CI: every secret there is a synthetic placeholder.
@@ -146,6 +168,25 @@ dry-run preview of a synthetic workout, duplicate audit (read-only).
   public path in `web/proxy.ts` with its own constant-time bearer check; the
   strict cron route answers 423 without the owner gate (CI-checked).
 
+## 12a. Dry run: exact side effects (review round 2, finding 5)
+
+A dry run ("Preview", `POST /api/sync` without `live`, the candidate list, the
+duplicate audit) never writes to a Garmin activity and records no sync state
+(bindings, backups, journal, locks, `synced_workouts`, `sync_log`, Hevy key
+status). It is **not** free of every side effect:
+
+| Side effect | When | Why it cannot be removed | Data at risk |
+| --- | --- | --- | --- |
+| Schema bootstrap DDL (`web/lib/schema.ts`) | first query of every process | `CREATE … IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`, `CREATE OR REPLACE FUNCTION strict_backups_refuse_change` (rewrites the same definition in the catalog). On a complete schema no row changes; on an empty or older database the missing tables/columns are created — a migration, so run it deliberately (deploy step) before the first preview | none (additive, idempotent; migration test) |
+| Garmin token check | when the Garmin client is built (once per process) | `GET /userprofile-service/socialProfile` (read); on a 401 a `POST diauth.garmin.com` token grant | none (authentication, not activity data) |
+| Garmin token row write | only if Garmin **rotated** the tokens during the run (refresh after a 401) | Garmin invalidates the old refresh token; not saving would lose the login | the credential row (sealed) |
+| Garmin token row delete | only if Garmin **rejected** the tokens | upstream garmin-auth behaviour: a rejected token is stale | the credential row; re-login needed |
+
+Closed in round 2: unchanged tokens are no longer re-saved (`EncryptedTokenStore.save`
+compares first; previously every client build rewrote the row and
+`connected_at`), credential reads never migrate or re-seal (explicit §13
+action only), and the flat-row normalisation does not run in strict mode.
+
 ## 12. Known limits
 
 - If Garmin normalises a missing weight/reps to 0 (or the reverse), read-back
@@ -157,3 +198,53 @@ dry-run preview of a synthetic workout, duplicate audit (read-only).
 - A Garmin listing of 50 activities for the search window is treated as
   possibly truncated and not decided on.
 - The Expo app's remaining advisories (§10).
+
+## 13. Credential vault: keys, migration, rotation
+
+**Threat model.** Sealing protects the Garmin DI tokens, the Hevy API key and
+a GitHub token against anyone who obtains the database without the
+deployment's environment: a shared Neon branch, a leaked connection string, a
+dump, a backup. Each row is an AES-256-GCM envelope
+`{h2g_enc:"h2g-aesgcm-v1", kid, iv, tag, ct}` with a fresh 96-bit IV and the
+AAD `h2g-credentials:v1:<platform>` (a row copied to another platform does not
+open). Activity data, the ledger and the original backups are not encrypted
+by this key; losing the key costs a Garmin re-login and re-entering the Hevy
+key, never workout data.
+
+**First setup / migration of existing plaintext credentials**
+
+1. Generate a key on a trusted machine: `openssl rand -base64 32`. Store it in
+   the password manager. Use a different key per environment.
+2. Set it as a *sensitive* environment variable `H2G_CREDENTIALS_KEY` of that
+   environment only (Vercel: Project → Settings → Environment Variables,
+   scope "Production" or "Preview", never "All"). Redeploy.
+3. Dashboard → Strict panel → "Stored credentials" shows the state. With
+   plaintext rows it reads "*n* not encrypted" and strict mode does not use
+   them; press "Encrypt stored credentials…" (typed `ENCRYPT`; the same as
+   `POST /api/strict/credentials {"confirm":"ENCRYPT"}`). Each row is a
+   compare-and-set, so a concurrent login is never overwritten; a row that
+   cannot be opened is reported and left untouched.
+4. The line must read "Encrypted". Take a new encrypted backup (§5) and
+   delete every older, plaintext backup.
+
+**Rotation** (yearly, or at once if the key may have leaked)
+
+1. New key as `H2G_CREDENTIALS_KEY`, the old one appended to
+   `H2G_CREDENTIALS_KEYS_PREVIOUS`; redeploy. Every row still opens; the line
+   reads "*n* on old key".
+2. "Encrypt stored credentials…" re-seals every row with the new key.
+3. When the line reads "Encrypted", remove the old key from
+   `H2G_CREDENTIALS_KEYS_PREVIOUS`, redeploy, take a new backup.
+4. If the key leaked together with the database, rotation is not enough:
+   also sign in to Garmin again (new tokens) and issue a new Hevy API key.
+
+**Failure modes.** No key in strict mode: credentials are neither accepted
+(sign-in, Hevy key and ticket routes answer 503 before anything is sent) nor
+used. A key that opens no row ("Cannot open"): the previous key is missing
+from `H2G_CREDENTIALS_KEYS_PREVIOUS`. A malformed key or one equal to another
+secret: the vault refuses to start rather than guess.
+
+**Python package.** It has no access to the key by design. It recognises the
+envelope, never mistakes it for a credential, and falls back to
+`HEVY_API_KEY` / `GITHUB_PAT` (`credentials_sealed` in `config.py`). The
+Python dashboard is not part of this deployment.

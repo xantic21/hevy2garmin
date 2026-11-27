@@ -4,6 +4,7 @@ import { toResponse } from "@/lib/garmin-login-response";
 import { cooldownRemaining, formatCooldown } from "@/lib/garmin-cooldown";
 import { getDb } from "@/lib/db";
 import { resolveDatabaseUrl } from "@/lib/database-url";
+import { assertVaultWritable } from "@/lib/credential-vault";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -15,7 +16,7 @@ export const runtime = "nodejs";
  * Step 1 of the Garmin sign-in. Sends the credentials to the direct-login
  * Cloudflare Worker (which runs the SSO from a non-blocked edge IP), and on a
  * clean success persists the returned DI tokens into platform_credentials
- * ('garmin_tokens') via DBTokenStore so the sync engine can use them. The
+ * ('garmin_tokens'), sealed by the credential vault, so the sync engine can use them. The
  * password is forwarded to the Worker only to obtain a token and is never
  * stored or echoed back.
  *
@@ -24,6 +25,13 @@ export const runtime = "nodejs";
  */
 
 export async function POST(request: Request) {
+  // The tokens could not be stored encrypted: refuse before sending a password or a code to Garmin.
+  try {
+    assertVaultWritable();
+  } catch (err) {
+    return NextResponse.json({ status: "error", error: err instanceof Error ? err.message : String(err) }, { status: 503 });
+  }
+
   let body: { email?: unknown; password?: unknown } = {};
   try {
     const text = await request.text();

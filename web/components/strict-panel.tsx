@@ -23,6 +23,7 @@ export interface StrictStatusView {
   openJournal: Array<{ id: string; hevyId: string; activityId: number; step: string; phase: string; updatedAt: string }>;
   bindings: Record<string, number>;
   reviewBindings: Array<{ hevyId: string; activityId: number; state: string; lastError: string | null }>;
+  credentials?: { configured: boolean; currentKid: string | null; rows: number; encryptedCurrent: number; encryptedPrevious: number; plaintext: number; unreadable: string[] };
 }
 
 interface AuditReport {
@@ -134,6 +135,19 @@ export function StrictPanel({ initial }: { initial: StrictStatusView | null }) {
     });
   };
 
+  const encrypt = () => {
+    const typed = window.prompt("Encrypt every stored credential with the current key (and re-encrypt those under an old key)? Type ENCRYPT to confirm.");
+    if (typed !== "ENCRYPT") return;
+    void act("encrypt", async () => {
+      const d = await post("/api/strict/credentials", { confirm: typed });
+      const r = d.result as { encrypted: string[]; rotated: string[]; failed: string[] };
+      const done = r.encrypted.length + r.rotated.length;
+      return r.failed.length
+        ? `Encrypted ${done}; ${r.failed.length} could not be changed (${r.failed.join(", ")}). Check the keys and try again.`
+        : `Encrypted ${done} stored credential${done === 1 ? "" : "s"}. Take a new encrypted backup and delete older plaintext ones.`;
+    });
+  };
+
   const runAudit = () =>
     act("audit", async () => {
       const res = await fetch(withBasePath("/api/strict/duplicate-audit?days=90"), { cache: "no-store" });
@@ -155,6 +169,7 @@ export function StrictPanel({ initial }: { initial: StrictStatusView | null }) {
   }
 
   const stopped = status.control.frozen || Boolean(status.envStop);
+  const vault = describeVault(status.credentials);
   const open = status.openJournal;
   const verified = status.bindings.verified ?? 0;
   const review = (status.bindings.needs_review ?? 0) + (status.bindings.claimed ?? 0);
@@ -178,18 +193,20 @@ export function StrictPanel({ initial }: { initial: StrictStatusView | null }) {
         </span>
       </div>
 
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
         <Fact label="Network firewall" value={status.firewall.installed ? `On · ${status.firewall.blocked} blocked` : "Not installed"} tone={status.firewall.installed ? "ok" : "bad"} />
         <Fact label="Ledger" value={status.schema.ready ? "Verified" : "Incomplete"} tone={status.schema.ready ? "ok" : "bad"} />
         <Fact label="Automatic sync" value={status.automaticEnabled ? "Owner-enabled" : "Off until approved"} tone={status.automaticEnabled ? "warn" : "neutral"} />
         <Fact label="Merged & verified" value={String(verified)} tone="neutral" />
+        <Fact label="Stored credentials" value={vault.label} tone={vault.tone} />
       </div>
 
-      {(status.writeBlock.blocked || status.envStop || !status.schema.ready) && (
+      {(status.writeBlock.blocked || status.envStop || !status.schema.ready || vault.problem) && (
         <div className="rounded-2xl border border-warm-dim/60 bg-warm-bg px-4 py-3 text-sm text-text">
           {status.envStop && <p><strong>H2G_STRICT_STOP</strong> is set for this deployment: live writes are off.</p>}
           {status.writeBlock.reason && <p>{status.writeBlock.reason}</p>}
           {!status.schema.ready && <p>Ledger schema incomplete: {status.schema.missing.join(", ")}.</p>}
+          {vault.problem && <p>{vault.problem}</p>}
         </div>
       )}
 
@@ -260,6 +277,11 @@ export function StrictPanel({ initial }: { initial: StrictStatusView | null }) {
             Stop all writes
           </button>
         )}
+        {status.credentials?.configured && (status.credentials.plaintext > 0 || status.credentials.encryptedPrevious > 0) && (
+          <button type="button" className="oui-button oui-button-tonal" disabled={busy !== null} onClick={encrypt}>
+            {busy === "encrypt" ? "Encrypting…" : "Encrypt stored credentials…"}
+          </button>
+        )}
         <button type="button" className="oui-button oui-button-tonal" disabled={busy !== null} onClick={() => void runAudit()}>
           {busy === "audit" ? "Auditing…" : "Audit duplicates (read-only)"}
         </button>
@@ -299,4 +321,14 @@ export function StrictPanel({ initial }: { initial: StrictStatusView | null }) {
       )}
     </section>
   );
+}
+
+/** One line for the credential vault: sealed with the current key is the only "ok". Counts only, never a value. */
+export function describeVault(c: StrictStatusView["credentials"]): { label: string; tone: "ok" | "warn" | "bad" | "neutral"; problem: string | null } {
+  if (!c) return { label: "Unknown", tone: "neutral", problem: null };
+  if (c.unreadable.length) return { label: "Cannot open", tone: "bad", problem: `Stored credentials cannot be opened with the configured keys (${c.unreadable.join(", ")}). Add the old key to H2G_CREDENTIALS_KEYS_PREVIOUS.` };
+  if (!c.configured) return { label: c.plaintext ? "Not encrypted" : "No key set", tone: "bad", problem: "H2G_CREDENTIALS_KEY is not set: credentials cannot be stored or used in strict mode." };
+  if (c.plaintext) return { label: `${c.plaintext} not encrypted`, tone: "bad", problem: `${c.plaintext} stored credential${c.plaintext === 1 ? " is" : "s are"} still plaintext. Encrypt them ("Encrypt stored credentials…" below). Strict mode does not use them until then.` };
+  if (c.encryptedPrevious) return { label: `${c.encryptedPrevious} on old key`, tone: "warn", problem: `${c.encryptedPrevious} credential${c.encryptedPrevious === 1 ? " is" : "s are"} sealed with a previous key. Re-encrypt before removing it.` };
+  return { label: c.rows ? "Encrypted" : "None stored", tone: "ok", problem: null };
 }

@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
-import { DBTokenStore } from "garmin-auth";
 import { GARMIN_TOKEN_PLATFORM, resetGarminClient } from "@/lib/garmin-upload";
 import { resolveDatabaseUrl } from "@/lib/database-url";
+import { EncryptedTokenStore } from "@/lib/encrypted-token-store";
+import { assertVaultWritable } from "@/lib/credential-vault";
+import { getDb } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -15,7 +17,7 @@ export const runtime = "nodejs";
  * /api/garmin-login can't clear. The browser signs in on Garmin's own widget,
  * pastes the resulting `ST-...` ticket, and the client exchanges it for DI
  * tokens at the CF Worker `/exchange` (which returns DI tokens directly). This
- * route just persists those tokens via DBTokenStore.save() — the same nested
+ * route just persists those tokens via the encrypted token store — the same nested
  * `{garmin_tokens:{…}}` shape the sync engine reads. Mirrors Python
  * POST /api/garmin-ticket.
  */
@@ -48,7 +50,13 @@ export async function POST(request: Request) {
   }
 
   try {
-    const store = new DBTokenStore(url, GARMIN_TOKEN_PLATFORM);
+    assertVaultWritable();
+  } catch (err) {
+    return NextResponse.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 503 });
+  }
+
+  try {
+    const store = new EncryptedTokenStore(getDb(), GARMIN_TOKEN_PLATFORM);
     await store.save({ di_token, di_refresh_token, di_client_id });
     resetGarminClient();
     return NextResponse.json({ ok: true });

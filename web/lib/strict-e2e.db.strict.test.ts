@@ -125,8 +125,21 @@ describe.skipIf(!url)("strict in-place merge end to end (Postgres + firewall + H
       timing: { verifyDelayMs: 0, rateLimit: FAST },
     });
 
+  /** Every row of every table in the database, as one digest per table. */
+  const snapshot = async () => {
+    const tables = (await db`SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY 1`).map((t) => String(t.tablename));
+    const out: Record<string, string> = {};
+    for (const t of tables) {
+      out[t] = String((await db.unsafe(`SELECT md5(coalesce(string_agg(x::text, '|' ORDER BY x::text), '')) AS d FROM "${t}" x`))[0].d);
+    }
+    return out;
+  };
+
   it("dry run: reads only, no Garmin write and no database row", async () => {
+    await run(true); // the first query of a process may bootstrap the schema (§12a); measure after it
+    const before = await snapshot();
     const r = await run(true);
+    expect(await snapshot()).toEqual(before); // every row of every table, not only the ledger
     expect(r.status).toBe("dry_run");
     expect(server.requests.filter((q) => q.method !== "GET")).toEqual([]);
     expect((await db`SELECT count(*)::int AS n FROM strict_bindings`)[0].n).toBe(0);

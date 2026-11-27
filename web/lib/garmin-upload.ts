@@ -16,9 +16,11 @@
  * lookup) and is always safe to call.
  */
 import { getDb } from "./db";
-import { GarminAuth, DBTokenStore, type GarminClient } from "garmin-auth";
+import { GarminAuth, type GarminClient } from "garmin-auth";
+import { EncryptedTokenStore } from "./encrypted-token-store";
 import { resolveDatabaseUrl } from "./database-url";
 import { ensureStrictFirewall } from "./strict-sync";
+import { strictModeActive } from "./strict-mode";
 
 /** The DI tokens live in platform_credentials at this platform key. */
 export const GARMIN_TOKEN_PLATFORM = "garmin_tokens";
@@ -34,6 +36,9 @@ let normalized = false;
  */
 export async function normalizeGarminTokenRow(sql: ReturnType<typeof getDb>): Promise<void> {
   if (normalized) return;
+  // Strict mode never uses a plaintext row (the credential vault refuses it) and
+  // never writes on a read: the explicit credential migration handles the flat shape.
+  if (strictModeActive()) return;
   try {
     await sql`
       UPDATE platform_credentials
@@ -60,8 +65,13 @@ export async function getGarminClient(databaseUrl?: string): Promise<GarminClien
   if (cachedClient) return cachedClient;
   const url = databaseUrl ?? resolveDatabaseUrl();
   if (!url) throw new Error("DATABASE_URL not set (cannot load Garmin tokens)");
-  try { await normalizeGarminTokenRow(getDb()); } catch { /* no DB handle: DBTokenStore reports it */ }
-  const store = new DBTokenStore(url, GARMIN_TOKEN_PLATFORM);
+  const sql = getDb();
+  try { await normalizeGarminTokenRow(sql); } catch { /* the token store reports the real problem */ }
+  // The DI tokens are sealed (AES-256-GCM) in the row; garmin-auth sees only the TokenStore interface.
+  // GarminAuth saves the tokens after validating them and after every refresh. The store writes only
+  // tokens that changed (a refresh), so a dry run writes the row only when Garmin rotated the tokens
+  // during it, and deletes it only when Garmin rejected them (docs/STRICT_OPERATIONS.md, "Dry run").
+  const store = new EncryptedTokenStore(sql, GARMIN_TOKEN_PLATFORM);
   const auth = new GarminAuth({ store });
   cachedClient = await auth.client();
   return cachedClient;

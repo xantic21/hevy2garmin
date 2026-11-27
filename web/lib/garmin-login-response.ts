@@ -1,15 +1,15 @@
 import { NextResponse } from "next/server";
-import { DBTokenStore } from "garmin-auth";
+import { EncryptedTokenStore } from "@/lib/encrypted-token-store";
 import { GARMIN_TOKEN_PLATFORM, resetGarminClient } from "@/lib/garmin-upload";
 import { tokensFromResult, type WorkerLoginResult } from "@/lib/garmin-login-worker";
 import { clearCooldown } from "@/lib/garmin-cooldown";
 import { getDb } from "@/lib/db";
 
 /** Persist the DI tokens (nested {garmin_tokens:{...}}) for the sync engine. */
-async function persist(url: string, result: WorkerLoginResult): Promise<void> {
+async function persist(_url: string, result: WorkerLoginResult): Promise<void> {
   const tokens = tokensFromResult(result);
   if (!tokens) throw new Error("Login succeeded but no DI tokens were returned.");
-  const store = new DBTokenStore(url, GARMIN_TOKEN_PLATFORM);
+  const store = new EncryptedTokenStore(getDb(), GARMIN_TOKEN_PLATFORM);
   await store.save(tokens);
   resetGarminClient();
 }

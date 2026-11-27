@@ -16,17 +16,20 @@
  * drops them afterwards. Never point it at a server with real data.
  */
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import postgres from "postgres";
 import { SCHEMA_STATEMENTS, SCHEMA_TABLES } from "./schema";
 import { postgresStrictLedger, STRICT_SCHEMA_TABLES, strictSchemaReady } from "./strict-ledger-store";
 import type { Sql } from "./pending-store";
+import { migrateCredentials, readCredentials, vaultStatus } from "./credential-vault";
 
 const url = process.env.TEST_DATABASE_URL;
 const suffix = `${process.pid}_${Date.now()}`;
-const DBS = { fresh: `h2gq_fresh_${suffix}`, legacy: `h2gq_legacy_${suffix}`, restore: `h2gq_restore_${suffix}` };
+const DBS = { fresh: `h2gq_fresh_${suffix}`, legacy: `h2gq_legacy_${suffix}`, restore: `h2gq_restore_${suffix}`, vault: `h2gq_vault_${suffix}` };
 
 const urlFor = (db: string) => {
   const u = new URL(url!);
@@ -164,5 +167,55 @@ describe.skipIf(!url)("database qualification on synthetic data", () => {
     await expect(restored.unsafe("DELETE FROM strict_backups")).rejects.toThrow(/insert-only/);
     await expect(restored.unsafe("TRUNCATE strict_backups")).rejects.toThrow(/insert-only/);
     expect((await postgresStrictLedger(tagFor(restored)).getControl()).frozen).toBe(true);
+  });
+
+  /**
+   * Credential migration and encrypted backups (review round 2, finding 4):
+   * the legacy database's plaintext Hevy key is sealed, a plain-SQL dump then
+   * holds no secret, and an encrypted dump restores into an empty database
+   * whose credentials open with the same key. A changed byte or a wrong
+   * backup key makes the restore impossible instead of partial.
+   */
+  it.skipIf(!hasPgDump)("credentials are sealed at rest, and an encrypted dump restores intact", async () => {
+    const SECRET = "synthetic-not-a-key";
+    const db = connect(DBS.legacy);
+    const env = { H2G_CREDENTIALS_KEY: randomBytes(32).toString("base64") };
+    const plainSql = () => run("pg_dump", ["--format=plain", "--no-owner", "--data-only", "--table=platform_credentials", urlFor(DBS.legacy)]).toString("utf8");
+
+    expect(plainSql()).toContain(SECRET); // the check below can see a secret when there is one
+    expect((await migrateCredentials(tagFor(db), env)).encrypted).toContain("hevy");
+    expect(await vaultStatus(tagFor(db), env)).toMatchObject({ plaintext: 0, unreadable: [] });
+    expect(plainSql()).not.toContain(SECRET);
+
+    const dir = mkdtempSync(join(tmpdir(), "h2g-backup-"));
+    const tool = join(__dirname, "..", "scripts", "backup-crypt.mjs");
+    const backupEnv = { ...process.env, H2G_BACKUP_KEY: randomBytes(32).toString("base64") };
+    const node = (args: string[], extra: Record<string, string> = {}) =>
+      execFileSync(process.execPath, [tool, ...args], { env: { ...backupEnv, ...extra }, stdio: ["ignore", "pipe", "pipe"] });
+    try {
+      writeFileSync(join(dir, "db.dump"), run("pg_dump", ["--format=custom", "--no-owner", urlFor(DBS.legacy)]));
+      node(["encrypt", join(dir, "db.dump"), join(dir, "db.h2gbak")]);
+      const sealed = readFileSync(join(dir, "db.h2gbak"));
+      expect(sealed.subarray(0, 8).toString()).toBe("H2GBAK1\n");
+      expect(sealed.includes(Buffer.from("PGDMP"))).toBe(false);
+
+      // Negative controls: a wrong key and a changed byte both fail, and leave no output behind.
+      expect(() => node(["decrypt", join(dir, "db.h2gbak"), join(dir, "wrong.dump")], { H2G_BACKUP_KEY: randomBytes(32).toString("base64") })).toThrow();
+      const tampered = Buffer.from(sealed);
+      tampered[Math.floor(tampered.length / 2)] ^= 0x01;
+      writeFileSync(join(dir, "tampered.h2gbak"), tampered);
+      expect(() => node(["decrypt", join(dir, "tampered.h2gbak"), join(dir, "tampered.dump")])).toThrow();
+      expect(() => readFileSync(join(dir, "tampered.dump"))).toThrow();
+      expect(() => readFileSync(join(dir, "tampered.dump.partial"))).toThrow();
+
+      node(["decrypt", join(dir, "db.h2gbak"), join(dir, "restored.dump")]);
+      expect(readFileSync(join(dir, "restored.dump")).equals(readFileSync(join(dir, "db.dump")))).toBe(true);
+      run("pg_restore", ["--no-owner", "--exit-on-error", `--dbname=${urlFor(DBS.vault)}`], readFileSync(join(dir, "restored.dump")));
+      const restored = tagFor(connect(DBS.vault));
+      expect(await readCredentials(restored, "hevy", env)).toEqual({ api_key: SECRET });
+      await expect(readCredentials(restored, "hevy", { H2G_CREDENTIALS_KEY: randomBytes(32).toString("base64") })).rejects.toThrow(/no key/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

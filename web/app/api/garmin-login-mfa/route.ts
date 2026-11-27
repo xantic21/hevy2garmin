@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { workerLoginMfa } from "@/lib/garmin-login-worker";
 import { toResponse } from "@/lib/garmin-login-response";
 import { resolveDatabaseUrl } from "@/lib/database-url";
+import { assertVaultWritable } from "@/lib/credential-vault";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -16,6 +17,13 @@ export const runtime = "nodejs";
  * responds { status: "connected" } exactly like step 1 (shared toResponse).
  */
 export async function POST(request: Request) {
+  // The tokens could not be stored encrypted: refuse before sending a password or a code to Garmin.
+  try {
+    assertVaultWritable();
+  } catch (err) {
+    return NextResponse.json({ status: "error", error: err instanceof Error ? err.message : String(err) }, { status: 503 });
+  }
+
   let body: { session_id?: unknown; mfa_code?: unknown } = {};
   try {
     const text = await request.text();

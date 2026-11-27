@@ -12,8 +12,8 @@ vi.mock("@/lib/garmin-login-worker", async (orig) => {
 });
 
 const save = vi.fn();
-vi.mock("garmin-auth", () => ({
-  DBTokenStore: class {
+vi.mock("@/lib/encrypted-token-store", () => ({
+  EncryptedTokenStore: class {
     constructor(..._a: unknown[]) {}
     save(...a: unknown[]) {
       return save(...a);

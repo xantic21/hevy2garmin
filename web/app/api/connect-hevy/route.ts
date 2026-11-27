@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { fetchWorkoutCount } from "@/lib/hevy-sync";
 import { getDb } from "@/lib/db";
+import { assertVaultWritable, writeCredentials } from "@/lib/credential-vault";
 
 // Probes the live Hevy API and writes platform_credentials at request time.
 export const dynamic = "force-dynamic";
@@ -29,6 +30,13 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, error: "A Hevy API key is required." }, { status: 400 });
   }
 
+  // 0) The key could not be stored encrypted: say so before sending it anywhere.
+  try {
+    assertVaultWritable();
+  } catch (err) {
+    return NextResponse.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 503 });
+  }
+
   // 1) Validate — a read-only probe. A bad key throws; nothing is written.
   let workoutCount: number;
   try {
@@ -50,15 +58,8 @@ export async function POST(request: Request) {
   }
 
   try {
-    await sql`
-      INSERT INTO platform_credentials (platform, auth_type, credentials, status, connected_at)
-      VALUES ('hevy', 'api_key', ${sql.json({ api_key: key })}, 'active', NOW())
-      ON CONFLICT (platform) DO UPDATE SET
-        auth_type = 'api_key',
-        credentials = EXCLUDED.credentials,
-        status = 'active',
-        connected_at = NOW()
-    `;
+    // Sealed with AES-256-GCM when H2G_CREDENTIALS_KEY is set (always, in strict mode).
+    await writeCredentials(sql, "hevy", { api_key: key }, { authType: "api_key", status: "active", touchConnectedAt: true });
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     return NextResponse.json({ ok: false, valid: true, error: `Could not save the key: ${error}` }, { status: 500 });

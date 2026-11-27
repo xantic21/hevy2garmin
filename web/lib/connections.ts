@@ -1,5 +1,6 @@
 import type { getDb } from "./db";
 import { ifNoTable } from "./missing-table";
+import { peekStored } from "./credential-vault";
 
 type Sql = ReturnType<typeof getDb>;
 
@@ -33,13 +34,31 @@ export async function loadGarminConnection(sql: Sql): Promise<Connection> {
   const rows = await sql`
     SELECT connected_at,
            (jsonb_exists(credentials -> 'garmin_tokens', 'di_token')
-            OR jsonb_exists(credentials, 'di_token')) AS has_token
+            OR jsonb_exists(credentials, 'di_token')) AS has_token,
+           credentials
     FROM platform_credentials
     WHERE platform = 'garmin_tokens'
-  `.catch(ifNoTable([] as Array<{ connected_at: string | null; has_token: boolean | null }>));
+  `.catch(ifNoTable([] as Array<{ connected_at: string | null; has_token: boolean | null; credentials?: unknown }>));
   const row = rows[0];
-  if (!row?.has_token) return DISCONNECTED;
+  if (!row || !usable("garmin_tokens", row, (v) => hasDiToken(v.garmin_tokens) || "di_token" in v)) return DISCONNECTED;
   return { connected: true, connectedAt: row.connected_at ?? null };
+}
+
+const hasDiToken = (v: unknown) => Boolean(v && typeof v === "object" && "di_token" in (v as object));
+
+/**
+ * The credential vault seals the row (credential-vault.ts), so SQL cannot see
+ * inside it: a sealed row counts when it opens with the configured keys and
+ * holds the token; a plaintext row counts by the SQL test, unless strict mode
+ * without a key would refuse to use it.
+ */
+function usable(platform: string, row: { credentials?: unknown; [k: string]: unknown }, holds: (v: Record<string, unknown>) => boolean): boolean {
+  const flag = Boolean(row.has_token ?? row.has_key);
+  if (row.credentials === undefined) return flag;
+  const peek = peekStored(platform, row.credentials);
+  if (peek === null) return false;
+  if (peek === "plaintext") return flag;
+  return holds(peek);
 }
 
 /**
@@ -52,12 +71,13 @@ export async function loadGarminConnection(sql: Sql): Promise<Connection> {
 export async function loadHevyConnection(sql: Sql): Promise<Connection> {
   const fromEnv = Boolean(process.env.HEVY_API_KEY?.trim());
   const rows = await sql`
-    SELECT status, connected_at, jsonb_exists(credentials, 'api_key') AS has_key
+    SELECT status, connected_at, jsonb_exists(credentials, 'api_key') AS has_key, credentials
     FROM platform_credentials
     WHERE platform = 'hevy'
-  `.catch(ifNoTable([] as Array<{ status: string | null; connected_at: string | null; has_key: boolean | null }>));
+  `.catch(ifNoTable([] as Array<{ status: string | null; connected_at: string | null; has_key: boolean | null; credentials?: unknown }>));
   const row = rows[0];
   if (row?.status === "disconnected") return DISCONNECTED;
-  if (!fromEnv && !row?.has_key) return DISCONNECTED;
+  const stored = row ? usable("hevy", row, (v) => typeof v.api_key === "string" && v.api_key.trim() !== "") : false;
+  if (!fromEnv && !stored) return DISCONNECTED;
   return { connected: true, connectedAt: row?.connected_at ?? null };
 }
