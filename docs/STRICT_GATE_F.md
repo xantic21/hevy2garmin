@@ -33,7 +33,12 @@ its own owner authorization, separate from gate G:
 | Recovery only for the authorized pair | engine restore/reconcile pin; dashboard restore, reconcile, resolve | engine, e2e (journal of another workout refused) | G04, G05, G21, G22 |
 | No real gate F on Vercel; staging never with real data | runtime quarantine; synthetic ids only in staging, real ids only outside | unit, proxy | G09, G20 |
 | Gate F ≠ gate G; credentials only sealed | forbidden variables; credentials key required | unit, proxy | G06, G07, G23 |
-| Evidence | original backup (before), journaled intent, fresh read (after), comparisons, SHA-256 | e2e, HTTP rehearsal (before/after, after restore) | — |
+| Exactly what was previewed (re-audit #3, F2) | the preview's `planSha256` (sets payload, new name, new description) travels with the run; the engine refuses a live pinned run without it or with a different plan, before any write | engine (missing, wrong, Hevy edited after the preview), e2e (mapping changed after the preview), HTTP | G26, G27, G28 |
+| The database stays locked after gate F (re-audit #3, F1) | a database holding the gate F record refuses live sync, "Sync all", cron and restore unless gate F mode or the gate G cutover is set; blank variables count as unset | e2e | G24, G25 |
+| Only the new, empty database (re-audit #3, F6) | guard before the schema bootstrap: an unmarked database with any row is refused, an empty one is marked | Postgres guard tests incl. the runtime path | G34, G35 |
+| Never on a hosting platform; strict expiry (F4, F5) | hosting variables (`VERCEL*`, Lambda, Netlify, Render, Railway, Fly, Cloud Run, Heroku) refuse a real gate F; impossible dates and offsets refused | unit | G30, G31 (G09 now defence in depth) |
+| Only from the dashboard itself (F9) | operator routes refuse another origin (403) and non-JSON bodies (415) | unit, HTTP | G32, G33 |
+| Evidence (F3) | original backup (before), journaled intents with integrity check, fresh read (after), comparisons of sets, name, description and native metrics, a verdict that is OK only when every comparison for the expected state ran and passed, SHA-256 | e2e (verdict fails when Garmin's name was changed elsewhere; OK again after a restore), HTTP | G29 |
 
 ## 3. Qualification of the candidate 6dd7002
 
@@ -56,11 +61,41 @@ Actions CI on the candidate, the gate E rehearsal on the Vercel staging
 preview of the candidate, the fresh cloud environment check, the independent
 re-audit.
 
-## 4. Independent re-audit, Vercel and CI
+## 4. Independent re-audit #3 (separate agent, read-only, on 6dd7002)
 
-(Recorded after the runs complete.)
+Scope: every way to break the seven gate F guarantees, with probe tests
+against a scratch database and a local server (all removed afterwards).
+Could not be broken: no other route writes to Garmin in gate F mode; the proxy
+cannot be bypassed through path variants (encoded slashes, `;` suffixes, case,
+trailing slashes, `//`); parallel claims, stale takeover and a crash after
+journaling end with one write or a freeze; recovery is limited to the pair; the
+hard stop and the freeze hold; staging stays synthetic; gate F and gate G stay
+separate.
 
-## 5. What stays open
+| # | Severity | Finding | Closed by | Proof |
+| --- | --- | --- | --- | --- |
+| F1 | HIGH | "Once per database" held only while the four variables were set: without them (or blank), the same database accepted every manual sync and "Sync all" with the sealed real credentials | database lock after gate F (`gateFDatabaseLock`) on live sync and restore | e2e "F1" (sync, batch, restore blocked, blank variables, cutover unlocks); G24, G25 |
+| F2 | MEDIUM | Preview and run were not bound: a mapping, setting or Hevy change between them wrote a different plan | plan hash from the preview, required and checked by the engine | engine and e2e "F2", HTTP; G26–G28 |
+| F3 | LOW/MED | The evidence could look clean while name or description differed; the activity-id check was circular; journaled intents not integrity-checked; `null` vs `[]` ambiguous | name/description against the journaled write and the original, integrity of backup and journal, explicit verdict | e2e "F3"; G29 |
+| F4 | LOW | Impossible expiry dates rolled over (31 Nov → 1 Dec, 24:00, +23:59) | strict parser | unit; G30 |
+| F5 | LOW | "Never on Vercel" relied on two variables only | hosting-platform variables refused (any `VERCEL*`, Lambda, …); a real gate F remains the owner's choice of computer, documented | unit; G31 |
+| F6 | LOW | Nothing enforced the new, empty database | gate F database guard before the bootstrap | guard tests; G34, G35 |
+| F7 | INFO | A run whose record was taken over reported "synced" without the freeze | the run returns a warning, the panel shows it | e2e |
+| F8 | INFO | Restore while frozen, unfreeze in gate F mode, token refresh during reads, staging seed resets the record | documented as intended (recovery, operator control, authentication, staging only) | STRICT_OPERATIONS.md §8 |
+| F9 | LOW | Cross-site request forgery from another local port (`SameSite` treats ports as one site) | same-origin and JSON-only check on every operator route | unit, HTTP; G32, G33 |
+
+## 5. Fresh cloud environment
+
+A new Claude Code cloud session on the environment `hevy2garmin` (its setup
+script installs and builds the engine and the dashboard) checked out the branch
+and, without changing anything: the setup script had run; engine identity
+verified; `tools/maintenance/local-test-db.sh` started a fresh local Postgres;
+engine 610/610; dashboard tsc, eslint, 1044/1044 incl. Postgres and pg_dump;
+`pip install -e ".[dev,cloud]"`, pytest 480 passed, 7 skipped, 1 failed — the
+read-only-folder test, because the container runs as root. That test now skips
+itself under root. `git status` clean.
+
+## 7. What stays open
 
 - **Gate F itself**: the real run, the owner's visual check on Garmin
   Connect (exercise names displayed) and acceptance. Untested by definition:

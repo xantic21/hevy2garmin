@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -159,6 +160,10 @@ class TestTokenFolder:
     def test_writable_folder_has_no_problem(self, tmp_path) -> None:
         assert cli._token_folder_problem(str(tmp_path / "tokens")) is None
 
+    @pytest.mark.skipif(
+        hasattr(os, "geteuid") and os.geteuid() == 0,
+        reason="root can write to a read-only folder, so there is no problem to name",
+    )
     def test_unwritable_folder_is_named(self, tmp_path) -> None:
         folder = tmp_path / "tokens"
         folder.mkdir()

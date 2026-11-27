@@ -40,12 +40,12 @@ Needs: Docker Desktop on your computer, a checkout of the qualified commit
 | 11 | In the checkout: `bash tools/gate-f/prepare-env.sh` → answer the three questions → it writes `gate-f.env` and prints the dashboard password and two `docker` commands → run them |
 | 12 | Open `http://localhost:8096` → sign in → Setup: connect **Hevy** (the new key) and **Garmin** (email, password, MFA code) |
 | 13 | Dashboard → **Gate F** panel: **1 · Preview** — check activity id, set count, timing, name |
-| 14 | Type the confirmation shown (`GATE-F <hevyId> <activityId>`) → **2 · Run gate F** → expect "synced" |
-| 15 | **3 · Evidence** → save the JSON |
+| 14 | Type the confirmation shown (`GATE-F <hevyId> <activityId>`) → **2 · Run gate F** → expect "synced". The run is bound to the preview: if it says the plan differs, preview again |
+| 15 | **3 · Evidence** → expect "verdict OK (merged)" → save the JSON |
 | 16 | Garmin Connect, web and phone: heart-rate graph, calories, training effect and duration unchanged; exercises, reps, weights as in Hevy; exercise **names shown** |
 | 17 | If anything is wrong: Strict panel → **Stop all writes**, then **Restore backup… → original**, then Evidence again |
-| 18 | Stop the container (Ctrl-C). Put `gate-f.env` and the evidence JSON into your password manager; `H2G_CREDENTIALS_KEY` from it is needed at gate G |
-| 19 | Claude | "Gate F: akzeptiert" (or "abgelehnt", with what you saw) and the evidence file → recorded; gate G prepared as a separate pull request |
+| 18 | Stop the container (Ctrl-C). Put `gate-f.env` and the evidence JSON into your password manager; `H2G_CREDENTIALS_KEY` from it is needed at gate G. The gate F database now refuses every live write unless gate F mode or the gate G cutover is set |
+| 19 | Tell Claude "Gate F: akzeptiert" (or "abgelehnt", with what you saw) and share the evidence file → recorded; gate G prepared as a separate pull request |
 
 ## Phase 3 — Gate G (later, separate decision)
 

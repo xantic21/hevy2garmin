@@ -274,9 +274,9 @@ owner's own computer, and nothing else.
 | Question | Answer |
 | --- | --- |
 | Where it runs | The owner's computer, from the qualified container image of the exact candidate (`docker run`, `localhost:8096`). Never on Vercel: the runtime quarantine refuses a real gate F wherever `VERCEL`/`VERCEL_ENV` is set, and the build quarantine still builds only synthetic staging. On Vercel gate F exists only as a synthetic rehearsal inside staging. Signing in to Garmin from the owner's own connection also needs no Cloudflare Worker (`H2G_DIRECT_GARMIN_LOGIN=1`) |
-| Which database | A new, empty Neon database (free plan) used for nothing else. Not the legacy production database, which gate F never touches, and not the staging database. At gate G this database, with the same `H2G_CREDENTIALS_KEY`, becomes the strict deployment's database, so the original backup and the journal of the gate F activity stay with it |
+| Which database | A new, empty Neon database (free plan) used for nothing else. Enforced: before the schema bootstrap the server refuses any database that holds a row in any table of the app (the legacy production database, the staging database) and marks an empty one as the gate F database (`app_cache` key `h2g_gate_f`). At gate G this database, with the same `H2G_CREDENTIALS_KEY`, becomes the strict deployment's database, so the original backup and the journal of the gate F activity stay with it |
 | Authorization | `H2G_GATE_F=approved-by-owner`, `H2G_GATE_F_HEVY_ID`, `H2G_GATE_F_GARMIN_ACTIVITY_ID`, `H2G_GATE_F_EXPIRES` (at most 14 days ahead). `tools/gate-f/prepare-env.sh` writes them, with fresh secrets, into a private `gate-f.env` |
-| Refused at start (server answers 503) | an incomplete or malformed authorization; `H2G_PRODUCTION_CUTOVER` or `H2G_STRICT_AUTOMATIC` (gate G); plain credentials in the environment (`HEVY_API_KEY`, `GARMIN_EMAIL`, `GARMIN_PASSWORD`, `GITHUB_PAT`, intervals.icu, collector); `DEMO_MODE`; legacy mode; no dashboard password; no `H2G_CREDENTIALS_KEY`; synthetic ids outside staging, real ids inside it; any Vercel runtime |
+| Refused at start (server answers 503) | an incomplete or malformed authorization (also an impossible expiry such as 31 November, 24:00 or an offset beyond ±14:00); `H2G_PRODUCTION_CUTOVER` or `H2G_STRICT_AUTOMATIC` (gate G); plain credentials in the environment (`HEVY_API_KEY`, `GARMIN_EMAIL`, `GARMIN_PASSWORD`, `GITHUB_PAT`, intervals.icu, collector); `DEMO_MODE`; legacy mode; no dashboard password; no `H2G_CREDENTIALS_KEY`; synthetic ids outside staging, real ids inside it; any hosting platform's variables (`VERCEL*`, AWS Lambda, Netlify, Render, Railway, Fly, Cloud Run, Heroku) |
 | After the expiry | The server stays readable; no new merge; preview, evidence, stop, reconcile and restore of the authorized activity stay available |
 
 **What the mode allows, and where each limit is enforced** (outermost first):
@@ -286,10 +286,12 @@ owner's own computer, and nothing else.
 | Only the gate F panel can merge | proxy: every sync entry point (`/api/sync*`, `/api/cron/*`) answers 423 for any method, every other mutating route except sign-in, account connection, settings, mappings and the strict operator routes too; the generic sync routes answer 423 themselves; `runStrictSync` refuses any call without exactly the authorized pin |
 | Exactly that workout, exactly that activity, manual only | the engine pin (`StrictSyncOptions.pin`): no batch, cron or webhook trigger, no other workout, no resync, checked before any IO; the activity the matcher finds must be the authorized one, else nothing is written |
 | Once | `strict_gate_f`, one row, claimed by a single statement: parallel calls get "in progress"; once anything was journaled the row is final ("done") and refuses every later run, also for another workout; a run that journaled nothing (watch activity not there yet, wrong activity) re-arms it. Under it, the existing binding, activity lock and in-flight journal index |
-| Deliberate | the run needs the typed confirmation `GATE-F <hevyId> <activityId>` |
+| Deliberate, and exactly what was previewed | the run needs the typed confirmation `GATE-F <hevyId> <activityId>` **and** the plan hash of the preview (`planSha256`: the sets payload, the new name, the new description). If anything changed since the preview (mappings, settings, the Hevy workout, the watch data), the engine refuses before writing; preview again |
 | Recovery only for that activity | restore, reconcile and resolve refuse any journal entry outside the authorized pair (engine and dashboard) |
-| Everything else unchanged | hard stop (`H2G_STRICT_STOP`, checked again before the claim), the database freeze, the firewall (no upload, no delete), the verified original backup, the write-ahead journal, full read-back, uncertain → reconcile. If the record is taken over during a run, all writes freeze |
-| Evidence | `POST /api/strict/gate-f {action:"evidence"}` (GET requests to Garmin only): the verified original backup (before), the journaled intended state, a fresh read of the activity (after), the comparisons (sets against intended, native metrics against before, after a restore sets against the original) and a SHA-256 over the bundle |
+| Everything else unchanged | hard stop (`H2G_STRICT_STOP`, checked again before the claim), the database freeze, the firewall (no upload, no delete), the verified original backup, the write-ahead journal, full read-back, uncertain → reconcile. If the record is taken over during a run, all writes freeze and the run reports it. By design, an operator's restore still runs while the database is frozen (recovery), and the stop switch can be lifted in gate F mode (typed `UNFREEZE`) |
+| After gate F | a database that holds the gate F record stays locked for live writes (sync, "Sync all", cron, restore) whenever gate F mode is off; only gate F mode with that authorization or the gate G cutover (`H2G_PRODUCTION_CUTOVER`) writes through it. Reads stay possible |
+| Only from the dashboard itself | every strict operator route refuses a request from another origin (another site or another local port: 403) and a body that is not JSON (415) |
+| Evidence | `POST /api/strict/gate-f {action:"evidence"}` (reads only; building the Garmin client may refresh the sign-in token, which is authentication, not activity data): the verified original backup (before), the journaled intents, a fresh read of the activity (after), and the comparisons: integrity of backup and journal, native metrics against before, sets and name/description against what was written, and after a restore against the original. A **verdict** (`merged` or `original`, `ok` only if every comparison for that state ran and found nothing) and a SHA-256 over the bundle |
 
 **Gate F and gate G stay separate.**
 
@@ -311,9 +313,10 @@ owner's own computer, and nothing else.
 4. `http://localhost:8096`: sign in, connect Hevy (the new key) and Garmin
    (direct sign-in, MFA). Credentials are sealed at once.
 5. Gate F panel: **Preview** → check the activity id, the set count, the timing
-   source and the planned name. Type the confirmation → **Run gate F**. Expect
-   `synced`, both journal steps verified, the activity id unchanged.
-6. **Evidence** → keep the JSON. On Garmin Connect (web and phone) compare: HR
+   source and the planned name. Type the confirmation → **Run gate F** (bound to
+   that preview). Expect `synced`, both journal steps verified, the activity id
+   unchanged.
+6. **Evidence** → expect "verdict OK (merged)"; keep the JSON. On Garmin Connect (web and phone) compare: HR
    graph, calories, training effect, duration unchanged; exercises, reps and
    weights as in Hevy; **exercise names displayed** (read-back verifies the stored
    state; the display is confirmed here — upstream #159/#325).
