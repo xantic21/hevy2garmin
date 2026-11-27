@@ -52,12 +52,17 @@ async function digest(db: ReturnType<typeof postgres>, table: string, columns?: 
 /**
  * pg_dump/pg_restore must match the SERVER's major version: a newer pg_dump
  * writes settings an older server rejects on restore (found in CI: pg_dump 18
- * against Postgres 16). PG_BINDIR points at the matching client tools.
+ * against Postgres 16). Either PG_BINDIR points at matching client tools, or
+ * PG_DOCKER_IMAGE (e.g. postgres:16) runs them from the server's own image.
  */
-const bin = (tool: string) => (process.env.PG_BINDIR ? join(process.env.PG_BINDIR, tool) : tool);
+function command(tool: string, args: string[]): [string, string[]] {
+  if (process.env.PG_DOCKER_IMAGE) return ["docker", ["run", "--rm", "-i", "--network", "host", process.env.PG_DOCKER_IMAGE, tool, ...args]];
+  return [process.env.PG_BINDIR ? join(process.env.PG_BINDIR, tool) : tool, args];
+}
 const run = (tool: string, args: string[], input?: Buffer) => {
+  const [cmd, argv] = command(tool, args);
   try {
-    return execFileSync(bin(tool), args, { input, maxBuffer: 64 * 1024 * 1024, stdio: ["pipe", "pipe", "pipe"] });
+    return execFileSync(cmd, argv, { input, maxBuffer: 64 * 1024 * 1024, stdio: ["pipe", "pipe", "pipe"] });
   } catch (e) {
     const err = e as { stderr?: Buffer };
     throw new Error(`${tool} failed: ${err.stderr?.toString() ?? String(e)}`);
@@ -65,7 +70,7 @@ const run = (tool: string, args: string[], input?: Buffer) => {
 };
 const hasPgDump = (() => {
   try {
-    execFileSync(bin("pg_dump"), ["--version"], { stdio: "pipe" });
+    run("pg_dump", ["--version"]);
     return true;
   } catch {
     return false;
@@ -73,7 +78,7 @@ const hasPgDump = (() => {
 })();
 
 if (url && process.env.REQUIRE_PG_DUMP === "1" && !hasPgDump) {
-  throw new Error("REQUIRE_PG_DUMP=1 but pg_dump is not installed: the backup/restore qualification would be skipped");
+  throw new Error("REQUIRE_PG_DUMP=1 but pg_dump is not available: the backup/restore qualification would be skipped");
 }
 
 describe.skipIf(!url)("database qualification on synthetic data", () => {

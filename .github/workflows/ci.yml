@@ -481,12 +481,11 @@ jobs:
       - name: Database migration, backup and restore qualification
         working-directory: web
         run: |
-          # Client tools must match the server's major version (postgres:16):
-          # a newer pg_dump writes settings Postgres 16 refuses on restore.
-          sudo apt-get update -qq > /dev/null
-          sudo apt-get install -y -qq postgresql-client-16 > /dev/null
-          export PG_BINDIR=/usr/lib/postgresql/16/bin
-          "$PG_BINDIR/pg_dump" --version
+          # Client tools must match the server's major version: a newer pg_dump
+          # writes settings Postgres 16 refuses on restore. Run them from the
+          # server's own image rather than the runner's packages.
+          export PG_DOCKER_IMAGE=postgres:16
+          docker run --rm "$PG_DOCKER_IMAGE" pg_dump --version
           REQUIRE_PG_DUMP=1 TEST_DATABASE_URL="${DATABASE_URL:?}" npx vitest run --project upstream lib/db-qualification.db.test.ts
 
       - name: Strict ledger and end-to-end merge against real Postgres
