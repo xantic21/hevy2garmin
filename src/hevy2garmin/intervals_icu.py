@@ -16,6 +16,8 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
+from hevy2garmin.strict_mode import refuse_if_strict
+
 logger = logging.getLogger("hevy2garmin")
 
 _BASE_URL = "https://intervals.icu"
@@ -87,6 +89,7 @@ def try_delete_icu_activity(garmin_activity_id: int, workout_start: str) -> bool
         )
         return False
 
+    refuse_if_strict("Deleting an intervals.icu activity")
     try:
         # Single-activity operations live under /api/v1/activity/{id} —
         # the athlete-scoped path only supports listing (DELETE there is a 405).

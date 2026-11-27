@@ -14,6 +14,7 @@ from garmin_auth import GarminAuth, RateLimiter
 from garminconnect import Garmin
 
 from hevy2garmin._isotime import parse_iso
+from hevy2garmin.strict_mode import refuse_if_strict
 
 logger = logging.getLogger("hevy2garmin")
 
@@ -106,6 +107,7 @@ def upload_fit(
 
     Returns dict with upload_id and activity_id (if found).
     """
+    refuse_if_strict("Uploading a FIT file to Garmin")
     fit_path = Path(fit_path)
     if not fit_path.exists():
         raise FileNotFoundError(f"FIT file not found: {fit_path}")
@@ -274,12 +276,14 @@ def find_activity_by_start_time(
 
 def rename_activity(client: Garmin, activity_id: int, name: str) -> None:
     """Rename a Garmin activity."""
+    refuse_if_strict("Renaming a Garmin activity")
     _limiter.call(client.set_activity_name, activity_id, name)
     logger.info("  Renamed activity %s to '%s'", activity_id, name)
 
 
 def set_description(client: Garmin, activity_id: int, description: str) -> None:
     """Set description for a Garmin activity."""
+    refuse_if_strict("Changing a Garmin activity description")
     url = f"/activity-service/activity/{activity_id}"
     payload = {"activityId": activity_id, "description": description}
     client.client.request("PUT", "connectapi", url, json=payload)
@@ -293,6 +297,7 @@ def delete_activity(client: Garmin, activity_id: int) -> None:
     Used to remove a watch-recorded activity after uploading a named
     replacement, so the workout appears exactly once on Garmin (#159).
     """
+    refuse_if_strict("Deleting a Garmin activity")
     _limiter.call(client.delete_activity, activity_id)
     logger.info("  Deleted activity %s", activity_id)
 
@@ -301,6 +306,7 @@ def upload_image(
     client: Garmin, activity_id: int, image_bytes: bytes, filename: str = "image.png"
 ) -> None:
     """Upload an image to a Garmin activity."""
+    refuse_if_strict("Uploading an image to a Garmin activity")
     files = {"file": (filename, io.BytesIO(image_bytes))}
     client.client.request(
         "POST",
@@ -455,6 +461,7 @@ def push_exercise_sets(client: Garmin, activity_id: int, payload: dict) -> None:
     Note: called directly (not through _limiter) because the endpoint returns
     204 No Content which the rate limiter misinterprets as an error.
     """
+    refuse_if_strict("Writing exercise sets to a Garmin activity")
     url = f"/activity-service/activity/{activity_id}/exerciseSets"
     time.sleep(1.0)  # manual rate limit
     client.client.request("PUT", "connectapi", url, json=payload)
@@ -477,6 +484,7 @@ def create_workout(client: Garmin, payload: dict) -> int | None:
     carries the workoutId — is returned verbatim; the limiter is tuned for the
     activity endpoints' 204s.
     """
+    refuse_if_strict("Creating a Garmin workout")
     time.sleep(1.0)  # manual rate limit
     resp = client.client.request("POST", "connectapi", "/workout-service/workout", json=payload)
     data = resp.json() if hasattr(resp, "json") else resp
@@ -511,6 +519,7 @@ def list_workouts(client: Garmin, limit: int = 100) -> list[dict]:
 
 def delete_workout(client: Garmin, workout_id: int | str) -> None:
     """Delete a saved Garmin workout (used to recreate one after a routine edit)."""
+    refuse_if_strict("Deleting a Garmin workout")
     time.sleep(1.0)  # manual rate limit
     client.client.request("DELETE", "connectapi", f"/workout-service/workout/{workout_id}")
     logger.info("  Deleted Garmin workout %s", workout_id)
@@ -524,6 +533,7 @@ def schedule_workout(client: Garmin, workout_id: int | str, date: str) -> int | 
     every POST — it does not dedup server-side). Returns ``None`` if the response
     carries no parseable id, so scheduling still succeeds even if the shape drifts.
     """
+    refuse_if_strict("Scheduling a Garmin workout")
     time.sleep(1.0)  # manual rate limit
     resp = client.client.request(
         "POST",
@@ -541,6 +551,7 @@ def schedule_workout(client: Garmin, workout_id: int | str, date: str) -> int | 
 
 def unschedule_workout(client: Garmin, scheduled_id: int | str) -> None:
     """Remove a calendar entry (``workoutScheduleId``) without deleting the workout."""
+    refuse_if_strict("Unscheduling a Garmin workout")
     time.sleep(1.0)  # manual rate limit
     client.client.request("DELETE", "connectapi", f"/workout-service/schedule/{scheduled_id}")
     logger.info("  Unscheduled Garmin calendar entry %s", scheduled_id)

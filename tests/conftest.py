@@ -7,6 +7,24 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _sync_mode(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run the inherited suite in the explicit legacy mode it was written for.
+
+    The fork's default is strict in-place mode, in which every Python write to
+    Garmin or intervals.icu refuses (src/hevy2garmin/strict_mode.py). The
+    upstream tests exercise exactly those writes, so they opt into legacy
+    mode; test_strict_mode.py runs with no mode variables at all, as a strict
+    deployment does.
+    """
+    if Path(str(request.node.fspath)).name == "test_strict_mode.py":
+        monkeypatch.delenv("H2G_SYNC_MODE", raising=False)
+        monkeypatch.delenv("H2G_LEGACY_UPSTREAM_ACK", raising=False)
+    else:
+        monkeypatch.setenv("H2G_SYNC_MODE", "legacy_upstream")
+        monkeypatch.setenv("H2G_LEGACY_UPSTREAM_ACK", "uploads-and-deletes-allowed")
+
+
 @pytest.fixture
 def tmp_config_dir(tmp_path: Path) -> Path:
     """Temp directory for config files."""

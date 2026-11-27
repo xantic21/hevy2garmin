@@ -357,7 +357,9 @@ def cmd_unsync(args: argparse.Namespace) -> None:
         try:
             config = load_config()
             from hevy2garmin.garmin import get_client
+            from hevy2garmin.strict_mode import refuse_if_strict
 
+            refuse_if_strict("Deleting a Garmin activity from the CLI")
             client = get_client(config.get("garmin_email"))
             client.delete_activity(int(garmin_id))
             print(f"  ✓ Deleted Garmin activity {garmin_id}")
