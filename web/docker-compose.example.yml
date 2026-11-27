@@ -27,7 +27,10 @@ services:
 
   web:
     build:
-      context: .
+      # The image compiles the fork-local engine from typescript/, so the
+      # context is the repository root and the Dockerfile is named explicitly.
+      context: ..
+      dockerfile: web/Dockerfile
       # Optional path prefix (README: Under a sub-path), baked in at build time.
       args:
         H2G_BASE_PATH: ${H2G_BASE_PATH:-}

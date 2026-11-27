@@ -1,30 +1,45 @@
-# The Next.js dashboard as a self-hosted container. Build from this directory:
+# The Next.js dashboard as a self-hosted container, built WITH the fork-local
+# strict engine from typescript/. Build from the REPOSITORY ROOT:
 #
-#   docker build -t hevy2garmin-web web/
+#   docker build -f web/Dockerfile -t hevy2garmin-web .
 #
 # The root Dockerfile is a different image: it builds the Python CLI.
 #
-# Dependencies come from web/package-lock.json exactly as CI installs them, so
-# the `hevy2garmin` engine is the published npm release the lockfile pins, not
-# the typescript/ folder of this checkout.
+# The `hevy2garmin` engine is NOT taken from the npm registry. It is compiled
+# from typescript/ in this checkout, stamped with a digest of its source, and
+# installed into web/node_modules as a copy (web/.npmrc install-links=true), so
+# its peer dependencies resolve from web/. scripts/verify-engine.mjs fails the
+# build if the installed engine is not exactly that build (contract item 4).
+# web/Dockerfile.dockerignore limits the context to typescript/ and web/.
+
+FROM node:22-bookworm-slim AS engine
+WORKDIR /src/typescript
+COPY typescript/package.json typescript/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY typescript/ ./
+RUN npm run build
+
 
 FROM node:22-bookworm-slim AS deps
-WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci --no-audit --no-fund
+WORKDIR /src/web
+COPY --from=engine /src/typescript /src/typescript
+COPY web/package.json web/package-lock.json web/.npmrc ./
+COPY web/scripts ./scripts
+RUN npm ci --no-audit --no-fund && node scripts/verify-engine.mjs
 
 
 FROM node:22-bookworm-slim AS builder
-WORKDIR /app
+WORKDIR /src/web
 ENV NEXT_TELEMETRY_DISABLED=1
-COPY --from=deps /app/node_modules ./node_modules
-COPY . .
+COPY --from=engine /src/typescript /src/typescript
+COPY --from=deps /src/web/node_modules ./node_modules
+COPY web/ ./
 # H2G_BASE_PATH serves the dashboard under a path prefix (README: Under a
 # sub-path). Next.js bakes it into the build, so it is a build argument.
 ARG H2G_BASE_PATH=""
 # Routes are force-dynamic, so the build never connects to a database; it only
 # needs a URL to be set, the same as the CI build. Scoped to this one command
-# so it does not end up in the image.
+# so it does not end up in the image. `npm run build` re-runs the engine check.
 RUN H2G_BASE_PATH="$H2G_BASE_PATH" DATABASE_URL=postgres://build:build@localhost:5432/build npm run build
 
 
@@ -43,8 +58,8 @@ WORKDIR /app
 # `output: "standalone"` (next.config.ts, off Vercel) traces the node_modules the
 # server needs into .next/standalone. The static assets are not part of that and
 # are copied next to it. There is no public/ folder to copy.
-COPY --from=builder /app/.next/standalone ./
-COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder /src/web/.next/standalone ./
+COPY --from=builder /src/web/.next/static ./.next/static
 
 # The code stays root-owned and read-only for the app. Only Next's cache
 # directory is writable, by the `node` user (uid 1000) that ships in the base image.

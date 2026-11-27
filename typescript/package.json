@@ -1,7 +1,8 @@
 {
   "name": "hevy2garmin",
-  "version": "0.15.0",
-  "description": "Sync Hevy workouts to Garmin Connect (TypeScript). FIT generation, exercise mapping, and upload. The TS twin of the Python hevy2garmin.",
+  "version": "0.15.0-xantform.strict.1",
+  "private": true,
+  "description": "Fork-local strict in-place engine (never published). Sync Hevy workouts to Garmin Connect (TypeScript).",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -47,10 +48,10 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/engine-stamp.mjs write",
     "test": "vitest run",
     "clean": "rm -rf dist",
-    "prepack": "npm run clean && npm run build"
+    "prepublishOnly": "node -e \"console.error('This fork-local engine is never published.');process.exit(1)\""
   },
   "license": "MIT",
   "repository": {
@@ -77,6 +78,9 @@
     "typescript": "^5.6.0",
     "vitest": "^5.0.3",
     "@types/node": "^22.12.0",
-    "garmin-auth": "^0.3.0"
+    "garmin-auth": "0.8.0"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

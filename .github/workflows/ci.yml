@@ -199,8 +199,17 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Build the fork-local engine the dashboard installs (contract item 4)
+        working-directory: typescript
+        run: |
+          npm ci
+          npm run build
+
       - name: Install
         run: npm ci
+
+      - name: The dashboard runs exactly this commit's engine
+        run: npm run verify:engine
 
       - name: Typecheck
         run: npx tsc --noEmit
@@ -251,6 +260,12 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
+
+      - name: Build the fork-local engine the dashboard installs (contract item 4)
+        working-directory: typescript
+        run: |
+          npm ci
+          npm run build
 
       - name: Install exactly from the lockfile (no fallback)
         run: npm ci
@@ -323,6 +338,12 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: web/package-lock.json
+
+      - name: Build the fork-local engine the dashboard installs (contract item 4)
+        working-directory: typescript
+        run: |
+          npm ci
+          npm run build
 
       - name: Install and build the web app
         working-directory: web
