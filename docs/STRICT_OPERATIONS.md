@@ -41,7 +41,7 @@ deliberately, and a missing or misspelled one keeps the safe state.
 | Gate | State | Evidence / what remains |
 | --- | --- | --- |
 | A snapshot and quarantine | done | `vercel.json` (both roots) deployment off, `next.config.ts` refuses Vercel builds, no publish path, `typescript/` private with `prepublishOnly` refusal |
-| B end-to-end strict mode | done (synthetic) | engine 526 tests, web strict project, e2e through firewall + Postgres |
+| B end-to-end strict mode | done (synthetic) | engine 523 tests, web 822 tests incl. Postgres (strict project included), e2e through firewall + Postgres |
 | C synthetic migration and full CI | done | `web/lib/db-qualification.db.test.ts` (fresh DB, previous fork-main schema, pg_dump/restore); all CI jobs |
 | D independent review | prepared | see `docs/STRICT_REAUDIT.md` (findings and their closure) |
 | E isolated staging | **owner** | procedure §7; synthetic data only |
