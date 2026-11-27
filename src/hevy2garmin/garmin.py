@@ -10,12 +10,18 @@ import logging
 import time
 from pathlib import Path
 
-from garminconnect import Garmin
 from garmin_auth import GarminAuth, RateLimiter
+from garminconnect import Garmin
+
+from hevy2garmin._isotime import parse_iso
 
 logger = logging.getLogger("hevy2garmin")
 
 _limiter = RateLimiter(delay=1.0, max_retries=3, base_wait=30)
+
+
+class GarminUploadRejected(RuntimeError):
+    """Garmin definitively rejected an import without accepting an activity."""
 
 
 def get_client(
@@ -28,20 +34,36 @@ def get_client(
     Uses DBTokenStore when DATABASE_URL is set (cloud/Vercel),
     falls back to file-based tokens (local/Docker).
     """
+    auth = GarminAuth(**auth_kwargs(email, password, token_dir))
+    return auth.login()
+
+
+def auth_kwargs(
+    email: str | None = None,
+    password: str | None = None,
+    token_dir: str = "~/.garminconnect",
+) -> dict:
+    """Build the GarminAuth kwargs selecting the right token store.
+
+    Every path that authenticates with Garmin must agree on where tokens
+    live, or one writes a store the other never reads and the account looks
+    permanently un-authenticated. Shared by get_client and the dashboard's
+    direct login so the choice is made in exactly one place.
+    """
     from hevy2garmin.db import get_database_url
+
     database_url = get_database_url()
 
     kwargs: dict = {"email": email, "password": password}
     if database_url:
         from garmin_auth.storage import DBTokenStore
+
         kwargs["store"] = DBTokenStore(database_url)
         # Use /tmp for garth token files on read-only filesystems (Vercel)
         kwargs["token_dir"] = "/tmp/.garminconnect"
     else:
         kwargs["token_dir"] = token_dir
-
-    auth = GarminAuth(**kwargs)
-    return auth.login()
+    return kwargs
 
 
 def _sanitize_activity_id(raw: object) -> int | None:
@@ -66,13 +88,21 @@ def _sanitize_activity_id(raw: object) -> int | None:
         return None
 
 
-def upload_fit(client: Garmin, fit_path: str | Path, workout_start: str | None = None) -> dict:
+def upload_fit(
+    client: Garmin,
+    fit_path: str | Path,
+    workout_start: str | None = None,
+    exclude_activity_ids: list[int | str] | set[int | str] | None = None,
+) -> dict:
     """Upload a FIT file to Garmin Connect.
 
     Args:
         client: Authenticated Garmin client.
         fit_path: Path to the .fit file.
         workout_start: ISO-8601 start time for matching the uploaded activity.
+        exclude_activity_ids: Activities that existed before the upload. These
+            must not be mistaken for the newly imported activity — not even
+            when Garmin names one of them in the import result itself.
 
     Returns dict with upload_id and activity_id (if found).
     """
@@ -84,15 +114,19 @@ def upload_fit(client: Garmin, fit_path: str | Path, workout_start: str | None =
         resp = _limiter.call(client.upload_activity, str(fit_path))
     except Exception as e:
         # Extract response body from exception chain for debugging
-        response = getattr(e, 'response', None)
+        response = getattr(e, "response", None)
         if response is None and e.__cause__:
-            response = getattr(e.__cause__, 'response', None)
+            response = getattr(e.__cause__, "response", None)
         if response is None and e.__context__:
-            response = getattr(e.__context__, 'response', None)
+            response = getattr(e.__context__, "response", None)
         if response is not None:
-            body = response.text[:2000] if hasattr(response, 'text') else str(response)
-            logger.error("Upload rejected — status=%s body=%s", getattr(response, 'status_code', '?'), body)
-            raise RuntimeError(f"Garmin upload failed ({getattr(response, 'status_code', '?')}): {body}") from e
+            body = response.text[:2000] if hasattr(response, "text") else str(response)
+            logger.error(
+                "Upload rejected — status=%s body=%s", getattr(response, "status_code", "?"), body
+            )
+            raise RuntimeError(
+                f"Garmin upload failed ({getattr(response, 'status_code', '?')}): {body}"
+            ) from e
         logger.error("Upload failed (no response): %s", str(e)[:300])
         raise
     upload_id = None
@@ -110,9 +144,27 @@ def upload_fit(client: Garmin, fit_path: str | Path, workout_start: str | None =
         failures = detail.get("failures", [])
         if failures:
             logger.warning("  Upload failures: %s", failures)
+            if not activity_id and not successes:
+                raise GarminUploadRejected(f"Garmin rejected upload: {failures}")
         logger.info("  Upload result: upload_id=%s activity_id=%s", upload_id, activity_id)
     else:
         logger.info("  Upload response: %s", str(resp)[:200])
+
+    # A pre-existing activity must never be taken for the new one, even when
+    # Garmin reports it as the import "success". Under the "replace" strategy
+    # the watch copy shares the workout's start time, so Garmin can answer the
+    # import with that id instead of creating a new activity — the caller then
+    # deletes the watch copy and renames an activity that is already gone
+    # (404). Drop the echoed id and fall through to the start-time lookup.
+    if activity_id is not None and exclude_activity_ids:
+        excluded = {str(x) for x in exclude_activity_ids}
+        if str(activity_id) in excluded:
+            logger.warning(
+                "  Import result returned excluded activity %s (pre-existing duplicate); "
+                "resolving the new activity by start time instead",
+                activity_id,
+            )
+            activity_id = None
 
     # Find the activity ID for renaming (retry with backoff if needed).
     # Only match by start time — never grab "most recent activity" because
@@ -120,7 +172,11 @@ def upload_fit(client: Garmin, fit_path: str | Path, workout_start: str | None =
     if not activity_id and workout_start:
         for attempt, wait in enumerate([3, 5, 10], 1):
             time.sleep(wait)
-            activity_id = find_activity_by_start_time(client, workout_start)
+            activity_id = find_activity_by_start_time(
+                client,
+                workout_start,
+                exclude_activity_ids=exclude_activity_ids,
+            )
             if activity_id:
                 break
             logger.info("  Activity not found yet (attempt %d/%d), retrying...", attempt, 3)
@@ -128,26 +184,67 @@ def upload_fit(client: Garmin, fit_path: str | Path, workout_start: str | None =
     if activity_id:
         logger.info("  Found activity %s", activity_id)
     else:
-        logger.warning("  Could not find activity ID after upload. Workout will appear as 'Strength Training' on Garmin.")
+        logger.warning(
+            "  Could not find activity ID after upload. Workout will appear as 'Strength Training' on Garmin."
+        )
 
     return {"upload_id": upload_id, "activity_id": activity_id}
+
+
+def activities_for_workout(client: Garmin, workout: dict) -> list[dict]:
+    """Fetch all Garmin activities in the workout's conservative date window."""
+    from datetime import timedelta
+
+    start_raw = workout.get("start_time") or workout.get("startTime", "")
+    end_raw = workout.get("end_time") or workout.get("endTime", "") or start_raw
+    try:
+        start = parse_iso(start_raw)
+        end = parse_iso(end_raw)
+    except (ValueError, TypeError):
+        raise ValueError("workout has no valid time window")
+    date_from = (start - timedelta(days=1)).date().isoformat()
+    date_to = (end + timedelta(days=1)).date().isoformat()
+    activities = _limiter.call(client.get_activities_by_date, date_from, date_to)
+    return list(activities or [])
+
+
+def activity_matches_start_time(
+    activity: dict,
+    target_start: str,
+    window_minutes: int = 10,
+) -> bool:
+    """Return whether an activity starts within ``window_minutes`` of a target."""
+    try:
+        target = parse_iso(target_start)
+    except (AttributeError, ValueError, TypeError):
+        return False
+
+    target_naive = target.replace(tzinfo=None) if target.tzinfo else target
+    act_start_str = activity.get("startTimeGMT") or activity.get("startTimeLocal", "")
+    try:
+        act_start = parse_iso(act_start_str)
+        act_naive = act_start.replace(tzinfo=None) if act_start.tzinfo else act_start
+    except (AttributeError, ValueError, TypeError):
+        return False
+    return abs((act_naive - target_naive).total_seconds()) < window_minutes * 60
 
 
 def find_activity_by_start_time(
     client: Garmin,
     target_start: str,
     window_minutes: int = 10,
+    exclude_activity_ids: list[int | str] | set[int | str] | None = None,
 ) -> int | None:
     """Find a Garmin activity matching a start time within a window.
 
     Searches by date range so old uploaded workouts are found regardless of
     how many newer activities exist on the account.
     """
-    from datetime import datetime, timedelta
+    from datetime import timedelta
 
     try:
-        target = datetime.fromisoformat(target_start.replace("Z", "+00:00"))
-    except (ValueError, TypeError):
+        target = parse_iso(target_start)
+    except (AttributeError, ValueError, TypeError):
         return None
 
     # Search the workout's date ±1 day to handle timezone edge cases
@@ -157,26 +254,21 @@ def find_activity_by_start_time(
 
     try:
         activities = _limiter.call(client.get_activities_by_date, date_from, date_to)
-    except Exception:
+    except Exception:  # noqa: BLE001  # the Garmin client raises many types; a failed lookup is "unknown"
         return None
 
+    excluded = {str(activity_id) for activity_id in (exclude_activity_ids or [])}
     for act in activities:
+        activity_id = act.get("activityId")
+        if str(activity_id) in excluded:
+            continue
         # Only match strength training activities — skip runs, bikes, yoga, etc.
         act_type = act.get("activityType", {}).get("typeKey", "")
         if act_type and act_type not in ("strength_training", "other"):
             continue
 
-        # Prefer startTimeGMT (UTC) over startTimeLocal to avoid timezone mismatch
-        act_start_str = act.get("startTimeGMT") or act.get("startTimeLocal", "")
-        try:
-            if "T" not in act_start_str:
-                act_start_str = act_start_str.replace(" ", "T")
-            act_start = datetime.fromisoformat(act_start_str)
-            act_naive = act_start.replace(tzinfo=None) if act_start.tzinfo else act_start
-            if abs((act_naive - target_naive).total_seconds()) < window_minutes * 60:
-                return act.get("activityId")
-        except (ValueError, TypeError):
-            continue
+        if activity_matches_start_time(act, target_start, window_minutes):
+            return activity_id
     return None
 
 
@@ -205,11 +297,14 @@ def delete_activity(client: Garmin, activity_id: int) -> None:
     logger.info("  Deleted activity %s", activity_id)
 
 
-def upload_image(client: Garmin, activity_id: int, image_bytes: bytes, filename: str = "image.png") -> None:
+def upload_image(
+    client: Garmin, activity_id: int, image_bytes: bytes, filename: str = "image.png"
+) -> None:
     """Upload an image to a Garmin activity."""
     files = {"file": (filename, io.BytesIO(image_bytes))}
     client.client.request(
-        "POST", "connectapi",
+        "POST",
+        "connectapi",
         f"/activity-service/activity/{activity_id}/image",
         files=files,
     )
@@ -223,6 +318,7 @@ def find_matching_garmin_activity(
     overlap_threshold: float = 0.70,
     max_drift_minutes: int = 20,
     activity_types: set[str] | None = None,
+    exclude_activity_ids: list[int | str] | set[int | str] | None = None,
 ) -> dict | None:
     """Find a user-recorded Garmin activity matching a Hevy workout.
 
@@ -234,9 +330,14 @@ def find_matching_garmin_activity(
     ``activity_types`` (default: ``{"strength_training"}``). Pass additional
     types (e.g. ``"bouldering"``, ``"indoor_climbing"``) to also enhance
     non-strength watch activities with Hevy exercise data.
+
+    ``exclude_activity_ids`` are activities the caller already knows belong to
+    another Hevy workout, so back-to-back sessions do not merge into each
+    other's upload (#796).
     """
     if activity_types is None:
         activity_types = {"strength_training"}
+    excluded = {str(activity_id) for activity_id in (exclude_activity_ids or [])}
     from datetime import datetime, timedelta, timezone
 
     start_raw = hevy_workout.get("start_time") or hevy_workout.get("startTime", "")
@@ -245,8 +346,8 @@ def find_matching_garmin_activity(
         return None
 
     try:
-        hevy_start = datetime.fromisoformat(start_raw.replace("Z", "+00:00"))
-        hevy_end = datetime.fromisoformat(end_raw.replace("Z", "+00:00"))
+        hevy_start = parse_iso(start_raw)
+        hevy_end = parse_iso(end_raw)
     except (ValueError, TypeError):
         return None
 
@@ -259,14 +360,18 @@ def find_matching_garmin_activity(
     search_end = (hevy_end + timedelta(hours=2)).date().isoformat()
     try:
         activities = _limiter.call(client.get_activities_by_date, search_start, search_end)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001  # the Garmin client raises many types; merge falls back
         logger.warning("Could not query Garmin activities for merge: %s", e)
         return None
 
     best_score = 0.0
     best: dict | None = None
 
-    for act in (activities or []):
+    for act in activities or []:
+        # Skip activities the ledger already maps to another Hevy workout, so a
+        # back-to-back session does not merge into a sibling's upload (#796).
+        if str(act.get("activityId")) in excluded:
+            continue
         # Hard filter: only configured activity types are eligible for merge
         act_type = act.get("activityType", {}).get("typeKey", "")
         if act_type not in activity_types:
@@ -282,7 +387,7 @@ def find_matching_garmin_activity(
         try:
             if "T" not in act_start_str:
                 act_start_str = act_start_str.replace(" ", "T")
-            act_start = datetime.fromisoformat(act_start_str)
+            act_start = parse_iso(act_start_str)
             if act_start.tzinfo is None:
                 act_start = act_start.replace(tzinfo=timezone.utc)
         except (ValueError, TypeError):
@@ -297,8 +402,12 @@ def find_matching_garmin_activity(
             continue
 
         # Compute temporal overlap
-        overlap_start = max(hevy_start.replace(tzinfo=timezone.utc), act_start.replace(tzinfo=timezone.utc))
-        overlap_end = min(hevy_end.replace(tzinfo=timezone.utc), act_end.replace(tzinfo=timezone.utc))
+        overlap_start = max(
+            hevy_start.replace(tzinfo=timezone.utc), act_start.replace(tzinfo=timezone.utc)
+        )
+        overlap_end = min(
+            hevy_end.replace(tzinfo=timezone.utc), act_end.replace(tzinfo=timezone.utc)
+        )
         overlap_s = max(0.0, (overlap_end - overlap_start).total_seconds())
         overlap_pct = overlap_s / hevy_duration
 
@@ -306,7 +415,11 @@ def find_matching_garmin_activity(
             continue
 
         # Check start drift
-        drift_s = abs((act_start.replace(tzinfo=timezone.utc) - hevy_start.replace(tzinfo=timezone.utc)).total_seconds())
+        drift_s = abs(
+            (
+                act_start.replace(tzinfo=timezone.utc) - hevy_start.replace(tzinfo=timezone.utc)
+            ).total_seconds()
+        )
         drift_min = drift_s / 60
         if drift_min > max_drift_minutes:
             continue
@@ -320,7 +433,9 @@ def find_matching_garmin_activity(
     if best:
         logger.info(
             "Merge match: Garmin activity %s (overlap %.0f%%, drift %.1fmin)",
-            best.get("activityId"), best_score, 0,
+            best.get("activityId"),
+            best_score,
+            0,
         )
     return best
 
@@ -343,10 +458,97 @@ def push_exercise_sets(client: Garmin, activity_id: int, payload: dict) -> None:
     url = f"/activity-service/activity/{activity_id}/exerciseSets"
     time.sleep(1.0)  # manual rate limit
     client.client.request("PUT", "connectapi", url, json=payload)
-    logger.info("  Pushed %d exercise sets to activity %s", len(payload.get("exerciseSets", [])), activity_id)
+    logger.info(
+        "  Pushed %d exercise sets to activity %s",
+        len(payload.get("exerciseSets", [])),
+        activity_id,
+    )
 
 
-def generate_description(workout: dict, calories: int | None = None, avg_hr: int | None = None) -> str:
+def create_workout(client: Garmin, payload: dict) -> int | None:
+    """Create a planned workout in the Garmin Connect Workouts library.
+
+    POSTs to the undocumented /workout-service/workout endpoint — the same one
+    the Garmin Connect web UI uses to save a workout. Unlike upload_fit(), this
+    creates a *plan* (a reusable template shown under Training > Workouts), not a
+    completed activity. Returns the new workoutId, or None if absent.
+
+    Called directly (not through _limiter) so the JSON response body — which
+    carries the workoutId — is returned verbatim; the limiter is tuned for the
+    activity endpoints' 204s.
+    """
+    time.sleep(1.0)  # manual rate limit
+    resp = client.client.request("POST", "connectapi", "/workout-service/workout", json=payload)
+    data = resp.json() if hasattr(resp, "json") else resp
+    workout_id = data.get("workoutId") if isinstance(data, dict) else None
+    logger.info("  Created Garmin workout %s ('%s')", workout_id, payload.get("workoutName"))
+    return workout_id
+
+
+def list_workouts(client: Garmin, limit: int = 100) -> list[dict]:
+    """List the user's saved Garmin workouts (for idempotency / reconciliation).
+
+    Raises on a non-list 2xx body (an error envelope or a shape drift) so callers
+    treat it as "unknown" rather than an empty library. Reading an error-as-200 as
+    ``[]`` would make routine reconciliation flag every synced routine as deleted on
+    Garmin. Both callers wrap this in a best-effort try/except, so a raise degrades
+    to the last-known DB state instead of acting on a false empty listing.
+    """
+    time.sleep(1.0)  # manual rate limit
+    resp = client.client.request(
+        "GET",
+        "connectapi",
+        f"/workout-service/workouts?start=1&limit={limit}&myWorkoutsOnly=true",
+    )
+    data = resp.json() if hasattr(resp, "json") else resp
+    if not isinstance(data, list):
+        raise TypeError(
+            f"Garmin workout listing returned a {type(data).__name__}, not a list; "
+            "treating as unknown rather than empty"
+        )
+    return data
+
+
+def delete_workout(client: Garmin, workout_id: int | str) -> None:
+    """Delete a saved Garmin workout (used to recreate one after a routine edit)."""
+    time.sleep(1.0)  # manual rate limit
+    client.client.request("DELETE", "connectapi", f"/workout-service/workout/{workout_id}")
+    logger.info("  Deleted Garmin workout %s", workout_id)
+
+
+def schedule_workout(client: Garmin, workout_id: int | str, date: str) -> int | None:
+    """Schedule a saved Garmin workout onto the calendar for ``date`` (YYYY-MM-DD).
+
+    Returns the ``workoutScheduleId`` Garmin assigns to the new calendar entry so
+    the caller can track and later unschedule it (Garmin appends a fresh entry on
+    every POST — it does not dedup server-side). Returns ``None`` if the response
+    carries no parseable id, so scheduling still succeeds even if the shape drifts.
+    """
+    time.sleep(1.0)  # manual rate limit
+    resp = client.client.request(
+        "POST",
+        "connectapi",
+        f"/workout-service/schedule/{workout_id}",
+        json={"date": date},
+    )
+    logger.info("  Scheduled Garmin workout %s for %s", workout_id, date)
+    try:
+        data = resp.json() if hasattr(resp, "json") else resp
+        return data.get("workoutScheduleId") if isinstance(data, dict) else None
+    except Exception:  # noqa: BLE001  # a malformed response body is "no schedule id"
+        return None
+
+
+def unschedule_workout(client: Garmin, scheduled_id: int | str) -> None:
+    """Remove a calendar entry (``workoutScheduleId``) without deleting the workout."""
+    time.sleep(1.0)  # manual rate limit
+    client.client.request("DELETE", "connectapi", f"/workout-service/schedule/{scheduled_id}")
+    logger.info("  Unscheduled Garmin calendar entry %s", scheduled_id)
+
+
+def generate_description(
+    workout: dict, calories: int | None = None, avg_hr: int | None = None
+) -> str:
     """Generate a text description for a gym workout."""
     lines: list[str] = []
     title = workout.get("title", "Workout")
@@ -355,14 +557,12 @@ def generate_description(workout: dict, calories: int | None = None, avg_hr: int
     start = workout.get("start_time") or workout.get("startTime", "")
     end = workout.get("end_time") or workout.get("endTime", "")
     if start and end:
-        from datetime import datetime
         try:
-            fmt = "%Y-%m-%dT%H:%M:%S%z" if "T" in start else "%Y-%m-%d %H:%M:%S"
-            t0 = datetime.fromisoformat(start.replace("Z", "+00:00"))
-            t1 = datetime.fromisoformat(end.replace("Z", "+00:00"))
+            t0 = parse_iso(start)
+            t1 = parse_iso(end)
             duration_s = int((t1 - t0).total_seconds())
-        except Exception:
-            pass
+        except (ValueError, TypeError):
+            pass  # unparseable timestamps: the duration stays unknown
 
     lines.append(f"🏋️ {title}")
     if duration_s > 0:
@@ -379,30 +579,36 @@ def generate_description(workout: dict, calories: int | None = None, avg_hr: int
         for ex in exercises:
             name = ex.get("title") or ex.get("name", "Unknown")
             all_sets = ex.get("sets", [])
-            normal = [s for s in all_sets if s.get("type") == "normal"]
+            working = [s for s in all_sets if s.get("type") != "warmup"]
             warmup = [s for s in all_sets if s.get("type") == "warmup"]
-            if normal:
-                n_label = "set" if len(normal) == 1 else "sets"
+            if working:
+                n_label = "set" if len(working) == 1 else "sets"
                 # Check if this is a cardio exercise (has distance or duration, no weight/reps)
-                has_distance = any(s.get("distance_meters") for s in normal)
-                has_duration = any(s.get("duration_seconds") for s in normal)
-                has_weight = any(s.get("weight_kg") or s.get("weight") for s in normal)
+                has_distance = any(s.get("distance_meters") for s in working)
+                has_duration = any(s.get("duration_seconds") for s in working)
+                has_weight = any(s.get("weight_kg") or s.get("weight") for s in working)
                 if has_distance or (has_duration and not has_weight):
                     # Cardio: show distance and/or duration
-                    total_dist = sum(s.get("distance_meters", 0) or 0 for s in normal)
-                    total_dur = sum(s.get("duration_seconds", 0) or 0 for s in normal)
-                    parts = [f"{len(normal)} {n_label}"]
+                    total_dist = sum(s.get("distance_meters", 0) or 0 for s in working)
+                    total_dur = sum(s.get("duration_seconds", 0) or 0 for s in working)
+                    parts = [f"{len(working)} {n_label}"]
                     if total_dist > 0:
                         parts.append(f"{total_dist / 1000:.1f}km")
                     if total_dur > 0:
                         parts.append(f"{int(total_dur // 60)}min")
                     lines.append(f"• {name}: {' · '.join(parts)}")
                 else:
-                    weights = [s.get("weight_kg") or s.get("weight", 0) for s in normal]
-                    reps = [s.get("reps", 0) for s in normal]
+                    weights = [
+                        w
+                        for s in working
+                        if (w := (s.get("weight_kg") or s.get("weight"))) is not None
+                    ]
+                    reps = [r for s in working if (r := s.get("reps")) is not None]
                     top_weight = max(weights) if weights else 0
                     top_reps = max(reps) if reps else 0
-                    lines.append(f"• {name}: {len(normal)} {n_label} · {top_weight:.1f}kg × {top_reps}")
+                    lines.append(
+                        f"• {name}: {len(working)} {n_label} · {top_weight:.1f}kg × {top_reps}"
+                    )
             elif warmup:
                 s_label = "set" if len(warmup) == 1 else "sets"
                 lines.append(f"• {name}: {len(warmup)} warmup {s_label}")

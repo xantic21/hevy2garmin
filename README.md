@@ -6,7 +6,7 @@
 
 <p align="center">A community project for moving Hevy strength workouts into Garmin Connect, with structured sets, repetitions and exercise mapping.</p>
 
-<p align="center"><strong>Public fork</strong> · Python · Hevy × Garmin Connect · Upstream maintained by <a href="https://github.com/drkostas/hevy2garmin">drkostas</a></p>
+<p align="center"><strong>Public fork</strong> · Python + TypeScript · Hevy × Garmin Connect · Upstream maintained by <a href="https://github.com/drkostas/hevy2garmin">drkostas</a></p>
 
 ## What it offers
 
@@ -21,7 +21,7 @@ This repository is an **independently held fork**, not an original xantform prod
 
 [Upstream project](https://github.com/drkostas/hevy2garmin) · [Original license](LICENSE) · [Project screenshots](docs/screenshots/)
 
-**Code status:** the application code in this fork is an older upstream snapshot (package version 0.5.17), kept for reference and attribution; it is **not maintained for deployment** and does not receive upstream fixes. To use hevy2garmin, install a current [upstream release](https://github.com/drkostas/hevy2garmin/releases).
+**Code status:** quarantined modernization candidate, based on upstream `b44bdc7c3a34a40fac77c5ec5dd18209f02f6d21`. Not approved for deployment. The existing production installation is not changed by this branch. See the [migration contract](docs/STRICT_MERGE_MIGRATION.md).
 
 ## Getting started
 
@@ -33,7 +33,7 @@ For requirements, setup, available deployments, maintenance and security guidanc
 | :---: | :---: |
 | <img src="docs/brand/icon.svg" width="76" alt="hevy2garmin portfolio icon: dumbbell with a synchronization arrow"> | <img src="docs/brand/icon-dark.svg" width="76" alt="hevy2garmin portfolio icon, tonal dark variant"> |
 
-The mint portfolio icon follows the xantform [Design System 2.0](https://github.com/xantic21/xantic21/blob/main/docs/xantform/DESIGN_SYSTEM.md) (palette: light `#E6F3EE` · medium `#A4C7B7` · ink `#1F5A4D` · dark `#253F38`) and is used only in GitHub-facing presentation material. It is **not** the original upstream app icon and does not imply original authorship. The upstream favicon at `src/hevy2garmin/static/favicon.svg`, the upstream copyright and the license are unchanged.
+The mint portfolio icon follows the xantform [Design System 2.0](https://github.com/xantic21/xantic21/blob/main/docs/xantform/DESIGN_SYSTEM.md) (palette: light `#E6F3EE` · medium `#A4C7B7` · ink `#1F5A4D` · dark `#253F38`) and is used only in GitHub-facing presentation material. It is **not** the original upstream app icon and does not imply original authorship. The upstream application assets, copyright and license are preserved from the pinned upstream tree. The retired Python dashboard remains in the prior fork history.
 
 ## Technical reference
 
@@ -51,4 +51,4 @@ The upstream project is licensed under the [MIT License](LICENSE) (copyright Kon
 
 ---
 
-<sub>Upstream attribution and original licensing remain authoritative. This is a presentation update, not a new official upstream release.</sub>
+<sub>Upstream attribution and original licensing remain authoritative. This is a quarantined migration candidate, not an official upstream release.</sub>

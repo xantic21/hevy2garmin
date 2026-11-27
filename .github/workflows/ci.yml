@@ -6,8 +6,6 @@ on:
   pull_request:
     branches: [main]
 
-
-# PES-10 (fork maintenance): least privilege by default; jobs that need more declare it themselves.
 permissions:
   contents: read
 
@@ -21,12 +19,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
-          cache-dependency-path: pyproject.toml
 
       - name: Install package with dev dependencies
         run: pip install -e ".[dev]"
@@ -39,6 +37,43 @@ jobs:
 
       - name: Run tests
         run: python -m pytest tests/ -v
+
+      - name: Exercise map drift (TypeScript copy matches the Python source of truth)
+        run: python scripts/gen_typescript_map.py --check
+
+      - name: requirements.txt matches pyproject's dependencies
+        # requirements.txt says CI asserts it; this is the assertion (#554).
+        run: |
+          python -m pip install -q 'tomli; python_version < "3.11"'
+          python - <<'PY'
+          try:
+              import tomllib
+          except ModuleNotFoundError:  # Python 3.10 in the matrix
+              import tomli as tomllib
+          want = sorted(tomllib.load(open("pyproject.toml", "rb"))["project"]["dependencies"])
+          have = sorted(l.strip() for l in open("requirements.txt") if l.strip() and not l.startswith("#"))
+          assert want == have, f"pyproject: {want}\nrequirements.txt: {have}"
+          print("requirements.txt matches", len(want), "dependencies")
+          PY
+
+  check-ruff:
+    # Pinned: ruff 0.16 enables 826 rules by default where 0.14 enabled far fewer, so an
+    # unpinned `uvx ruff` moves the gate with every release (#553). Bump the version here and
+    # in pyproject's comment together, and re-run the campaign at the new version first.
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+
+      - name: ruff check
+        run: uvx ruff@0.16.7 check .
+
+      - name: ruff format --check
+        run: uvx ruff@0.16.7 format --check .
 
   check-postgres:
     name: Tests (Postgres)
@@ -61,12 +96,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: pyproject.toml
 
       - name: Install package with cloud + dev dependencies
         run: pip install -e ".[dev,cloud]"
@@ -75,3 +110,273 @@ jobs:
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/hevy2garmin_test
         run: python -m pytest tests/ -v
+
+  check-typescript:
+    name: Tests (TypeScript)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: typescript
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+  check-universal:
+    # The Expo app was in no job at all (#551): tsc failed on a fresh checkout and nothing ran
+    # its tests. `expo lint` is not used here on purpose: it rewrites package.json, the lockfile
+    # and writes an eslint config before reporting, so a CI run would dirty the tree.
+    name: Tests (Universal)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: universal
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Install exactly from the lockfile
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        # The committed flat config (#549); `expo lint` would scaffold and rewrite, eslint does not.
+        run: npm run lint -- --max-warnings 0
+
+      - name: Test
+        run: npm test
+
+  check-web:
+    name: Tests (Web)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+
+    # Exercise the app the way it is deployed. next.config.ts sets
+    # `output: "standalone"` only OFF Vercel, so without VERCEL this whole job
+    # built and served the self-hosting shape rather than the shipping one.
+    #
+    # Job-level on purpose, not per-step. `next start` re-reads next.config.ts,
+    # so setting it on the build alone leaves the server disagreeing with the
+    # build it is serving and printing a standalone warning about a
+    # non-standalone build. `process.env.VERCEL` is also read at RUNTIME by
+    # app/api/toggle-autosync/route.ts, and on Vercel that variable is always
+    # set, so job scope is the production-faithful choice rather than a
+    # convenience. Verified: vitest 213/213 and the smoke pass with it set.
+    #
+    # No coverage is traded: check-fresh-fork-web still builds without VERCEL,
+    # so the standalone path stays covered there.
+    env:
+      VERCEL: "1"
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Lint
+        # eslint flat config (#552); `next lint` no longer exists in Next 16. Zero warnings is the gate.
+        run: npm run lint -- --max-warnings 0
+
+      - name: Build
+        # Routes are force-dynamic, so no real DB is touched at build time.
+        env:
+          DATABASE_URL: postgres://ci:ci@localhost:5432/ci
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+      - name: Playwright smoke (desktop + mobile)
+        # A production build started with only a password: no database, every page must still render.
+        #
+        # Both projects, not just desktop. The two navs are separate markup: a top
+        # bar on desktop, a bottom tab bar on mobile, and CSS shows one. A
+        # desktop-only run cannot see a mobile-only regression, and that is not
+        # hypothetical — the nav walk added in #468 passed desktop and failed
+        # mobile, because the mobile bar composes a link from an icon span and a
+        # label span, giving a different accessible name. Running one project
+        # would have shipped that green.
+        run: |
+          npx playwright install --with-deps chromium
+          npx playwright test
+        env:
+          CI: "1"
+
+  check-fresh-fork-web:
+    # What a forker's Vercel deploy of the Next.js dashboard gets: a strict `npm ci` (a stale
+    # lockfile must FAIL here, not on their first deploy), a build, and a boot with nothing but
+    # a database URL in the environment. Mirror of check-fresh-fork for the web path (#457).
+    name: Fresh fork (web, Vercel-style install)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Install exactly from the lockfile (no fallback)
+        run: npm ci
+
+      - name: Build
+        # Routes are force-dynamic; the build must not need a real database.
+        env:
+          DATABASE_URL: postgres://ci:ci@localhost:5432/ci
+        run: npm run build
+
+      - name: Boot the standalone server with a bare environment and answer on /login
+        # next.config.ts builds `output: standalone` off Vercel, and Next warns that `next start`
+        # does not serve a standalone build, so the server a self-hoster runs was never the one
+        # exercised here (#554). This boots the built server the way a Docker image does.
+        run: |
+          env -i PATH="$PATH" HOME="$HOME" DATABASE_URL=postgres://ci:ci@localhost:5432/ci PORT=8097 HOSTNAME=127.0.0.1 node .next/standalone/server.js > start.log 2>&1 &
+          for i in $(seq 1 30); do
+            sleep 1
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8097/login || true)
+            case "$code" in 2*|3*) echo "GET /login -> $code"; exit 0;; esac
+          done
+          echo "dashboard did not answer on /login"; cat start.log; exit 1
+
+  check-web-empty-db:
+    # The gap that let #475 through. check-web runs the Playwright smoke with NO
+    # DATABASE_URL, and check-fresh-fork-web never provisions a database, so
+    # nothing covered a database that is PRESENT and EMPTY — which is exactly
+    # where a forker lands after adding Neon as the README tells them to.
+    # Reads were never the problem: every page returns 200 against an empty
+    # database. This asserts a WRITE round-trips, which is what actually broke.
+    name: Web against an empty database
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: h2g_empty
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://test:test@localhost:5432/h2g_empty
+      H2G_PASSWORD: ci-test-password
+      HEVY2GARMIN_SECRET: ci-test-secret-32-chars-abcdefgh
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      # No Python bootstrap here on purpose (#475): the database starts with zero
+      # tables and the web app must create them itself on first use. Putting the
+      # Python _ensure_tables() back would hide the exact bug this job exists for.
+      - name: The database really is empty
+        run: |
+          N=$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM pg_tables WHERE schemaname = 'public'")
+          echo "tables before: $N"
+          [ "$N" = "0" ] || { echo "expected an empty database"; exit 1; }
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install and build the web app
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - name: A write must round-trip against an empty database
+        working-directory: web
+        run: |
+          npx next start --port 8100 --hostname 127.0.0.1 > start.log 2>&1 &
+          for i in $(seq 1 40); do
+            sleep 1
+            curl -sf -o /dev/null http://127.0.0.1:8100/login && break
+          done
+
+          COOKIE=$(curl -s -i -X POST -H 'Content-Type: application/json' \
+            -d '{"password":"'"$H2G_PASSWORD"'"}' \
+            http://127.0.0.1:8100/api/login \
+            | grep -i '^set-cookie:' | head -1 | sed 's/^[Ss]et-[Cc]ookie: //' | cut -d';' -f1)
+          if [ -z "$COOKIE" ]; then echo "could not authenticate"; cat start.log; exit 1; fi
+
+          CODE=$(curl -s -o body.json -w '%{http_code}' -X POST \
+            -H 'Content-Type: application/json' -H "Cookie: $COOKIE" \
+            -d '{"auto_sync":{"enabled":true,"interval_minutes":720}}' \
+            http://127.0.0.1:8100/api/settings)
+
+          echo "POST /api/settings -> $CODE"; cat body.json; echo
+          if [ "$CODE" != "200" ]; then
+            echo "A write failed against an empty database. See #475."
+            cat start.log
+            exit 1
+          fi
+
+      - name: The web app created the nine tables itself
+        run: |
+          for t in synced_workouts sync_log hr_cache pending_uploads platform_credentials custom_mappings app_cache synced_routines routine_schedules; do
+            psql "$DATABASE_URL" -tAc "SELECT to_regclass('public.$t')" | grep -qx "$t" || { echo "missing table: $t"; exit 1; }
+          done
+          echo "all nine tables present"
+
+      - name: The write must have persisted, not just returned 200
+        run: |
+          VAL=$(psql "$DATABASE_URL" -At -c "SELECT value::text FROM app_cache WHERE key='auto_sync';")
+          echo "app_cache.auto_sync = $VAL"
+          case "$VAL" in
+            *720*) echo "persisted";;
+            *) echo "the row is missing or wrong; a 200 was returned without a durable write"; exit 1;;
+          esac
+
+      # The store's upserts need a real Postgres, and this job is the one that
+      # has it. Last, so the checks above see the database as the app left it;
+      # the tests delete only the rows they wrote. Without TEST_DATABASE_URL
+      # they skip, so an unset URL fails here rather than passing silently (#709).
+      - name: The store's upserts against real Postgres
+        working-directory: web
+        run: TEST_DATABASE_URL="${DATABASE_URL:?}" npx vitest run lib/pending-store.db.test.ts

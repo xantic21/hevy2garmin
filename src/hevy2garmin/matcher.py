@@ -14,6 +14,8 @@ from datetime import datetime, timedelta
 
 from garminconnect import Garmin
 
+from hevy2garmin._isotime import parse_iso
+
 logger = logging.getLogger("hevy2garmin")
 
 # Cache to avoid hammering Garmin API on every page load
@@ -43,13 +45,14 @@ def fetch_garmin_activities(client: Garmin, count: int = 1000) -> list[dict]:
 
     try:
         from garmin_auth import RateLimiter
+
         limiter = RateLimiter(delay=1.0)
         activities = limiter.call(client.get_activities, 0, count)
         _garmin_activities_cache = activities
         _cache_count = count
         _cache_timestamp = _time.time()
         return activities
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001  # the Garmin client raises many types; matching proceeds without them
         logger.warning("Could not fetch Garmin activities: %s", e)
         return []
 
@@ -62,7 +65,10 @@ def count_matched_workouts(
     """Count how many Hevy workouts match a Garmin activity. Cached 10min."""
     global _matched_count_cache, _matched_count_timestamp
 
-    if _matched_count_cache is not None and (_time.time() - _matched_count_timestamp) < MATCHED_COUNT_TTL:
+    if (
+        _matched_count_cache is not None
+        and (_time.time() - _matched_count_timestamp) < MATCHED_COUNT_TTL
+    ):
         return _matched_count_cache
 
     all_workouts: list[dict] = []
@@ -92,7 +98,7 @@ def _parse_time(raw: str) -> datetime | None:
         cleaned = raw.replace("Z", "+00:00")
         if "T" not in cleaned:
             cleaned = cleaned.replace(" ", "T")
-        return datetime.fromisoformat(cleaned)
+        return parse_iso(cleaned)
     except (ValueError, TypeError):
         return None
 

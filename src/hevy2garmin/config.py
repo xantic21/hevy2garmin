@@ -45,15 +45,24 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "enabled": True,
     },
     "merge_activity_types": ["strength_training"],
-    # What to do when a workout was recorded on a watch (Garmin will not show
-    # pushed exercise names on those). One activity in every case (#159):
-    #   "replace" (default): upload one named activity and delete the watch
-    #       recording. Named exercises, but loses watch-only metrics.
-    #   "merge": push the sets/reps/weights into the watch activity and keep it.
-    #       Keeps all watch metrics; exercise names show as "Unknown".
+    # What to do when a workout was recorded on a watch. One activity in every
+    # case (#159):
+    #   "merge" (default): push the sets/reps/weights into the watch activity and
+    #       keep it. Keeps all watch metrics. The sets, reps and weights land, but
+    #       Garmin will not display the exercise NAMES on an activity a watch
+    #       recorded, so they read as "Unknown" (#325). Use "replace" for names.
+    #   "replace": upload one named activity and delete the watch recording.
+    #       Named exercises, but loses watch-only metrics like training effect.
     #   "describe": keep the watch activity, only list exercises in its
     #       description (no structured sets).
-    "merge_watch_strategy": "replace",
+    "merge_watch_strategy": "merge",
+    # When a workout was recorded on a watch, keep the watch's own per-set
+    # execution and rest timing instead of the durations hevy2garmin invents for
+    # each set (#748). Hevy's API sends no per-set time, so the synthesized
+    # timing makes every set the same length; the watch recorded the real one.
+    # True (default): preserve the watch's timing, write only names/reps/weights.
+    # False: sync Hevy's synthesized timing too (the pre-#748 behavior).
+    "merge_preserve_watch_timing": True,
 }
 
 
@@ -75,39 +84,52 @@ def load_config() -> dict[str, Any]:
 
     # Load credentials + settings from DB in one connection (cloud deployments)
     from hevy2garmin.db import get_database_url
+
     database_url = get_database_url()
     if database_url:
         try:
             from hevy2garmin.db import get_db
+
             _db = get_db()
-            if hasattr(_db, '_get_conn'):
-                with _db._get_conn() as conn:
-                    with conn.cursor() as cur:
-                        # Credentials
-                        cur.execute("SELECT platform, credentials FROM platform_credentials WHERE platform IN ('hevy', 'garmin')")
-                        for row in cur.fetchall():
-                            creds = row["credentials"] if isinstance(row["credentials"], dict) else json.loads(row["credentials"])
-                            if row["platform"] == "hevy" and creds.get("api_key"):
-                                config["hevy_api_key"] = creds["api_key"]
-                            elif row["platform"] == "garmin":
-                                if creds.get("email"):
-                                    config["garmin_email"] = creds["email"]
-                                if creds.get("password"):
-                                    config["garmin_password"] = creds["password"]
-                        # App settings
-                        cur.execute("SELECT key, value FROM app_cache WHERE key IN ('user_profile', 'timing', 'hr_fusion', 'merge_settings')")
-                        for row in cur.fetchall():
-                            val = row["value"] if isinstance(row["value"], dict) else json.loads(row["value"])
-                            if row["key"] == "merge_settings":
-                                # Unpack merge_settings into top-level keys
-                                for mk, mv in val.items():
-                                    config[mk] = mv
-                            elif row["key"] in config and isinstance(config[row["key"]], dict):
-                                config[row["key"]].update(val)
-                            else:
-                                config[row["key"]] = val
-        except Exception:
-            pass
+            if hasattr(_db, "_get_conn"):
+                with _db._get_conn() as conn, conn.cursor() as cur:
+                    # Credentials
+                    cur.execute(
+                        "SELECT platform, credentials FROM platform_credentials WHERE platform IN ('hevy', 'garmin')"
+                    )
+                    for row in cur.fetchall():
+                        creds = (
+                            row["credentials"]
+                            if isinstance(row["credentials"], dict)
+                            else json.loads(row["credentials"])
+                        )
+                        if row["platform"] == "hevy" and creds.get("api_key"):
+                            config["hevy_api_key"] = creds["api_key"]
+                        elif row["platform"] == "garmin":
+                            if creds.get("email"):
+                                config["garmin_email"] = creds["email"]
+                            if creds.get("password"):
+                                config["garmin_password"] = creds["password"]
+                    # App settings
+                    cur.execute(
+                        "SELECT key, value FROM app_cache WHERE key IN ('user_profile', 'timing', 'hr_fusion', 'merge_settings')"
+                    )
+                    for row in cur.fetchall():
+                        val = (
+                            row["value"]
+                            if isinstance(row["value"], dict)
+                            else json.loads(row["value"])
+                        )
+                        if row["key"] == "merge_settings":
+                            # Unpack merge_settings into top-level keys
+                            for mk, mv in val.items():
+                                config[mk] = mv
+                        elif row["key"] in config and isinstance(config[row["key"]], dict):
+                            config[row["key"]].update(val)
+                        else:
+                            config[row["key"]] = val
+        except Exception:  # either DB backend; file config applies when the rows cannot be read
+            logger.debug("could not read config rows from the database", exc_info=True)
 
     # Environment variables fill gaps (DB credentials take precedence since user may
     # have changed them via the setup/settings UI after initial deploy)
@@ -117,6 +139,14 @@ def load_config() -> dict[str, Any]:
         config["garmin_email"] = os.environ["GARMIN_EMAIL"]
     if not config.get("garmin_password") and os.environ.get("GARMIN_PASSWORD"):
         config["garmin_password"] = os.environ["GARMIN_PASSWORD"]
+
+    # Normalize credential whitespace. A stray leading/trailing newline (the classic
+    # copy-paste mistake) breaks the API call, and on the Vercel deploy the stored DB
+    # value takes precedence over the env var, so the user can't clear it by editing
+    # the variable. Stripping on read fixes new and existing values alike. (#257)
+    for _cred in ("hevy_api_key", "garmin_email", "garmin_password"):
+        if isinstance(config.get(_cred), str):
+            config[_cred] = config[_cred].strip()
 
     return config
 
@@ -166,29 +196,67 @@ def is_configured() -> bool:
     On Vercel (DATABASE_URL set): requires both API key AND Garmin tokens in DB.
     Locally: just checks for API key (tokens are file-based).
     """
-    import os
+
     config = load_config()
     if not config.get("hevy_api_key"):
         return False
     # On cloud deployments, check that Garmin setup started (either credentials
     # saved from setup form, or tokens from browser-based auth, or hevy key in DB)
     from hevy2garmin.db import get_database_url
+
     if get_database_url():
         try:
             from hevy2garmin.db import get_db
+
             _db = get_db()
-            if not hasattr(_db, '_get_conn'):
+            if not hasattr(_db, "_get_conn"):
                 return True  # SQLite fallback
-            with _db._get_conn() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT 1 FROM platform_credentials WHERE platform IN ('garmin', 'garmin_tokens', 'hevy') LIMIT 1"
-                    )
-                    if cur.fetchone() is None:
-                        return False
-        except Exception:
-            pass
+            with _db._get_conn() as conn, conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM platform_credentials WHERE platform IN ('garmin', 'garmin_tokens', 'hevy') LIMIT 1"
+                )
+                if cur.fetchone() is None:
+                    return False
+        except Exception:  # either DB backend; an unreadable table is not "not configured"
+            logger.debug("could not check platform_credentials", exc_info=True)
     return True
+
+
+def get_github_pat() -> str | None:
+    """Return the GitHub personal access token, DB value taking precedence.
+
+    On cloud deployments the token is saved in ``platform_credentials`` (platform
+    ``github``) from the Settings page, so a fresh Vercel deploy no longer needs
+    it as an environment variable. Falls back to the ``GITHUB_PAT`` env var for
+    local, Docker, and CI use. Returns ``None`` when neither is set.
+    """
+    import os
+
+    from hevy2garmin.db import get_database_url, get_db
+
+    if get_database_url():
+        try:
+            _db = get_db()
+            if hasattr(_db, "_get_conn"):
+                with _db._get_conn() as conn, conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT credentials FROM platform_credentials WHERE platform = 'github'"
+                    )
+                    row = cur.fetchone()
+                if row is not None:
+                    creds = (
+                        row["credentials"]
+                        if isinstance(row["credentials"], dict)
+                        else json.loads(row["credentials"])
+                    )
+                    pat = (creds or {}).get("pat")
+                    if pat and pat.strip():
+                        return pat.strip()
+        except Exception:  # either DB backend; the env var applies when the row cannot be read
+            logger.debug("could not read the GitHub PAT row", exc_info=True)
+
+    env_pat = os.environ.get("GITHUB_PAT")
+    return env_pat.strip() if env_pat and env_pat.strip() else None
 
 
 def _deep_merge(base: dict, override: dict) -> None:
