@@ -6,6 +6,7 @@ import { listGarminWorkouts } from "@/lib/garmin-workout-library";
 import { getGarminClient } from "@/lib/garmin-upload";
 import { getDb } from "@/lib/db";
 import { verifySession, SESSION_COOKIE, authEnabled } from "@/lib/auth";
+import { strictGuard } from "@/lib/strict-mode";
 
 export const dynamic = "force-dynamic";
 
@@ -15,6 +16,8 @@ export const dynamic = "force-dynamic";
  * route; the per-routine engine is the same syncRoutine the single route uses). (#461)
  */
 export async function POST(request: Request) {
+  const locked = strictGuard("Syncing routines to Garmin");
+  if (locked) return locked;
   if (authEnabled()) {
     const store = await cookies();
     if (!(await verifySession(store.get(SESSION_COOKIE)?.value ?? null))) return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });

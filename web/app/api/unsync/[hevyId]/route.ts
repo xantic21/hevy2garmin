@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { unsync } from "@/lib/pending-store";
+import { strictGuard } from "@/lib/strict-mode";
 
 // Deletes from the app's own synced_workouts table at request time — never at build.
 export const dynamic = "force-dynamic";
@@ -20,6 +21,8 @@ export async function POST(
   _request: Request,
   { params }: { params: Promise<{ hevyId: string }> },
 ) {
+  const locked = strictGuard("Unsync");
+  if (locked) return locked;
   const { hevyId } = await params;
   if (!hevyId) {
     return NextResponse.json({ error: "hevyId is required." }, { status: 400 });

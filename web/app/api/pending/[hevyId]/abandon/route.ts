@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { deletePending } from "@/lib/pending-store";
+import { strictGuard } from "@/lib/strict-mode";
 
 // Deletes from the app's own pending_uploads table at request time — never at build.
 export const dynamic = "force-dynamic";
@@ -19,6 +20,8 @@ export async function POST(
   _request: Request,
   { params }: { params: Promise<{ hevyId: string }> },
 ) {
+  const locked = strictGuard("Abandoning a legacy pending upload");
+  if (locked) return locked;
   const { hevyId } = await params;
   if (!hevyId) {
     return NextResponse.json({ error: "hevyId is required." }, { status: 400 });

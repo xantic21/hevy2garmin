@@ -9,6 +9,8 @@ import { postgresSyncStore } from "@/lib/sync-store";
 import { postgresLockBackend } from "@/lib/sync-lock-store";
 import { tallyForLog } from "@/lib/sync-tally";
 import { verifySession, SESSION_COOKIE, authEnabled } from "@/lib/auth";
+import { strictModeActive } from "@/lib/strict-mode";
+import { strictSyncRoute } from "@/lib/strict-routes";
 
 // Reads live Hevy + Postgres (and, on the live path, Garmin) at request time.
 export const dynamic = "force-dynamic";
@@ -131,6 +133,8 @@ export async function POST(
   if (!hevyId) {
     return NextResponse.json({ error: "hevyId is required." }, { status: 400 });
   }
+  // Strict in-place mode: verified merge into the original activity only.
+  if (strictModeActive()) return strictSyncRoute(request, hevyId);
 
   let body: Record<string, unknown> = {};
   try {

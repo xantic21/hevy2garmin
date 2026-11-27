@@ -24,6 +24,7 @@ import {
 } from "./garmin-workout-library";
 import { getDb } from "./db";
 import { loadSyncSettings } from "./sync-settings";
+import { assertLegacyGarminWrites } from "./strict-mode";
 
 type Sql = ReturnType<typeof getDb>;
 
@@ -119,6 +120,7 @@ export async function syncRoutine(
   sql: Sql = getDb(),
   opts: Opts = {},
 ): Promise<RoutineSyncResult> {
+  assertLegacyGarminWrites("Syncing a routine to Garmin");
   try {
     const client = await (opts.garminClientFactory ?? (() => getGarminClient()))();
     const payload = routineToGarminWorkout(routine, opts);
@@ -229,6 +231,7 @@ export async function reconcileMissingRoutineWorkouts(
   sql: Sql,
   workouts: GarminLibraryWorkout[] | null,
 ): Promise<string[]> {
+  assertLegacyGarminWrites("Reconciling routine workouts on Garmin");
   if (workouts === null) return [];
   const present = new Set(workouts.map((w) => String(w.id)));
   const changed: string[] = [];
@@ -276,6 +279,7 @@ export async function scheduleRoutine(
   sql: Sql = getDb(),
   opts: { garminClientFactory?: () => Promise<GarminClient> } = {},
 ): Promise<RoutineScheduleResult> {
+  assertLegacyGarminWrites("Scheduling a routine on Garmin");
   try {
     const client = await (opts.garminClientFactory ?? (() => getGarminClient()))();
     const res = await client.post<{ workoutScheduleId?: number }>(
@@ -307,6 +311,7 @@ export async function unscheduleRoutine(
   sql: Sql = getDb(),
   opts: { garminClientFactory?: () => Promise<GarminClient> } = {},
 ): Promise<RoutineUnscheduleResult> {
+  assertLegacyGarminWrites("Unscheduling a routine on Garmin");
   try {
     const client = await (opts.garminClientFactory ?? (() => getGarminClient()))();
     try {
@@ -346,6 +351,7 @@ export async function removeRoutine(
   sql: Sql = getDb(),
   opts: { garminClientFactory?: () => Promise<GarminClient> } = {},
 ): Promise<RoutineRemoveResult> {
+  assertLegacyGarminWrites("Removing a routine from Garmin");
   try {
     const rows = (await sql`
       SELECT garmin_workout_id FROM synced_routines WHERE hevy_routine_id = ${hevyRoutineId} LIMIT 1

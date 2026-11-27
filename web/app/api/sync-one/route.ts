@@ -6,6 +6,8 @@ import { recordSyncRun } from "hevy2garmin";
 import { postgresSyncStore } from "@/lib/sync-store";
 import { tallyForLog } from "@/lib/sync-tally";
 import { verifySession, SESSION_COOKIE, authEnabled } from "@/lib/auth";
+import { strictModeActive } from "@/lib/strict-mode";
+import { strictSyncRoute } from "@/lib/strict-routes";
 
 // Reads live Hevy + Postgres (and, on the live path, Garmin) at request time.
 export const dynamic = "force-dynamic";
@@ -75,6 +77,8 @@ function isBatch(request: Request): boolean {
 
 
 export async function POST(request: Request) {
+  // Strict in-place mode: the legacy engine is unreachable from this route.
+  if (strictModeActive()) return strictSyncRoute(request);
   let body: Record<string, unknown> = {};
   try {
     const text = await request.text();

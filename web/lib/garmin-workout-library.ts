@@ -14,6 +14,7 @@ import { createHash } from "node:crypto";
 import type { GarminClient } from "garmin-auth";
 import { ROUTINE_DESC_MARKER } from "./garmin-workout";
 import { garminDelete } from "./garmin-delete";
+import { assertLegacyGarminWrites } from "./strict-mode";
 
 export interface GarminLibraryWorkout {
   id: string;
@@ -63,6 +64,7 @@ export async function deleteGarminWorkout(
   client: GarminClient,
   workoutId: number | string,
 ): Promise<void> {
+  assertLegacyGarminWrites("Deleting a Garmin workout");
   await garminDelete(client, `/workout-service/workout/${workoutId}`);
 }
 

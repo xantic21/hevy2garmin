@@ -96,9 +96,77 @@ export const SCHEMA_STATEMENTS: readonly string[] = [
      scheduled_date TEXT,
      PRIMARY KEY (hevy_routine_id, schedule_id)
    )`,
+  // ---- Strict in-place merge (fork-only, additive). Older code ignores these
+  // tables, so a rollback to the previous build needs no down-migration. ----
+  // One binding per workout AND per activity: both columns are unique.
+  `CREATE TABLE IF NOT EXISTS strict_bindings (
+     hevy_id TEXT PRIMARY KEY,
+     garmin_activity_id BIGINT NOT NULL UNIQUE,
+     state TEXT NOT NULL CHECK (state IN ('claimed', 'verified', 'needs_review')),
+     lease_owner TEXT,
+     lease_until TIMESTAMPTZ,
+     last_journal_id TEXT,
+     last_error TEXT,
+     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+   )`,
+  `CREATE TABLE IF NOT EXISTS strict_backups (
+     id BIGSERIAL PRIMARY KEY,
+     garmin_activity_id BIGINT NOT NULL,
+     hevy_id TEXT NOT NULL,
+     kind TEXT NOT NULL CHECK (kind IN ('original', 'pre_write')),
+     payload JSONB NOT NULL,
+     sha256 TEXT NOT NULL CHECK (sha256 ~ '^[0-9a-f]{64}$'),
+     captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+   )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS strict_backups_one_original
+     ON strict_backups (garmin_activity_id) WHERE kind = 'original'`,
+  `CREATE OR REPLACE FUNCTION strict_backups_refuse_change() RETURNS trigger
+     LANGUAGE plpgsql AS $$
+     BEGIN
+       RAISE EXCEPTION 'strict_backups is insert-only (% refused)', TG_OP;
+     END
+     $$`,
+  `DO $$ BEGIN
+     IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'strict_backups_insert_only') THEN
+       CREATE TRIGGER strict_backups_insert_only BEFORE UPDATE OR DELETE ON strict_backups
+         FOR EACH ROW EXECUTE FUNCTION strict_backups_refuse_change();
+     END IF;
+     IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'strict_backups_no_truncate') THEN
+       CREATE TRIGGER strict_backups_no_truncate BEFORE TRUNCATE ON strict_backups
+         FOR EACH STATEMENT EXECUTE FUNCTION strict_backups_refuse_change();
+     END IF;
+   END $$`,
+  `CREATE TABLE IF NOT EXISTS strict_journal (
+     id BIGSERIAL PRIMARY KEY,
+     hevy_id TEXT NOT NULL,
+     garmin_activity_id BIGINT NOT NULL,
+     step TEXT NOT NULL CHECK (step IN ('exercise_sets', 'metadata', 'restore')),
+     phase TEXT NOT NULL CHECK (phase IN ('intent', 'put_sent', 'put_acknowledged', 'uncertain', 'needs_review',
+                                          'verified', 'not_applied', 'restored', 'aborted', 'resolved')),
+     owner TEXT NOT NULL,
+     intended_sha256 TEXT NOT NULL,
+     intended JSONB NOT NULL,
+     backup_id TEXT NOT NULL,
+     detail JSONB NOT NULL DEFAULT '{}',
+     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+   )`,
+  `CREATE INDEX IF NOT EXISTS strict_journal_open ON strict_journal (phase)
+     WHERE phase IN ('intent', 'put_sent', 'put_acknowledged', 'uncertain', 'needs_review')`,
+  `CREATE INDEX IF NOT EXISTS strict_journal_activity ON strict_journal (garmin_activity_id)`,
+  `CREATE TABLE IF NOT EXISTS strict_control (
+     id SMALLINT PRIMARY KEY CHECK (id = 1),
+     frozen BOOLEAN NOT NULL DEFAULT FALSE,
+     reason TEXT,
+     updated_at TIMESTAMPTZ
+   )`,
 ];
 
-/** The nine tables the Python bootstrap creates; the CI empty-database job asserts on them. */
+/**
+ * The nine tables the Python bootstrap creates; the CI empty-database job asserts on them.
+ * The strict tables are listed separately in lib/strict-ledger-store.ts.
+ */
 export const SCHEMA_TABLES = [
   "synced_workouts", "sync_log", "hr_cache", "pending_uploads", "platform_credentials",
   "custom_mappings", "app_cache", "synced_routines", "routine_schedules",

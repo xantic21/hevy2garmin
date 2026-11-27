@@ -13,10 +13,12 @@ import { getDb } from "./db";
 import type { Sql } from "./pending-store";
 import { buildSyncDeps } from "./sync-one";
 import { loadSyncSettings } from "./sync-settings";
+import { assertLegacyGarminWrites } from "./strict-mode";
 
 export type { RecoveryOptions, RecoveryResult } from "hevy2garmin";
 
 export function reconcilePending(hevyId: string, _opts: RecoveryOptions = {}, sql: Sql = getDb()) {
+  assertLegacyGarminWrites("Finalizing a legacy pending upload");
   return engineReconcilePending(buildSyncDeps(sql), hevyId);
 }
 
@@ -27,6 +29,7 @@ export function reconcilePending(hevyId: string, _opts: RecoveryOptions = {}, sq
  * workout would come back missing exactly what #614 was about.
  */
 export async function retryPending(hevyId: string, opts: RecoveryOptions = {}, sql: Sql = getDb()) {
+  assertLegacyGarminWrites("Retrying a legacy pending upload");
   const saved = await loadSyncSettings(sql);
   return engineRetryPending(buildSyncDeps(sql), hevyId, {
     merge: saved.merge,

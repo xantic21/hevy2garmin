@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { unsyncAll } from "@/lib/pending-store";
 import { getDb } from "@/lib/db";
 import { demoMode } from "@/lib/demo";
+import { strictGuard } from "@/lib/strict-mode";
 
 // Deletes from the app's own synced_workouts table at request time — never at build.
 export const dynamic = "force-dynamic";
@@ -19,6 +20,8 @@ export const runtime = "nodejs";
  * handled by the proxy (all /api/* except the public login routes).
  */
 export async function POST(request: Request) {
+  const locked = strictGuard("Unsync all");
+  if (locked) return locked;
   if (demoMode()) {
     return NextResponse.json({ ok: false, error: "Read-only in demo mode" }, { status: 403 });
   }

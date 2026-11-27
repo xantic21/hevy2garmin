@@ -4,6 +4,7 @@ import { getDb } from "@/lib/db";
 import { authEnabled, verifySession, SESSION_COOKIE } from "@/lib/auth";
 import { getGithubPat, getGithubRepo, setupGithubActions } from "@/lib/github";
 import { resolveDatabaseUrl } from "@/lib/database-url";
+import { strictGuard } from "@/lib/strict-mode";
 
 export const dynamic = "force-dynamic";
 
@@ -14,6 +15,8 @@ export const dynamic = "force-dynamic";
  * metadata) and DATABASE_URL, which becomes the fork's Actions secret.
  */
 export async function POST(request: Request) {
+  const locked = strictGuard("Setting up GitHub Actions sync");
+  if (locked) return locked;
   if (authEnabled()) {
     const store = await cookies();
     if (!(await verifySession(store.get(SESSION_COOKIE)?.value ?? null))) return NextResponse.json({ ok: false, message: "Unauthorized" }, { status: 401 });

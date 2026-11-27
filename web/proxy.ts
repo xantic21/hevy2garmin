@@ -207,6 +207,30 @@ function demoPublicResponse(pathname: string, method: string): NextResponse {
   return res;
 }
 
+/* Strict in-place mode (fork). Mirrors lib/strict-mode.ts syncMode(); inlined for the
+   same bundler reason as everything else here. Strict is the default: only the exact
+   legacy pair of variables turns it off. Every mutating call to a route that could
+   upload, delete, replay a legacy pending upload, write routines/workouts to Garmin
+   or reconfigure GitHub Actions is refused HERE, in front of the route's own guard. */
+function strictMode(): boolean {
+  return !(
+    process.env.H2G_SYNC_MODE === "legacy_upstream" &&
+    process.env.H2G_LEGACY_UPSTREAM_ACK === "uploads-and-deletes-allowed"
+  );
+}
+const STRICT_LOCKED: RegExp[] = [
+  /^\/api\/pending\//,
+  /^\/api\/unsync(\/|-all\/?$|\/?$)/,
+  /^\/api\/routines(\/|$)/,
+  /^\/api\/update-fork\/?$/,
+  /^\/api\/setup-actions\/?$/,
+  /^\/api\/toggle-autosync\/?$/,
+  /^\/api\/workout\/[^/]+\/mark-synced\/?$/,
+];
+function strictLocked(pathname: string, method: string): boolean {
+  return strictMode() && MUTATING.has(method.toUpperCase()) && STRICT_LOCKED.some((r) => r.test(pathname));
+}
+
 /** Gate every page + API route behind the shared-password session (mirrors auth.py).
     When no secret/password is set: open in development, but a production deploy serves only
     the setup and login pages until one is configured (#550). */
@@ -215,6 +239,12 @@ export async function proxy(req: NextRequest, event?: NextFetchEvent) {
   countVisit(req, event);
   const { pathname } = req.nextUrl;
   if (STATIC_PREFIX.test(pathname)) return NextResponse.next();
+  if (strictLocked(pathname, req.method)) {
+    return NextResponse.json(
+      { ok: false, strict: true, error: "Disabled in strict in-place mode." },
+      { status: 423 },
+    );
+  }
   // Before the auth gate on purpose: a demo with auth disabled is still read-only.
   if (
     demoMode() &&

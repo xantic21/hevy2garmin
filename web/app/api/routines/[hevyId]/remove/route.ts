@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { removeRoutine } from "@/lib/garmin-routine-sync";
 import { getDb } from "@/lib/db";
 import { verifySession, SESSION_COOKIE, authEnabled } from "@/lib/auth";
+import { strictGuard } from "@/lib/strict-mode";
 
 // Deletes a Garmin planned workout at request time.
 export const dynamic = "force-dynamic";
@@ -31,6 +32,8 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ hevyId: string }> },
 ) {
+  const locked = strictGuard("Removing a routine from Garmin");
+  if (locked) return locked;
   const { hevyId } = await params;
   if (!hevyId) {
     return NextResponse.json({ error: "hevyId is required." }, { status: 400 });

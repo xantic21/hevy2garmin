@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { ensureSchema, resetSchemaForTests, SCHEMA_STATEMENTS, SCHEMA_TABLES } from "./schema";
+import { STRICT_SCHEMA_TABLES } from "./strict-ledger-store";
 
 function runner(failOn?: string) {
   const ran: string[] = [];
@@ -18,11 +19,20 @@ function runner(failOn?: string) {
 beforeEach(() => resetSchemaForTests());
 
 describe("ensureSchema (#475)", () => {
-  it("creates the nine Python tables, every statement IF NOT EXISTS", () => {
+  it("creates the nine Python tables plus the four strict tables, every statement idempotent", () => {
     const creates = SCHEMA_STATEMENTS.filter((s) => s.startsWith("CREATE TABLE"));
-    expect(creates).toHaveLength(9);
-    for (const t of SCHEMA_TABLES) expect(creates.some((s) => s.includes(`IF NOT EXISTS ${t} (`))).toBe(true);
-    for (const s of SCHEMA_STATEMENTS) expect(s).toMatch(/IF NOT EXISTS/);
+    expect(creates).toHaveLength(9 + STRICT_SCHEMA_TABLES.length);
+    for (const t of [...SCHEMA_TABLES, ...STRICT_SCHEMA_TABLES]) {
+      expect(creates.some((s) => s.includes(`IF NOT EXISTS ${t} (`))).toBe(true);
+    }
+    for (const s of SCHEMA_STATEMENTS) expect(s).toMatch(/IF NOT EXISTS|CREATE OR REPLACE FUNCTION/);
+  });
+
+  it("strict additions only ever add: no DROP, no ALTER of an existing upstream table", () => {
+    const strictPart = SCHEMA_STATEMENTS.slice(SCHEMA_STATEMENTS.findIndex((s) => s.includes("strict_bindings")));
+    for (const s of strictPart) {
+      expect(s).not.toMatch(/\bDROP\b|\bTRUNCATE TABLE\b|ALTER TABLE (synced_workouts|pending_uploads|app_cache)/);
+    }
   });
 
   it("runs every statement in order, once", async () => {

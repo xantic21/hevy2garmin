@@ -8,6 +8,7 @@
  */
 import sodium from "libsodium-wrappers";
 import type { getDb } from "./db";
+import { assertLegacyGarminWrites } from "./strict-mode";
 
 type Sql = ReturnType<typeof getDb>;
 
@@ -53,6 +54,7 @@ function gh(pat: string, path: string, init: RequestInit = {}): Promise<Response
 
 /** repository_dispatch 'sync-trigger' → the fork's sync workflow runs the long sync off the request path. */
 export async function triggerViaActions(pat: string, repo: string): Promise<boolean> {
+  assertLegacyGarminWrites("Dispatching a sync to GitHub Actions");
   const res = await gh(pat, `${repo}/dispatches`, { method: "POST", body: JSON.stringify({ event_type: "sync-trigger" }) });
   return res.ok;
 }
@@ -124,6 +126,7 @@ export interface SetupResult { ok: boolean; message: string }
  * Same calls and order as the Python `_setup_github_actions`.
  */
 export async function setupGithubActions(opts: { pat: string; repo: string; databaseUrl: string; intervalMinutes?: number; fetchImpl?: typeof fetch }): Promise<SetupResult> {
+  assertLegacyGarminWrites("Setting up GitHub Actions sync");
   const interval = opts.intervalMinutes ?? 120;
   const { pat, repo, databaseUrl } = opts;
   const f = opts.fetchImpl ?? fetch;
@@ -160,6 +163,7 @@ export async function setupGithubActions(opts: { pat: string; repo: string; data
 
 /** Disable: delete the workflow file from the fork (best effort, like the Python side). */
 export async function disableGithubActions(opts: { pat: string; repo: string; fetchImpl?: typeof fetch }): Promise<boolean> {
+  assertLegacyGarminWrites("Changing GitHub Actions sync");
   const f = opts.fetchImpl ?? fetch;
   const call = (path: string, init: RequestInit = {}) => f(`https://api.github.com/repos/${opts.repo}${path ? `/${path}` : ""}`, {
     ...init, headers: { Authorization: `Bearer ${opts.pat}`, Accept: "application/vnd.github+json", "Content-Type": "application/json" }, signal: AbortSignal.timeout(10_000),

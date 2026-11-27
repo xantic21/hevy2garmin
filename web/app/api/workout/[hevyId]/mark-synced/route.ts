@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { resolveTerminal } from "@/lib/pending-store";
+import { strictGuard } from "@/lib/strict-mode";
 
 // Writes the app's own synced_workouts ledger at request time — never at build.
 export const dynamic = "force-dynamic";
@@ -19,6 +20,8 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ hevyId: string }> },
 ) {
+  const locked = strictGuard("Marking a workout synced by hand");
+  if (locked) return locked;
   const { hevyId } = await params;
   if (!hevyId) {
     return NextResponse.json({ error: "hevyId is required." }, { status: 400 });

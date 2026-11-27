@@ -18,6 +18,7 @@
 import { getDb } from "./db";
 import { GarminAuth, DBTokenStore, type GarminClient } from "garmin-auth";
 import { resolveDatabaseUrl } from "./database-url";
+import { ensureStrictFirewall } from "./strict-sync";
 
 /** The DI tokens live in platform_credentials at this platform key. */
 export const GARMIN_TOKEN_PLATFORM = "garmin_tokens";
@@ -54,6 +55,8 @@ export async function normalizeGarminTokenRow(sql: ReturnType<typeof getDb>): Pr
  * This authenticates only; it does not upload or mutate any activity.
  */
 export async function getGarminClient(databaseUrl?: string): Promise<GarminClient> {
+  // Strict mode: no Garmin client exists without the network firewall in front of it.
+  ensureStrictFirewall();
   if (cachedClient) return cachedClient;
   const url = databaseUrl ?? resolveDatabaseUrl();
   if (!url) throw new Error("DATABASE_URL not set (cannot load Garmin tokens)");

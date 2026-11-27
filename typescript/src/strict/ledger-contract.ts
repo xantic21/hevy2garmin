@@ -16,6 +16,8 @@ function check(cond: unknown, message: string): asserts cond {
 }
 
 const T0 = new Date("2026-03-10T18:00:00Z");
+/** A syntactically valid SHA-256 for fixtures (the Postgres schema checks the format). */
+const H = (n: number) => n.toString(16).padStart(64, "0");
 const later = (ms: number) => new Date(T0.getTime() + ms);
 
 export const STRICT_LEDGER_CONTRACT: LedgerContractCase[] = [
@@ -52,9 +54,19 @@ export const STRICT_LEDGER_CONTRACT: LedgerContractCase[] = [
         l.claimBinding({ hevyId: "h2", activityId: 101, owner: "B", now: T0, leaseMs: 60_000 }),
         l.claimBinding({ hevyId: "h1", activityId: 102, owner: "C", now: T0, leaseMs: 60_000 }),
       ]);
-      check(results.filter((r) => r.ok).length === 1, "only one of three crossing claims may win");
+      // Depending on arrival order either one claim wins, or two compatible
+      // ones do (h2↔101 then h1↔102). What can never happen is a workout or
+      // an activity bound twice, or a winner without its row.
+      const winners = results.filter((r) => r.ok);
+      check(winners.length >= 1 && winners.length <= 2, `unexpected number of winners: ${winners.length}`);
       const all = await l.listBindings();
-      check(all.length === 1, "exactly one binding row");
+      check(new Set(all.map((b) => b.hevyId)).size === all.length, "a workout is bound twice");
+      check(new Set(all.map((b) => b.garminActivityId)).size === all.length, "an activity is bound twice");
+      check(all.length === winners.length, "every winner has exactly one row and no loser has one");
+      for (const w of winners) {
+        if (!w.ok) continue;
+        check(all.some((b) => b.hevyId === w.binding.hevyId && b.garminActivityId === w.binding.garminActivityId), "winner row missing");
+      }
     },
   },
   {
@@ -87,14 +99,14 @@ export const STRICT_LEDGER_CONTRACT: LedgerContractCase[] = [
     name: "the first backup of an activity is its original and is never replaced",
     async run(make) {
       const l = await make();
-      const first = await l.saveBackup({ garminActivityId: 101, hevyId: "h1", kind: "original", payload: { v: 1 }, sha256: "s1" });
-      const second = await l.saveBackup({ garminActivityId: 101, hevyId: "h1", kind: "original", payload: { v: 2 }, sha256: "s2" });
+      const first = await l.saveBackup({ garminActivityId: 101, hevyId: "h1", kind: "original", payload: { v: 1 }, sha256: H(1) });
+      const second = await l.saveBackup({ garminActivityId: 101, hevyId: "h1", kind: "original", payload: { v: 2 }, sha256: H(2) });
       check(second.id === first.id && JSON.stringify(second.payload) === JSON.stringify({ v: 1 }), "original is kept");
-      const pre1 = await l.saveBackup({ garminActivityId: 101, hevyId: "h1", kind: "pre_write", payload: { v: 3 }, sha256: "s3" });
-      const pre2 = await l.saveBackup({ garminActivityId: 101, hevyId: "h1", kind: "pre_write", payload: { v: 4 }, sha256: "s4" });
+      const pre1 = await l.saveBackup({ garminActivityId: 101, hevyId: "h1", kind: "pre_write", payload: { v: 3 }, sha256: H(3) });
+      const pre2 = await l.saveBackup({ garminActivityId: 101, hevyId: "h1", kind: "pre_write", payload: { v: 4 }, sha256: H(4) });
       check(pre1.id !== pre2.id, "every pre_write is a new row");
       const back = await l.getBackup(pre1.id);
-      check(back?.sha256 === "s3" && JSON.stringify(back.payload) === JSON.stringify({ v: 3 }), "backup reads back unchanged");
+      check(back?.sha256 === H(3) && JSON.stringify(back.payload) === JSON.stringify({ v: 3 }), "backup reads back unchanged");
       check((await l.getOriginalBackup(101))?.id === first.id, "original lookup");
     },
   },
@@ -102,7 +114,7 @@ export const STRICT_LEDGER_CONTRACT: LedgerContractCase[] = [
     name: "journal phases advance only by compare-and-set",
     async run(make) {
       const l = await make();
-      const e = await l.openJournal({ hevyId: "h1", garminActivityId: 101, step: "exercise_sets", owner: "A", intendedSha256: "x", intended: { a: 1 }, backupId: "b" });
+      const e = await l.openJournal({ hevyId: "h1", garminActivityId: 101, step: "exercise_sets", owner: "A", intendedSha256: H(9), intended: { a: 1 }, backupId: "b" });
       check(e.phase === "intent", "opens in intent");
       check(await l.advanceJournal(e.id, ["intent"], "put_sent"), "intent → put_sent");
       check(!(await l.advanceJournal(e.id, ["intent"], "put_sent")), "second identical transition fails");

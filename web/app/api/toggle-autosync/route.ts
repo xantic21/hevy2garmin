@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
 import { getGithubPat, getGithubRepo, setupGithubActions, disableGithubActions } from "@/lib/github";
 import { resolveDatabaseUrl } from "@/lib/database-url";
+import { strictGuard } from "@/lib/strict-mode";
 
 // Reads/writes the app_cache config at request time — never at build.
 export const dynamic = "force-dynamic";
@@ -16,6 +17,8 @@ export const dynamic = "force-dynamic";
  * /api/toggle-autosync.
  */
 export async function POST(request: Request) {
+  const locked = strictGuard("Toggling GitHub Actions auto-sync");
+  if (locked) return locked;
   let body: { enabled?: unknown } = {};
   try {
     const text = await request.text();

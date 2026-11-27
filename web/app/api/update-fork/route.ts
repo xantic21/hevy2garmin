@@ -5,6 +5,7 @@ import { demoMode } from "@/lib/demo";
 import { authEnabled, verifySession, SESSION_COOKIE } from "@/lib/auth";
 import { getGithubPat } from "@/lib/github";
 import { docsUrl, forkUrl, markUpdating, recheckAfterInSync, syncFork, updateTarget } from "@/lib/update-check";
+import { strictGuard } from "@/lib/strict-mode";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -26,6 +27,8 @@ export const runtime = "nodejs";
  * fork. The token is never in any answer.
  */
 export async function POST() {
+  const locked = strictGuard("Updating this fork from upstream");
+  if (locked) return locked;
   if (authEnabled()) {
     const store = await cookies();
     if (!(await verifySession(store.get(SESSION_COOKIE)?.value ?? null))) {

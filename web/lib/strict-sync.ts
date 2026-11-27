@@ -1,0 +1,182 @@
+/**
+ * Binds the strict in-place engine to this app: Postgres ledgers, the
+ * dashboard's Garmin client (behind the process firewall), the Hevy fetch,
+ * the sync window and the user's mappings and timing.
+ *
+ * Every route that syncs goes through `runStrictSync` in strict mode. The
+ * legacy engine (`./sync-one`) is never reached from a strict deployment.
+ */
+import {
+  installStrictGarminFirewall,
+  isStrictFirewallInstalled,
+  listStrictCandidates,
+  reconcileStrictJournal,
+  resolveStrictJournal,
+  restoreStrictBackup,
+  strictGarminPort,
+  strictInPlaceSync,
+  strictWriteBlock,
+  firewallStats,
+  type StrictSyncOptions,
+  type StrictSyncResult,
+  type StrictTrigger,
+  type RateLimitOptions,
+} from "hevy2garmin";
+import type { GarminClient } from "garmin-auth";
+import { getGarminClient } from "./garmin-upload";
+import { fetchAllWorkouts, type HevyWorkout } from "./hevy-sync";
+import type { Sql } from "./pending-store";
+import { postgresSyncStore } from "./sync-store";
+import { loadCustomMappings, loadSyncSettings, loadSyncStartDate } from "./sync-settings";
+import { parseStartDate, withinSyncWindow } from "./sync-window";
+import { postgresStrictLedger, strictSchemaReady } from "./strict-ledger-store";
+import { strictAutomaticEnabled, strictModeActive } from "./strict-mode";
+
+/**
+ * Install the Garmin firewall if strict mode is on. Called at server start
+ * (instrumentation.ts) AND before any Garmin client is built, so a runtime
+ * that skips instrumentation (a test, a script) is still guarded.
+ */
+export function ensureStrictFirewall(): boolean {
+  if (!strictModeActive()) return false;
+  if (!isStrictFirewallInstalled(globalThis)) installStrictGarminFirewall(globalThis);
+  return true;
+}
+
+export interface StrictRouteOptions {
+  dryRun: boolean;
+  trigger: StrictTrigger;
+  targetHevyId?: string;
+  excludeHevyIds?: string[];
+  resync?: boolean;
+  /** Test seams. */
+  fetchWorkouts?: () => Promise<HevyWorkout[]>;
+  garminClientFactory?: () => Promise<GarminClient>;
+  /** Test seam: production waits STRICT_VERIFY_DELAY_MS before read-back and paces Garmin calls. */
+  timing?: { verifyDelayMs?: number; rateLimit?: RateLimitOptions };
+}
+
+function deps(sql: Sql, o: Pick<StrictRouteOptions, "fetchWorkouts" | "garminClientFactory" | "resync" | "timing">) {
+  const clientFactory = o.garminClientFactory ?? (() => getGarminClient());
+  const fetch = o.fetchWorkouts ?? (() => fetchAllWorkouts());
+  return {
+    ledger: postgresStrictLedger(sql),
+    legacy: postgresSyncStore(sql),
+    garmin: async () => {
+      ensureStrictFirewall();
+      return strictGarminPort(await clientFactory(), o.timing?.rateLimit);
+    },
+    fetchWorkouts: async () => {
+      const all = await fetch();
+      // The sync window chooses candidates; a resync addresses a workout by id.
+      const start = o.resync ? null : parseStartDate(await loadSyncStartDate(sql).catch(() => null));
+      return withinSyncWindow(all, start) as never;
+    },
+  };
+}
+
+/** The user's mapping, timing and description choices, in strict-engine terms. */
+async function strictOptions(sql: Sql): Promise<Pick<StrictSyncOptions, "customMappings" | "timing" | "metadata">> {
+  const [settings, custom] = await Promise.all([loadSyncSettings(sql), loadCustomMappings(sql)]);
+  return {
+    customMappings: Object.keys(custom).length ? custom : undefined,
+    timing: settings.merge.timing,
+    metadata: { rename: true, description: settings.descriptionEnabled },
+  };
+}
+
+export async function runStrictSync(sql: Sql, o: StrictRouteOptions): Promise<StrictSyncResult> {
+  ensureStrictFirewall();
+  if (!o.dryRun) {
+    const schema = await strictSchemaReady(sql);
+    if (!schema.ready) {
+      return {
+        status: "blocked",
+        reason: `strict ledger schema is incomplete (${schema.missing.join(", ")}); live writes stay off`,
+        trigger: o.trigger,
+        dryRun: false,
+        hevyId: o.targetHevyId ?? null,
+        title: null,
+        activityId: null,
+        journalIds: [],
+        writes: 0,
+        plan: null,
+        issues: [],
+      };
+    }
+  }
+  return strictInPlaceSync(deps(sql, o), {
+    ...(await strictOptions(sql)),
+    dryRun: o.dryRun,
+    trigger: o.trigger,
+    automaticEnabled: strictAutomaticEnabled(),
+    targetHevyId: o.targetHevyId,
+    excludeHevyIds: o.excludeHevyIds,
+    resync: o.resync,
+    ...(o.timing?.verifyDelayMs !== undefined ? { verifyDelayMs: o.timing.verifyDelayMs } : {}),
+  });
+}
+
+export async function strictCandidates(sql: Sql, o: Pick<StrictRouteOptions, "fetchWorkouts"> = {}) {
+  return listStrictCandidates(deps(sql, o));
+}
+
+/** Everything the dashboard shows about strict mode. Read-only. */
+export async function strictStatus(sql: Sql) {
+  const ledger = postgresStrictLedger(sql);
+  const [schema, block, control, open, bindings] = await Promise.all([
+    strictSchemaReady(sql),
+    strictWriteBlock(ledger).catch((e: Error) => ({ blocked: true, reason: e.message })),
+    ledger.getControl().catch(() => ({ frozen: false, reason: null, updatedAt: null })),
+    ledger.listOpenJournal().catch(() => []),
+    ledger.listBindings().catch(() => []),
+  ]);
+  const counts = { claimed: 0, verified: 0, needs_review: 0 } as Record<string, number>;
+  for (const b of bindings) counts[b.state] = (counts[b.state] ?? 0) + 1;
+  return {
+    mode: "strict_inplace" as const,
+    automaticEnabled: strictAutomaticEnabled(),
+    firewall: { installed: isStrictFirewallInstalled(globalThis), ...firewallStats() },
+    schema,
+    writeBlock: block,
+    control,
+    openJournal: open.map((e) => ({
+      id: e.id,
+      hevyId: e.hevyId,
+      activityId: e.garminActivityId,
+      step: e.step,
+      phase: e.phase,
+      updatedAt: e.updatedAt,
+      detail: e.detail,
+    })),
+    bindings: counts,
+    reviewBindings: bindings
+      .filter((b) => b.state !== "verified")
+      .map((b) => ({ hevyId: b.hevyId, activityId: b.garminActivityId, state: b.state, lastError: b.lastError })),
+  };
+}
+
+function recoveryDeps(sql: Sql, garminClientFactory?: () => Promise<GarminClient>, rateLimit?: RateLimitOptions) {
+  return {
+    ledger: postgresStrictLedger(sql),
+    garmin: async () => {
+      ensureStrictFirewall();
+      return strictGarminPort(await (garminClientFactory ?? (() => getGarminClient()))(), rateLimit);
+    },
+  };
+}
+
+export const strictReconcile = (sql: Sql, journalId: string, f?: () => Promise<GarminClient>, rateLimit?: RateLimitOptions) =>
+  reconcileStrictJournal(recoveryDeps(sql, f, rateLimit), journalId);
+
+export const strictRestore = (
+  sql: Sql,
+  input: { journalId: string; source: "pre_write" | "original"; confirm: boolean },
+  f?: () => Promise<GarminClient>,
+) => restoreStrictBackup(recoveryDeps(sql, f), input);
+
+export const strictResolve = (sql: Sql, journalId: string, note: string) =>
+  resolveStrictJournal(postgresStrictLedger(sql), journalId, note);
+
+export const strictSetFrozen = (sql: Sql, frozen: boolean, reason: string | null) =>
+  postgresStrictLedger(sql).setFrozen(frozen, reason);

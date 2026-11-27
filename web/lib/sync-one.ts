@@ -35,6 +35,7 @@ import { loadSyncSettings, loadSyncStartDate } from "./sync-settings";
 import { parseStartDate, withinSyncWindow } from "./sync-window";
 import type { Sql } from "./pending-store";
 import { withGarminLocalDates } from "./garmin-local-dates";
+import { assertLegacyGarminWrites } from "./strict-mode";
 
 export type {
   CandidateWorkout,
@@ -116,6 +117,9 @@ export function listCandidates(sql: Sql, options: SyncOneOptions = {}) {
  * own, so every route gets them without having to remember to.
  */
 export async function syncOneWorkout(sql: Sql, options: SyncOneOptions = {}) {
+  // The legacy engine can upload a FIT and delete the watch copy. A strict
+  // deployment must never reach it live; dry runs only read.
+  if (options.dryRun === false) assertLegacyGarminWrites("The legacy upload engine");
   const { fetchWorkouts: _f, garminClientFactory: _g, ...engineOptions } = options;
   const saved = await loadSyncSettings(sql);
   return engineSyncOneWorkout(buildSyncDeps(sql, options), {

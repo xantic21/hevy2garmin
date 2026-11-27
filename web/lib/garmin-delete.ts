@@ -9,6 +9,7 @@
  */
 import type { GarminClient } from "garmin-auth";
 import { NATIVE_API_USER_AGENT, NATIVE_X_GARMIN_USER_AGENT } from "garmin-auth";
+import { assertLegacyGarminWrites } from "./strict-mode";
 
 interface DeletableClient {
   domain: string;
@@ -45,6 +46,7 @@ export async function garminDelete(
   path: string,
   opts: { fetchImpl?: typeof fetch } = {},
 ): Promise<void> {
+  assertLegacyGarminWrites("Deleting a Garmin object");
   const c = client as unknown as DeletableClient;
   const url = `https://connectapi.${c.domain}${path}`;
   const f = opts.fetchImpl ?? fetch;

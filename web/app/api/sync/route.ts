@@ -11,6 +11,8 @@ import { detectDuplicates, garminClient } from "@/lib/garmin-activities";
 import { getHevyClient } from "@/lib/hevy-sync";
 import { getGithubPat, getGithubRepo, triggerViaActions } from "@/lib/github";
 import { verifySession, SESSION_COOKIE, authEnabled } from "@/lib/auth";
+import { strictModeActive } from "@/lib/strict-mode";
+import { strictBatchRoute } from "@/lib/strict-routes";
 
 // Reads live Hevy + Postgres (and, on the live path, Garmin) at request time.
 export const dynamic = "force-dynamic";
@@ -57,6 +59,8 @@ function wantsLive(request: Request, body: Record<string, unknown>): boolean {
 
 
 export async function POST(request: Request) {
+  // Strict in-place mode: no legacy engine and no GitHub Actions dispatch.
+  if (strictModeActive()) return strictBatchRoute(request);
   let body: Record<string, unknown> = {};
   try {
     const text = await request.text();

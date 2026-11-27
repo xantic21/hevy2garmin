@@ -4,6 +4,7 @@ import { scheduleRoutine } from "@/lib/garmin-routine-sync";
 import { getDb } from "@/lib/db";
 import { verifySession, SESSION_COOKIE, authEnabled } from "@/lib/auth";
 import { recurringDates } from "@/lib/recurring-dates";
+import { strictGuard } from "@/lib/strict-mode";
 
 // Writes a Garmin calendar entry at request time.
 export const dynamic = "force-dynamic";
@@ -33,6 +34,8 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ hevyId: string }> },
 ) {
+  const locked = strictGuard("Scheduling a routine on Garmin");
+  if (locked) return locked;
   const { hevyId } = await params;
   if (!hevyId) {
     return NextResponse.json({ error: "hevyId is required." }, { status: 400 });

@@ -4,6 +4,7 @@ import { fetchHevyRoutines } from "@/lib/hevy-routines";
 import { syncRoutine } from "@/lib/garmin-routine-sync";
 import { getDb } from "@/lib/db";
 import { verifySession, SESSION_COOKIE, authEnabled } from "@/lib/auth";
+import { strictGuard } from "@/lib/strict-mode";
 
 // Fetches Hevy + writes a Garmin planned workout at request time.
 export const dynamic = "force-dynamic";
@@ -33,6 +34,8 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ hevyId: string }> },
 ) {
+  const locked = strictGuard("Syncing a routine to Garmin");
+  if (locked) return locked;
   const { hevyId } = await params;
   if (!hevyId) {
     return NextResponse.json({ error: "hevyId is required." }, { status: 400 });

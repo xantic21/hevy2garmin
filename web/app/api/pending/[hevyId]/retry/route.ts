@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { retryPending } from "@/lib/pending-recovery";
 import { getDb } from "@/lib/db";
 import { verifySession, SESSION_COOKIE, authEnabled } from "@/lib/auth";
+import { strictGuard } from "@/lib/strict-mode";
 
 // Reads/writes Garmin + the local ledger at request time — never at build.
 export const dynamic = "force-dynamic";
@@ -37,6 +38,8 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ hevyId: string }> },
 ) {
+  const locked = strictGuard("Retrying a legacy pending upload");
+  if (locked) return locked;
   const { hevyId } = await params;
   if (!hevyId) {
     return NextResponse.json({ ok: false, error: "hevyId is required." }, { status: 400 });

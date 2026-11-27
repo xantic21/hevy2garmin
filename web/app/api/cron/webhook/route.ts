@@ -6,6 +6,8 @@ import { bearerMatches } from "@/lib/bearer";
 import { getGithubPat, getGithubRepo, triggerViaActions } from "@/lib/github";
 import { postgresLockBackend } from "@/lib/sync-lock-store";
 import { startStagedSync, webhookRetryConfig, type AttemptOutcome } from "@/lib/webhook-retry";
+import { strictModeActive } from "@/lib/strict-mode";
+import { strictAutomaticRoute } from "@/lib/strict-routes";
 
 // Runs a sync at request time — never at build.
 export const dynamic = "force-dynamic";
@@ -56,6 +58,8 @@ function stagedAttempt(sql: Sql) {
 }
 
 export async function POST(request: Request) {
+  // Strict in-place mode: no staged retries, no dispatch; strict engine only.
+  if (strictModeActive()) return strictAutomaticRoute(request, "webhook");
   const secret = process.env.CRON_SECRET;
   if (!secret) {
     return NextResponse.json(
