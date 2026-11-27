@@ -41,7 +41,8 @@ deliberately, and a missing or misspelled one keeps the safe state.
 | `H2G_CREDENTIALS_KEYS_PREVIOUS` | comma-separated previous keys, decrypt only, during a rotation (§13) |
 | `H2G_BACKUP_KEY` | **not a deployment variable**: lives on the operator's machine / password manager and encrypts database backups (§5) |
 | `H2G_STAGING=synthetic` | gate E only: synthetic staging (§7). Hevy and Garmin simulated in-process, no external network, no credential accepted or stored, refuses a database with any real data; refuses to run as a Vercel production deployment or with a real-credential variable set |
-| `H2G_PRODUCTION_CUTOVER=approved-by-owner` | the owner's approved cutover. Without it a Vercel **production** deployment of this candidate refuses every request (runtime quarantine, §4) |
+| `H2G_PRODUCTION_CUTOVER=approved-by-owner` | gate G: the owner's approved cutover. Without it a Vercel **production** deployment of this candidate refuses every request (runtime quarantine, §4) |
+| `H2G_GATE_F=approved-by-owner`, `H2G_GATE_F_HEVY_ID`, `H2G_GATE_F_GARMIN_ACTIVITY_ID`, `H2G_GATE_F_EXPIRES` | gate F only (§8): exactly one Hevy workout into exactly one native Garmin activity, on the owner's own computer, until the expiry (ISO time with zone, at most 14 days ahead). All four or none; anything malformed or contradictory (gate G or automatic flags, plain credentials, synthetic ids, a Vercel runtime) stops the server |
 | `H2G_BATCH_BUDGET_MS` | optional, default 20000: a live "Sync all" request starts no new workout after this long; the dashboard calls again for the rest |
 
 ## 3. Gates (contract § Gates)
@@ -53,7 +54,7 @@ deliberately, and a missing or misspelled one keeps the safe state.
 | C synthetic migration and full CI | done | `web/lib/db-qualification.db.test.ts` (fresh DB, previous fork-main schema, pg_dump/restore); all CI jobs |
 | D independent review | done: round 1 9/9 closed (`docs/STRICT_REAUDIT.md`); round 2 owner findings 1–7 and independent re-audit #2 closed (`docs/STRICT_REAUDIT_ROUND2.md`) | no upload/delete path found |
 | E isolated staging | **done (synthetic, on Vercel)**: separate project `hevy2garmin-staging` with its own Neon project, protected preview of the final candidate 0a32304, rehearsal 38/38, isolation verified independently, production project unchanged | §7a; the owner may click through the preview (§7 step 5) |
-| F one owner-accepted real activity | **owner** | procedure §8 |
+| F one owner-accepted real activity | **ready for the owner**: gate F mode built and qualified (`docs/STRICT_GATE_F.md`); production hardening prepared (§14) | owner steps in `docs/OWNER_RUNBOOK.md`; procedure and design §8 |
 | G production activation | **owner** | set `H2G_STRICT_AUTOMATIC` only after F; keep stop switches documented |
 
 ## 4. Deployment path (cost-neutral; production still quarantined)
@@ -92,9 +93,10 @@ must report `firewall.installed: true`, `schema.ready: true`,
 
 ## 5. Database
 
-- Additive bootstrap (`web/lib/schema.ts`): five strict tables
+- Additive bootstrap (`web/lib/schema.ts`): six strict tables
   (`strict_bindings`, `strict_backups`, `strict_journal`,
-  `strict_activity_locks`, `strict_control`), two insert-only triggers on
+  `strict_activity_locks`, `strict_control`, and `strict_gate_f`, the single
+  gate F record, §8), two insert-only triggers on
   `strict_backups`, and two partial unique indexes (one `original` backup per
   activity; one in-flight journal entry per activity). Idempotent; never drops
   or alters an upstream table. Live strict writes are blocked unless
@@ -260,20 +262,65 @@ Garmin or Hevy, and the production project and its database were not changed.
 - When gate E is no longer needed, delete the staging project and its Neon
   store; nothing else depends on them.
 
-## 8. One owner-accepted real activity (gate F, owner)
+## 8. One owner-accepted real activity (gate F)
 
-1. Record a strength workout on the watch and in Hevy; wait until both are synced.
-2. `pg_dump` the database (§5).
-3. Dashboard → "Preview" for that workout: confirm the activity id, set count,
-   timing source and the planned name/description.
-4. "Sync now" once. Expect `synced`; the journal shows `exercise_sets:verified`
-   and `metadata:verified`; the activity id is unchanged.
-5. Compare on Garmin Connect (web and phone) before/after: HR graph, calories,
-   training effect, duration unchanged; exercises, reps and weights as in Hevy;
-   **exercise names displayed** (read-back verifies stored state only; display
-   is confirmed here — upstream #159/#325).
-6. If anything differs: "Stop all writes", then "Restore backup…" → original.
-7. Only after acceptance: gate G.
+**The contract, corrected.** Gate F must write one real activity, but the
+deployment quarantine holds until after gate F. Gate F is therefore not a
+production deployment and not part of gate G. It is its own, explicit owner
+authorization (`web/lib/gate-f.ts`) that lets the qualified candidate merge
+exactly one Hevy workout into exactly one native Garmin activity, on the
+owner's own computer, and nothing else.
+
+| Question | Answer |
+| --- | --- |
+| Where it runs | The owner's computer, from the qualified container image of the exact candidate (`docker run`, `localhost:8096`). Never on Vercel: the runtime quarantine refuses a real gate F wherever `VERCEL`/`VERCEL_ENV` is set, and the build quarantine still builds only synthetic staging. On Vercel gate F exists only as a synthetic rehearsal inside staging. Signing in to Garmin from the owner's own connection also needs no Cloudflare Worker (`H2G_DIRECT_GARMIN_LOGIN=1`) |
+| Which database | A new, empty Neon database (free plan) used for nothing else. Not the legacy production database, which gate F never touches, and not the staging database. At gate G this database, with the same `H2G_CREDENTIALS_KEY`, becomes the strict deployment's database, so the original backup and the journal of the gate F activity stay with it |
+| Authorization | `H2G_GATE_F=approved-by-owner`, `H2G_GATE_F_HEVY_ID`, `H2G_GATE_F_GARMIN_ACTIVITY_ID`, `H2G_GATE_F_EXPIRES` (at most 14 days ahead). `tools/gate-f/prepare-env.sh` writes them, with fresh secrets, into a private `gate-f.env` |
+| Refused at start (server answers 503) | an incomplete or malformed authorization; `H2G_PRODUCTION_CUTOVER` or `H2G_STRICT_AUTOMATIC` (gate G); plain credentials in the environment (`HEVY_API_KEY`, `GARMIN_EMAIL`, `GARMIN_PASSWORD`, `GITHUB_PAT`, intervals.icu, collector); `DEMO_MODE`; legacy mode; no dashboard password; no `H2G_CREDENTIALS_KEY`; synthetic ids outside staging, real ids inside it; any Vercel runtime |
+| After the expiry | The server stays readable; no new merge; preview, evidence, stop, reconcile and restore of the authorized activity stay available |
+
+**What the mode allows, and where each limit is enforced** (outermost first):
+
+| Limit | Enforced by |
+| --- | --- |
+| Only the gate F panel can merge | proxy: every sync entry point (`/api/sync*`, `/api/cron/*`) answers 423 for any method, every other mutating route except sign-in, account connection, settings, mappings and the strict operator routes too; the generic sync routes answer 423 themselves; `runStrictSync` refuses any call without exactly the authorized pin |
+| Exactly that workout, exactly that activity, manual only | the engine pin (`StrictSyncOptions.pin`): no batch, cron or webhook trigger, no other workout, no resync, checked before any IO; the activity the matcher finds must be the authorized one, else nothing is written |
+| Once | `strict_gate_f`, one row, claimed by a single statement: parallel calls get "in progress"; once anything was journaled the row is final ("done") and refuses every later run, also for another workout; a run that journaled nothing (watch activity not there yet, wrong activity) re-arms it. Under it, the existing binding, activity lock and in-flight journal index |
+| Deliberate | the run needs the typed confirmation `GATE-F <hevyId> <activityId>` |
+| Recovery only for that activity | restore, reconcile and resolve refuse any journal entry outside the authorized pair (engine and dashboard) |
+| Everything else unchanged | hard stop (`H2G_STRICT_STOP`, checked again before the claim), the database freeze, the firewall (no upload, no delete), the verified original backup, the write-ahead journal, full read-back, uncertain → reconcile. If the record is taken over during a run, all writes freeze |
+| Evidence | `POST /api/strict/gate-f {action:"evidence"}` (GET requests to Garmin only): the verified original backup (before), the journaled intended state, a fresh read of the activity (after), the comparisons (sets against intended, native metrics against before, after a restore sets against the original) and a SHA-256 over the bundle |
+
+**Gate F and gate G stay separate.**
+
+| | Gate F | Gate G |
+| --- | --- | --- |
+| Owner authorization | the four `H2G_GATE_F*` variables, one workout, ≤ 14 days | `H2G_PRODUCTION_CUTOVER=approved-by-owner`, then `H2G_STRICT_AUTOMATIC=enabled-by-owner` |
+| Runtime | owner's computer, container | Vercel production, after a reviewed change that lifts the build quarantine |
+| Writes | one workout, typed confirmation | the strict engine for every new workout |
+| Mutual exclusion | refuses to run with either gate G variable set | removes the gate F variables |
+
+**Procedure** (the owner's steps, in order, are in `docs/OWNER_RUNBOOK.md`):
+
+1. Production hardening §14, at least steps 1–4 (legacy cron off before the
+   gate F workout is recorded, so the legacy app cannot upload it as a FIT).
+2. Record a strength workout on the watch and in Hevy; wait until both are synced.
+   Note the Hevy workout id and the Garmin activity id.
+3. A new Neon database; `bash tools/gate-f/prepare-env.sh`; build and start the
+   container (two commands it prints).
+4. `http://localhost:8096`: sign in, connect Hevy (the new key) and Garmin
+   (direct sign-in, MFA). Credentials are sealed at once.
+5. Gate F panel: **Preview** → check the activity id, the set count, the timing
+   source and the planned name. Type the confirmation → **Run gate F**. Expect
+   `synced`, both journal steps verified, the activity id unchanged.
+6. **Evidence** → keep the JSON. On Garmin Connect (web and phone) compare: HR
+   graph, calories, training effect, duration unchanged; exercises, reps and
+   weights as in Hevy; **exercise names displayed** (read-back verifies the stored
+   state; the display is confirmed here — upstream #159/#325).
+7. If anything differs: "Stop all writes", then "Restore backup…" → original,
+   then Evidence again.
+8. Stop the container. Keep `gate-f.env` (its `H2G_CREDENTIALS_KEY` is needed at
+   gate G) and the evidence in the password manager. Gate G only after acceptance.
 
 ## 9. Security notes
 
@@ -291,14 +338,21 @@ Garmin or Hevy, and the production project and its database were not changed.
   when `COLLECTOR_URL` and `COLLECTOR_TOKEN` are both set.
 - No live credentials in CI: every secret there is a synthetic placeholder.
 
-## 10. Dependencies (npm audit / pip-audit, 2026-11-27)
+## 10. Dependencies (npm audit / pip-audit, re-run 2026-11-27 on the gate F candidate)
 
 | Package set | Production | All | Note |
 | --- | --- | --- | --- |
-| `typescript/` engine | 0 | 0 | |
-| `web/` dashboard | 0 | 0 | soma-style removed (it pulled react-native/metro/image-size) |
+| `typescript/` engine | 0 | 0 | vitest 5.0.5 |
+| `web/` dashboard | 0 | 0 | vitest 4.1.12; soma-style removed (it pulled react-native/metro/image-size) |
 | Python (`requirements.txt`) | 0 | — | pip-audit |
 | `universal/` Expo app | 7 (4 high) | — | needs an Expo SDK major; not deployed, GET-only, never built or published by CI |
+
+The one open GitHub Dependabot alert (#1, critical: vitest < 3.2.6, the Vitest
+UI server can read and execute files) is on **main**, where
+`typescript/package.json` still pins `vitest ^2.0.0`. This branch resolves
+vitest 5.0.5 (engine) and 4.1.12 (dashboard); the alert closes when the branch
+reaches main. It is a test-only dependency that never ships or runs the UI
+server in CI.
 
 ## 11. Upstream cutover blockers
 
@@ -397,3 +451,53 @@ against its database: its token store would overwrite a sealed
 envelope, never mistakes it for a credential, and falls back to
 `HEVY_API_KEY` / `GITHUB_PAT` (`credentials_sealed` in `config.py`). The
 Python dashboard is not part of this deployment.
+
+## 14. Production hardening (owner, before gate F)
+
+Read-only findings on the production project `hevy2garmin`
+(`prj_3avsQM6o1KUXOvgDU2MZYFRKAPS7`) and main, 2026-11-27. Nothing was changed.
+
+| # | Finding | Consequence |
+| --- | --- | --- |
+| H1 | main (the legacy Python app) declares a **Vercel Cron**: `GET /api/cron/sync` daily at 08:00 UTC, which runs the legacy one-workout sync (FIT upload). The project has no `CRON_SECRET`. Whether it succeeds today is not visible (Hobby keeps runtime logs for one hour) | it can upload the gate F workout as a second activity, and keeps the legacy upload path alive |
+| H2 | All 22 variables target **Production and Preview**: the 18 Neon variables of the production database, `HEVY_API_KEY`, `GARMIN_EMAIL`, `GARMIN_PASSWORD` (stored readable, Vercel flags it `readable-secret`), `GITHUB_PAT` | every preview build gets the production database and real credentials |
+| H3 | main's `vercel.json` has no `git.deploymentEnabled: false`, so **every branch pushed to the repository builds a preview** in this project with those credentials (26 previews from 25 branches exist). This branch is excluded only by its own root `vercel.json` (pinned by a test) | until H2 is fixed, push no new branch from main |
+| H4 | 40 deployments (14 production, 26 preview), all created by the owner, all behind Vercel Authentication, none from a fork or Dependabot. **Each keeps the variables it was built with**: changing a variable's targets later does not remove them from existing deployments | old previews keep a working production database connection string |
+| H5 | `GARMIN_PASSWORD`/`GARMIN_EMAIL` are read only by the legacy app (fallback password login; its setup also stores email and password in `platform_credentials`). The strict dashboard never reads them; gate F refuses to start with them set | not needed for gate F or G; no migration to Sensitive needed, delete them |
+| H6 | `GITHUB_PAT` lets the legacy app write `.github/workflows/sync.yml` (repository write). In strict mode the routes that use it are locked | not needed; a write-capable token in 40 deployment snapshots |
+| H7 | The legacy setup obtains Garmin tokens through the shared upstream Worker (`hevy2garmin-exchange-di.gkos.workers.dev`), which sees the tokens it issues. The production database may hold them and other credentials in plain text (not inspected: no database access was used) | gate F signs in directly; the old tokens should die with the password change |
+
+**Rotation: required** for `GITHUB_PAT` (revoke) and the **Garmin password**
+(stored readable since July, present in 40 deployment snapshots, possibly in
+plain text in the production database; changing it also cuts the legacy
+app's fallback login). **Recommended** for the Hevy API key (regenerate; the
+new key goes only into the sealed gate F vault). The production **Neon
+password** needs rotating only if any old deployment is kept (step 4);
+otherwise the database stays reachable only from the current production
+deployment, which is retired at gate G. No compromise was found; the
+rotation follows from secrets having been stored readable and copied into
+immutable snapshots.
+
+**Owner steps** (Vercel dashboard, about 15 minutes; each is reversible except
+deletions and rotations):
+
+1. **Stop the legacy sync**: project `hevy2garmin` → Settings → Cron Jobs →
+   *Disable Cron Jobs*.
+2. **Database to Production only**: Storage → `neon-champagne-mountain` →
+   Projects → `hevy2garmin` → environments: only *Production* (all 18 variables
+   at once).
+3. **Credentials**: Settings → Environment Variables: delete `GITHUB_PAT`,
+   `GARMIN_EMAIL`, `GARMIN_PASSWORD`; `HEVY_API_KEY` → *Production* only (or
+   delete it; the legacy app keeps its own copy in its database). Should you
+   ever keep a secret there, re-create it as *Sensitive*, Production only.
+4. **Old deployments**: Deployments → select every deployment except the current
+   production one (`dpl_3xaUyy9uvxcNnJQPUYHnjeFJibjA`, main 5e36566) → Delete.
+   They are legacy builds; strict mode never rolls back to them.
+5. **Rotate**: revoke the GitHub token used as `GITHUB_PAT`; change the Garmin
+   account password (sign in again on the phone app if asked); regenerate the
+   Hevy API key.
+6. Tell Claude: it re-checks read-only (cron state, variable targets,
+   deployment list, no new preview) and records the result here.
+
+Until step 2–3 are done, do not push any branch other than
+`migration/strict-inplace-20261127`.
