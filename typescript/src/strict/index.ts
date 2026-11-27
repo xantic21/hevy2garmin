@@ -7,3 +7,4 @@ export * from "./description";
 export * from "./ledger";
 export * from "./strict-sync";
 export * from "./ledger-contract";
+export * from "./duplicate-audit";

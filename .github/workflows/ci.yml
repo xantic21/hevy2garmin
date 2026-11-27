@@ -425,4 +425,4 @@ jobs:
         working-directory: web
         run: |
           TEST_DATABASE_URL="${DATABASE_URL:?}" npx vitest run --project upstream lib/strict-ledger-store.db.test.ts
-          TEST_DATABASE_URL="${DATABASE_URL:?}" npx vitest run --project strict lib/strict-e2e.db.strict.test.ts
+          TEST_DATABASE_URL="${DATABASE_URL:?}" npx vitest run --project strict lib/strict-e2e.db.strict.test.ts lib/strict-duplicate-audit.db.strict.test.ts

@@ -17,6 +17,9 @@ import {
   strictInPlaceSync,
   strictWriteBlock,
   firewallStats,
+  auditDuplicates,
+  gatherActivities,
+  STRICT_LISTING_LIMIT,
   type StrictSyncOptions,
   type StrictSyncResult,
   type StrictTrigger,
@@ -180,3 +183,48 @@ export const strictResolve = (sql: Sql, journalId: string, note: string) =>
 
 export const strictSetFrozen = (sql: Sql, frozen: boolean, reason: string | null) =>
   postgresStrictLedger(sql).setFrozen(frozen, reason);
+
+/**
+ * The read-only historical duplicate audit (contract item 6) over the last
+ * `days` days. Reads Hevy, Garmin (paged by date, truncation reported) and
+ * both ledgers; writes nothing anywhere.
+ */
+export async function strictDuplicateAudit(
+  sql: Sql,
+  days: number,
+  o: { fetchWorkouts?: () => Promise<HevyWorkout[]>; garminClientFactory?: () => Promise<GarminClient>; now?: Date; rateLimit?: RateLimitOptions } = {},
+) {
+  ensureStrictFirewall();
+  const now = o.now ?? new Date();
+  const span = Math.max(1, Math.min(365, Math.floor(days)));
+  const start = new Date(now.getTime() - span * 86_400_000).toISOString().slice(0, 10);
+  const end = now.toISOString().slice(0, 10);
+  const port = strictGarminPort(await (o.garminClientFactory ?? (() => getGarminClient()))(), o.rateLimit);
+  const [all, ledgerRows, bindings] = await Promise.all([
+    (o.fetchWorkouts ?? (() => fetchAllWorkouts()))(),
+    sql`SELECT hevy_id, garmin_activity_id, sync_method, status FROM synced_workouts`.catch(() => []),
+    postgresStrictLedger(sql).listBindings().catch(() => []),
+  ]);
+  const workouts = (all as Array<Record<string, unknown>>)
+    .filter((w) => String(w.start_time ?? "").slice(0, 10) >= start)
+    .map((w) => ({ id: String(w.id), title: (w.title as string | null) ?? null, start_time: (w.start_time as string | null) ?? null, end_time: (w.end_time as string | null) ?? null }));
+  const { activities, truncatedDays } = await gatherActivities(
+    (s, e) => port.activitiesByDate(s, e) as never,
+    { start, end },
+    STRICT_LISTING_LIMIT,
+  );
+  return auditDuplicates({
+    window: { start, end },
+    workouts,
+    activities,
+    ledger: (ledgerRows as Array<Record<string, unknown>>).map((r) => ({
+      hevyId: String(r.hevy_id),
+      garminActivityId: r.garmin_activity_id == null ? null : String(r.garmin_activity_id),
+      syncMethod: (r.sync_method as string | null) ?? null,
+      status: (r.status as string | null) ?? null,
+    })),
+    bindings,
+    truncatedDays,
+    now,
+  });
+}
