@@ -28,7 +28,7 @@ import {
 } from "hevy2garmin";
 import type { GarminClient } from "garmin-auth";
 import { getGarminClient } from "./garmin-upload";
-import { fetchAllWorkouts, type HevyWorkout } from "./hevy-sync";
+import { fetchAllWorkouts, fetchAllWorkoutsReadOnly, type HevyWorkout } from "./hevy-sync";
 import type { Sql } from "./pending-store";
 import { postgresSyncStore } from "./sync-store";
 import { loadCustomMappings, loadSyncSettings, loadSyncStartDate } from "./sync-settings";
@@ -60,9 +60,10 @@ export interface StrictRouteOptions {
   timing?: { verifyDelayMs?: number; rateLimit?: RateLimitOptions };
 }
 
-function deps(sql: Sql, o: Pick<StrictRouteOptions, "fetchWorkouts" | "garminClientFactory" | "resync" | "timing">) {
+function deps(sql: Sql, o: Pick<StrictRouteOptions, "fetchWorkouts" | "garminClientFactory" | "resync" | "timing" | "dryRun">) {
   const clientFactory = o.garminClientFactory ?? (() => getGarminClient());
-  const fetch = o.fetchWorkouts ?? (() => fetchAllWorkouts());
+  // A dry run reads Hevy without recording the key's status: no sync bookkeeping.
+  const fetch = o.fetchWorkouts ?? (() => (o.dryRun ? fetchAllWorkoutsReadOnly() : fetchAllWorkouts()));
   return {
     ledger: postgresStrictLedger(sql),
     legacy: postgresSyncStore(sql),
@@ -146,7 +147,7 @@ export async function runStrictSync(sql: Sql, o: StrictRouteOptions): Promise<St
 }
 
 export async function strictCandidates(sql: Sql, o: Pick<StrictRouteOptions, "fetchWorkouts"> = {}) {
-  return listStrictCandidates(deps(sql, o));
+  return listStrictCandidates(deps(sql, { ...o, dryRun: true }));
 }
 
 /** Everything the dashboard shows about strict mode. Read-only. */
@@ -229,7 +230,7 @@ export async function strictDuplicateAudit(
   const end = now.toISOString().slice(0, 10);
   const port = strictGarminPort(await (o.garminClientFactory ?? (() => getGarminClient()))(), o.rateLimit);
   const [all, ledgerRows, bindings] = await Promise.all([
-    (o.fetchWorkouts ?? (() => fetchAllWorkouts()))(),
+    (o.fetchWorkouts ?? (() => fetchAllWorkoutsReadOnly()))(),
     sql`SELECT hevy_id, garmin_activity_id, sync_method, status FROM synced_workouts`.catch(() => []),
     postgresStrictLedger(sql).listBindings().catch(() => []),
   ]);

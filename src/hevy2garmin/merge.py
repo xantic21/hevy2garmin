@@ -26,6 +26,7 @@ from hevy2garmin.garmin import (
     set_description,
 )
 from hevy2garmin.mapper import fit_exercise_strings, lookup_exercise
+from hevy2garmin.strict_mode import refuse_if_strict
 
 logger = logging.getLogger("hevy2garmin")
 
@@ -484,6 +485,7 @@ def attempt_merge(
     Returns MergeResult with merged=True if successful, or merged=False
     with a fallback_reason explaining why (no match, circuit breaker, etc.)
     """
+    refuse_if_strict("The Python merge path")
     global _consecutive_failures
 
     if _circuit_breaker_tripped():

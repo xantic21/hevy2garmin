@@ -317,7 +317,8 @@ describe("uncertain outcomes are resolved by read-back, never by retrying", () =
 
     // Now a real crash: journal left in put_sent, lease held by a dead owner.
     const t2 = setup();
-    await t2.ledger.claimBinding({ hevyId: "hevy-1", activityId: 9001, owner: "dead", now: NOW, leaseMs: 1000 });
+    // The dead writer claimed an hour ago; its lease has expired.
+    await t2.ledger.claimBinding({ hevyId: "hevy-1", activityId: 9001, owner: "dead", now: new Date(NOW.getTime() - 3_600_000), leaseMs: 1000 });
     const pre = await t2.ledger.saveBackup({ garminActivityId: 9001, hevyId: "hevy-1", kind: "pre_write", payload: { activityId: 9001, exerciseSets: [], activityName: "Strength", description: null, preservedMetrics: {} }, sha256: "" });
     const { sha256Canonical } = await import("../../src/strict");
     const fixed = await t2.ledger.saveBackup({ ...pre, kind: "pre_write", sha256: sha256Canonical(pre.payload) });
@@ -379,5 +380,105 @@ describe("concurrency and ordering", () => {
     expect((await strictWriteBlock(t.ledger)).blocked).toBe(true); // still frozen
     await t.ledger.setFrozen(false, null);
     expect((await strictWriteBlock(t.ledger)).blocked).toBe(false);
+  });
+});
+
+describe("closed re-audit findings", () => {
+  it("#3 reconcile refuses while the writer still holds its lease, so it cannot close an in-flight write", async () => {
+    const t = setup();
+    await t.ledger.claimBinding({ hevyId: "hevy-1", activityId: 9001, owner: "live-writer", now: NOW, leaseMs: 600_000 });
+    const pre = await t.ledger.saveBackup({ garminActivityId: 9001, hevyId: "hevy-1", kind: "pre_write", payload: { activityId: 9001, exerciseSets: [], activityName: "Strength", description: null, preservedMetrics: {} }, sha256: "" });
+    const { sha256Canonical } = await import("../../src/strict");
+    const b = await t.ledger.saveBackup({ ...pre, sha256: sha256Canonical(pre.payload) });
+    const e = await t.ledger.openJournal({ hevyId: "hevy-1", garminActivityId: 9001, step: "exercise_sets", owner: "live-writer", intendedSha256: "x", intended: { activityId: 9001, exerciseSets: [] }, backupId: b.id });
+    await t.ledger.advanceJournal(e.id, ["intent"], "put_sent");
+    const r = await reconcileStrictJournal(t.deps, e.id);
+    expect(r.status).toBe("refused");
+    expect((await t.ledger.getJournal(e.id))?.phase).toBe("put_sent");
+  });
+
+  it("#3 a writer whose journal entry was moved underneath it freezes instead of trusting its verdict", async () => {
+    const t = setup();
+    const ledger = t.ledger;
+    let raced = false;
+    const racing: StrictLedger = {
+      ...ledger,
+      advanceJournal: async (id, from, to, detail) => {
+        if (!raced && to === "verified") {
+          raced = true;
+          await ledger.advanceJournal(id, from, "not_applied", { by: "someone else" });
+        }
+        return ledger.advanceJournal(id, from, to, detail);
+      },
+    };
+    const r = await strictInPlaceSync({ ...t.deps, ledger: racing }, { dryRun: false, verifyDelayMs: 0 });
+    expect(r.status).toBe("needs_review");
+    expect((await ledger.getControl()).frozen).toBe(true);
+  });
+
+  it("#4 a mismatch found by reconcile protects the workout like a live mismatch", async () => {
+    const t = setup();
+    t.garmin.behaviour.readback = "throw_after_put";
+    t.garmin.behaviour.put = "apply_dropping_names";
+    const first = await t.run({ dryRun: false });
+    expect(first.status).toBe("uncertain");
+    await t.ledger.releaseBinding("hevy-1", "test-owner").catch(() => false);
+    t.garmin.behaviour.readback = "ok";
+    const rec = await reconcileStrictJournal(t.deps, first.journalIds[0]);
+    expect(rec.status).toBe("needs_review");
+    expect((await t.ledger.getBindingByHevy("hevy-1"))?.state).toBe("needs_review");
+    await resolveStrictJournal(t.ledger, first.journalIds[0], "checked");
+    await t.ledger.setFrozen(false, null);
+    const again = await t.run({ dryRun: false, targetHevyId: "hevy-1" });
+    expect(again.status).toBe("needs_review");
+    expect(t.garmin.calls.putSets).toBe(1);
+  });
+
+  it("#5 an evening workout west of UTC is found although Garmin lists by local date", async () => {
+    const { strictSearchRange } = await import("../../src/strict");
+    // 18:00-19:00 in Los Angeles on 26 Nov = 02:00-03:00 UTC on 27 Nov.
+    const range = strictSearchRange({ start_time: "2026-11-26T18:00:00-08:00", end_time: "2026-11-26T19:00:00-08:00" });
+    expect(range).toEqual({ start: "2026-11-26", end: "2026-11-28" });
+    const t = setup({
+      activities: [nativeActivity({ startTimeGMT: "2026-11-27 02:01:00", duration: 3500 })],
+      workouts: [hevyWorkout({ start_time: "2026-11-26T18:00:00-08:00", end_time: "2026-11-26T19:00:00-08:00" })],
+    });
+    // A Garmin that honours the range by LOCAL date (the activity is on the 26th in LA).
+    const listed = t.garmin.port.activitiesByDate;
+    t.garmin.port.activitiesByDate = async (s, e) => ("2026-11-26" >= s && "2026-11-26" <= e ? listed(s, e) : []);
+    const r = await strictInPlaceSync({ ...t.deps, now: () => new Date("2026-11-27T12:00:00Z") }, { dryRun: true });
+    expect(r.status).toBe("dry_run");
+    expect(r.activityId).toBe(9001);
+  });
+
+  it("#6 restoring the original removes the description strict mode added to an activity that had none", async () => {
+    const t = setup({ activities: [nativeActivity({ description: null })] });
+    t.garmin.behaviour.put = "apply_dropping_names";
+    const r = await t.run({ dryRun: false });
+    expect(r.status).toBe("needs_review");
+    t.garmin.behaviour.put = "apply";
+    // Put the block there as a completed metadata write would have.
+    t.garmin.state.get(9001)!.description = "[hevy2garmin]\nHevy: Push Day\n[/hevy2garmin]";
+    const restored = await restoreStrictBackup(t.deps, { journalId: r.journalIds[0], source: "original", confirm: true });
+    expect(restored.status).toBe("restored");
+    expect(t.garmin.state.get(9001)!.description ?? "").toBe("");
+  });
+
+  it("#9 a strict write is never resent by the rate limiter", async () => {
+    const { strictGarminPort } = await import("../../src/strict");
+    let calls = 0;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return new Response("rate limit", { status: 429 });
+    }) as typeof fetch;
+    try {
+      const client = { domain: "garmin.com", di_token: "t", refreshDiToken: async () => {} } as never;
+      const port = strictGarminPort(client, { delayMs: 0, baseWaitMs: 0, maxAttempts: 3, sleep: async () => {} });
+      await expect(port.putExerciseSets(1, { activityId: 1, exerciseSets: [] })).rejects.toThrow(/429/);
+      expect(calls).toBe(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

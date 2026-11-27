@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { resolveTerminal } from "@/lib/pending-store";
+import { getDb } from "@/lib/db";
+import { strictModeActive } from "@/lib/strict-mode";
 
 // Writes the app's own synced_workouts ledger at request time — never at build.
 export const dynamic = "force-dynamic";
@@ -33,6 +35,29 @@ export async function POST(
   }
 
   const reason = typeof body.reason === "string" && body.reason.trim() ? body.reason.trim() : null;
+
+  // Strict in-place mode: skipping only marks a workout nobody has touched yet.
+  // A legacy pending row is quarantined evidence of an upload, a ledger row or a
+  // strict binding records a write; deleting or overwriting either would lose
+  // track of what is on Garmin and could let the workout be written twice.
+  if (strictModeActive()) {
+    try {
+      const sql = getDb();
+      const [pending, synced, bound] = await Promise.all([
+        sql`SELECT 1 FROM pending_uploads WHERE hevy_id = ${hevyId} LIMIT 1`.catch(() => []),
+        sql`SELECT 1 FROM synced_workouts WHERE hevy_id = ${hevyId} LIMIT 1`.catch(() => []),
+        sql`SELECT 1 FROM strict_bindings WHERE hevy_id = ${hevyId} LIMIT 1`.catch(() => []),
+      ]);
+      if (pending.length || synced.length || bound.length) {
+        return NextResponse.json(
+          { ok: false, strict: true, error: "In strict in-place mode only an untouched workout can be skipped; this one has a pending, synced or bound record." },
+          { status: 423 },
+        );
+      }
+    } catch (err) {
+      return NextResponse.json({ ok: false, error: `DB unavailable: ${(err as Error).message}` }, { status: 503 });
+    }
+  }
 
   try {
     await resolveTerminal(hevyId, { status: "skipped", reason, source: "web" });

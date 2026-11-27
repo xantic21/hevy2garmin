@@ -438,24 +438,9 @@ export function WorkoutRow({
         <div className="mt-2 rounded-2xl border border-warm-dim/60 bg-warm-bg p-3">
           <p className="text-xs text-text">
             A legacy upload from before strict mode is still in flight for this workout. Strict mode quarantines it: it is
-            never retried, finalized or deleted automatically. Check the activity on Garmin Connect; skipping only changes
-            this dashboard.
+            never retried, finalized or deleted automatically. Check the activity on Garmin Connect; the record stays as
+            evidence until a person resolves it.
           </p>
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={() => resolve("skip")}
-              disabled={acting}
-              className="rounded-full bg-surface px-3 py-1.5 text-xs font-medium text-text-secondary ring-1 ring-border transition-colors hover:bg-surface-hover disabled:opacity-50"
-            >
-              Skip
-            </button>
-            {actionErr && (
-              <span className="text-xs text-danger" role="alert">
-                {actionErr}
-              </span>
-            )}
-          </div>
         </div>
       )}
 

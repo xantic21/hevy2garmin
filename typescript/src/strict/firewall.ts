@@ -83,11 +83,16 @@ function urlOf(input: unknown): URL | null {
     if (input instanceof URL) return input;
     if (typeof input === "string") return new URL(input);
     if (input && typeof input === "object" && "url" in input) return new URL(String((input as Request).url));
+    // Anything else fetch would stringify (a URL-like object from another realm, a custom class).
+    if (input != null) return new URL(String(input));
   } catch {
     return null;
   }
   return null;
 }
+
+/** Lower-case, trailing dots removed: `connectapi.garmin.com.` is the same host. */
+const hostOf = (url: URL) => url.hostname.toLowerCase().replace(/\.+$/, "");
 
 function headerOf(headers: unknown, name: string): string | null {
   if (!headers) return null;
@@ -126,22 +131,28 @@ function jsonBody(init: RequestInit | undefined): Record<string, unknown> | null
  */
 export function classifyGarminRequest(input: unknown, init?: RequestInit): GarminRequestClass {
   const url = urlOf(input);
-  if (!url) return { kind: "not_garmin" };
-  if (!GARMIN_HOST.test(url.hostname) && url.hostname !== FIREWALL_SELFTEST_HOST) return { kind: "not_garmin" };
+  // Default deny: a target that cannot be inspected cannot be shown to be harmless.
+  if (!url) return { kind: "forbidden", reason: "request target is not inspectable" };
+  const host = hostOf(url);
+  if (!GARMIN_HOST.test(host) && host !== FIREWALL_SELFTEST_HOST) return { kind: "not_garmin" };
 
   const req = input && typeof input === "object" && "method" in (input as object) ? (input as Request) : null;
   const method = String(init?.method ?? req?.method ?? "GET").toUpperCase();
-  const override = headerOf(init?.headers ?? req?.headers, "X-HTTP-Method-Override");
-  const effective = (override ?? method).toUpperCase();
-  const isRead = (method === "GET" || method === "HEAD") && (effective === "GET" || effective === "HEAD");
+  const overrideRaw = headerOf(init?.headers ?? req?.headers, "X-HTTP-Method-Override");
+  const override = overrideRaw == null ? null : overrideRaw.trim().toUpperCase();
+  const isRead = (method === "GET" || method === "HEAD") && (override == null || override === "GET" || override === "HEAD");
+  // A write is a PUT only when what goes on the wire is PUT, or POST tunnelling
+  // PUT. The header never upgrades another real method (DELETE, PATCH, ...).
+  const isPut = (method === "PUT" && (override == null || override === "PUT")) || (method === "POST" && override === "PUT");
+  const effective = isPut ? "PUT" : (override ?? method);
 
-  if (AUTH_HOSTS.test(url.hostname)) return { kind: "auth" };
+  if (AUTH_HOSTS.test(host)) return { kind: "auth" };
   if (url.pathname.startsWith("/oauth-service/oauth/") || url.pathname.startsWith("/di-oauth2-service/oauth/")) {
     return { kind: "auth" };
   }
   if (isRead) return { kind: "read" };
 
-  if (effective === "PUT") {
+  if (isPut) {
     const sets = SETS_PATH.exec(url.pathname);
     const activity = ACTIVITY_PATH.exec(url.pathname);
     const match = sets ?? activity;
@@ -199,7 +210,7 @@ export function isStrictModeViolation(e: unknown): boolean {
 
 function block(input: unknown, init: RequestInit | undefined, reason: string): never {
   const url = urlOf(input);
-  if (url?.hostname !== FIREWALL_SELFTEST_HOST) {
+  if (!url || hostOf(url) !== FIREWALL_SELFTEST_HOST) {
     shared.blocked += 1;
     shared.recent.unshift({
       at: new Date().toISOString(),

@@ -189,3 +189,32 @@ describe("one process, several copies of the engine (bundlers)", () => {
     expect(await firewallSelfTest(target)).toBe(true);
   });
 });
+
+describe("closed re-audit finding #2", () => {
+  it("an uninspectable target is refused, not waved through", () => {
+    const weird = { toString: () => "::not a url::" };
+    expect(classifyGarminRequest(weird, { method: "POST" }).kind).toBe("forbidden");
+  });
+
+  it("a URL-like object is classified by its string form", () => {
+    const like = { toString: () => "https://connectapi.garmin.com/upload-service/upload/.fit" };
+    expect(classifyGarminRequest(like, { method: "POST" }).kind).toBe("forbidden");
+  });
+
+  it("a trailing-dot host is still Garmin", () => {
+    expect(classifyGarminRequest("https://connectapi.garmin.com./upload-service/upload/.fit", { method: "POST" }).kind).toBe("forbidden");
+    expect(classifyGarminRequest("https://CONNECTAPI.GARMIN.COM../activity-service/activity/5", { method: "DELETE" }).kind).toBe("forbidden");
+  });
+
+  it("the override header never turns another real method into an allowed write", () => {
+    const body = JSON.stringify({ activityId: 123, activityName: "x" });
+    for (const method of ["DELETE", "PATCH", "OPTIONS"]) {
+      expect(
+        classifyGarminRequest(`${API}/activity-service/activity/123`, { method, headers: { "X-HTTP-Method-Override": "PUT" }, body }).kind,
+        method,
+      ).toBe("forbidden");
+    }
+    expect(classifyGarminRequest(`${API}/activity-service/activity/123`, { method: "PUT", headers: { "x-http-method-override": " put " }, body }).kind).toBe("write");
+    expect(classifyGarminRequest(`${API}/activity-service/activity/123`, { method: "PUT", headers: { "X-HTTP-Method-Override": "DELETE" }, body }).kind).toBe("forbidden");
+  });
+});

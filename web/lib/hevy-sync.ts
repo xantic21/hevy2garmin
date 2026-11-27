@@ -76,6 +76,15 @@ export async function fetchAllWorkouts(key?: string | null): Promise<HevyWorkout
 }
 
 /**
+ * The same list WITHOUT recording the key's status. For strict-mode dry runs
+ * and the read-only duplicate audit, which must not write sync bookkeeping.
+ */
+export async function fetchAllWorkoutsReadOnly(key?: string | null): Promise<HevyWorkout[]> {
+  const client = await getHevyClient(key);
+  return (await client.getAllWorkouts()) as HevyWorkout[];
+}
+
+/**
  * Record whether Hevy accepted the key, so a revoked one stops being invisible.
  *
  * When a key expires or is revoked, the scheduled sync keeps firing and every

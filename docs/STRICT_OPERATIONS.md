@@ -17,10 +17,10 @@ Hevy data. Each of those needs the owner's separate approval (gates E–G).
 | Immutable original backup, verified before any write | `strict_backups` insert-only triggers, one `original` per activity, SHA-256 read back before the PUT | contract + DB tests (UPDATE/DELETE/TRUNCATE refused, also after restore) |
 | Write-ahead journal; uncertain ⇒ blocked; no blind retry | `put_sent` durable before the request; read-back decides `verified` / `not_applied` / `needs_review` (+ freeze) | strict-sync tests: lost response, timeout, partial read-back, crash after `put_sent`, concurrent runs |
 | Native timing, HR and metrics preserved; user notes kept; no estimated HR/kcal in text | payload overlays watch timing when set counts match; 19 native metric paths compared after every write; description block appended between markers | model tests, e2e test |
-| Dry run writes nothing (Garmin AND database) | default `dryRun: true`; plan computed from reads only | dry-run tests compare full ledger dumps / row counts |
+| Dry run writes nothing to Garmin and no sync state to the database | default `dryRun: true`; plan from reads only; Hevy read without key-status bookkeeping. Only possible DB writes: refreshed Garmin tokens (keeps the session valid) and the idempotent schema bootstrap | dry-run tests compare full ledger dumps / row counts; re-audit #7 |
 | Automatic paths off | `H2G_STRICT_AUTOMATIC=enabled-by-owner` required; otherwise 423 | route matrix, CI production check |
-| Legacy pending uploads quarantined | strict engine refuses them; retry/abandon/finalize routes 423 | strict-sync + matrix tests |
-| Python CLI cannot write | `refuse_if_strict` before every Garmin/intervals.icu write | `tests/test_strict_mode.py` |
+| Legacy pending uploads quarantined | strict engine refuses them; retry/abandon/finalize routes 423; skip only for untouched workouts | strict-sync + matrix tests; re-audit #8 |
+| Python CLI cannot write | `refuse_if_strict` at every sync-engine entry point and ledger-changing CLI command, and before every Garmin/intervals.icu write | `tests/test_strict_mode.py`; re-audit #1 |
 
 ## 2. Configuration
 
@@ -41,9 +41,9 @@ deliberately, and a missing or misspelled one keeps the safe state.
 | Gate | State | Evidence / what remains |
 | --- | --- | --- |
 | A snapshot and quarantine | done | `vercel.json` (both roots) deployment off, `next.config.ts` refuses Vercel builds, no publish path, `typescript/` private with `prepublishOnly` refusal |
-| B end-to-end strict mode | done (synthetic) | engine 523 tests, web 822 tests incl. Postgres (strict project included), e2e through firewall + Postgres |
+| B end-to-end strict mode | done (synthetic) | engine 533 tests, web 802 tests + real-Postgres cases, e2e through firewall + Postgres |
 | C synthetic migration and full CI | done | `web/lib/db-qualification.db.test.ts` (fresh DB, previous fork-main schema, pg_dump/restore); all CI jobs |
-| D independent review | prepared | see `docs/STRICT_REAUDIT.md` (findings and their closure) |
+| D independent review | done, 9/9 findings closed | `docs/STRICT_REAUDIT.md`; no upload/delete path found |
 | E isolated staging | **owner** | procedure §7; synthetic data only |
 | F one owner-accepted real activity | **owner** | procedure §8 |
 | G production activation | **owner** | set `H2G_STRICT_AUTOMATIC` only after F; keep stop switches documented |
@@ -82,6 +82,8 @@ deliberately, and a missing or misspelled one keeps the safe state.
 - **Stop now**: dashboard "Stop all writes" (or `POST /api/strict/freeze {frozen:true}`);
   if the database is unreachable, set `H2G_STRICT_STOP=1` and restart.
 - **Lift** only when no journal entry is open: dashboard "Lift stop…" (typed `UNFREEZE`).
+- **Reconcile** ("Check by read-back") is refused while the writer still holds its lease;
+  it never writes to Garmin. A mismatch it finds marks the workout for review.
 - **Code rollback**: redeploy the previous *strict-qualified* image with the
   stop switch on. Never roll back to an upstream image or set legacy mode: that
   re-enables uploads and deletes. The strict tables are additive; older code

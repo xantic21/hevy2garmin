@@ -13,6 +13,7 @@ from pathlib import Path
 from hevy2garmin import db
 from hevy2garmin.config import is_configured, load_config, save_config
 from hevy2garmin.mapper import save_custom_mapping
+from hevy2garmin.strict_mode import refuse_if_strict
 from hevy2garmin.sync import sync, sync_routines
 
 
@@ -196,6 +197,7 @@ def cmd_init(args: argparse.Namespace) -> None:
 
 def cmd_sync(args: argparse.Namespace) -> None:
     """Sync Hevy workouts to Garmin."""
+    refuse_if_strict("`hevy2garmin sync`")
     _require_config(args)
 
     overrides = {}
@@ -225,6 +227,7 @@ def cmd_sync(args: argparse.Namespace) -> None:
 
 def cmd_sync_routines(args: argparse.Namespace) -> None:
     """Sync Hevy routines to Garmin as planned workouts."""
+    refuse_if_strict("`hevy2garmin sync-routines`")
     _require_config(args)
 
     if args.list:
@@ -332,6 +335,7 @@ def cmd_unmapped(args: argparse.Namespace) -> None:
 
 def cmd_unsync(args: argparse.Namespace) -> None:
     """Remove sync records so workouts can be re-synced."""
+    refuse_if_strict("`hevy2garmin unsync`")
     if args.all:
         if not args.confirm:
             print("✗ --all requires --confirm to prevent accidents")
@@ -357,7 +361,6 @@ def cmd_unsync(args: argparse.Namespace) -> None:
         try:
             config = load_config()
             from hevy2garmin.garmin import get_client
-            from hevy2garmin.strict_mode import refuse_if_strict
 
             refuse_if_strict("Deleting a Garmin activity from the CLI")
             client = get_client(config.get("garmin_email"))
@@ -398,6 +401,7 @@ def _garmin_client_from_config():
 
 
 def cmd_reconcile(args: argparse.Namespace) -> None:
+    refuse_if_strict("`hevy2garmin reconcile`")
     from hevy2garmin.sync import reconcile_pending
 
     result = reconcile_pending(db.get_db(), _garmin_client_from_config(), args.hevy_id)
@@ -405,6 +409,7 @@ def cmd_reconcile(args: argparse.Namespace) -> None:
 
 
 def cmd_retry_failed(args: argparse.Namespace) -> None:
+    refuse_if_strict("`hevy2garmin retry-failed`")
     if not args.confirm:
         print("✗ retry-failed requires --confirm")
         sys.exit(1)
@@ -436,6 +441,7 @@ def cmd_retry_failed(args: argparse.Namespace) -> None:
 
 
 def cmd_abandon_pending(args: argparse.Namespace) -> None:
+    refuse_if_strict("`hevy2garmin abandon-pending`")
     if args.confirm != args.hevy_id:
         print(f"✗ confirm the risk with: --confirm {args.hevy_id}")
         sys.exit(1)
@@ -449,6 +455,7 @@ def cmd_abandon_pending(args: argparse.Namespace) -> None:
 
 
 def cmd_mark_synced(args: argparse.Namespace) -> None:
+    refuse_if_strict("`hevy2garmin mark-synced`")
     if args.garmin_id is not None and args.garmin_id <= 0:
         print("✗ Garmin ID must be a positive integer")
         sys.exit(1)
@@ -463,6 +470,7 @@ def cmd_mark_synced(args: argparse.Namespace) -> None:
 
 
 def cmd_skip(args: argparse.Namespace) -> None:
+    refuse_if_strict("`hevy2garmin skip`")
     db.resolve_terminal(
         args.hevy_id, status="skipped", reason=(args.reason or "")[:1000], source="manual"
     )

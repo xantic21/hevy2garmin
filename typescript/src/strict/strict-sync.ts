@@ -26,7 +26,6 @@ import { randomUUID } from "node:crypto";
 import type { GarminClient } from "garmin-auth";
 import { getActivitiesByDate, getActivityDetail, getActivityExerciseSets, pushExerciseSets, updateActivityMetadata } from "../garmin";
 import type { CandidateActivity } from "../merge-match";
-import { mergeSearchRange } from "../merge-match";
 import { createRateLimiter, type RateLimitOptions } from "../rate-limit";
 import type { SetTiming } from "../exercise-sets";
 import type { CustomMappings } from "../mapper";
@@ -49,6 +48,20 @@ import {
   type SetMismatch,
 } from "./verify";
 
+/**
+ * The Garmin date range to list. Garmin filters by each activity's LOCAL date,
+ * so a UTC range can miss an evening session west of UTC (or a morning one far
+ * east). One day either side of the UTC dates covers every timezone (UTC−12 to
+ * UTC+14); the matcher then decides by real instants.
+ */
+export function strictSearchRange(workout: { start_time?: unknown; end_time?: unknown }): { start: string; end: string } | null {
+  const s = Date.parse(String(workout.start_time ?? ""));
+  const e = Date.parse(String(workout.end_time ?? ""));
+  if (!Number.isFinite(s) || !Number.isFinite(e) || e < s) return null;
+  const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+  return { start: day(s - 86_400_000), end: day(e + 86_400_000) };
+}
+
 /** The Garmin surface strict mode can reach. There is no upload and no delete. */
 export interface StrictGarminPort {
   activitiesByDate(startDate: string, endDate: string): Promise<CandidateActivity[]>;
@@ -63,14 +76,17 @@ export const STRICT_LISTING_LIMIT = 50;
 
 export function strictGarminPort(client: GarminClient, options: RateLimitOptions = {}): StrictGarminPort {
   const limit = createRateLimiter(options);
+  // Writes are paced but never resent: a 429 or a timeout on a PUT is an
+  // uncertain outcome that only read-back may decide, never a blind retry.
+  const limitWrite = createRateLimiter({ ...options, maxAttempts: 1 });
   return Object.freeze({
     activitiesByDate: async (s: string, e: string) =>
       (await limit(() => getActivitiesByDate(client, s, e, STRICT_LISTING_LIMIT))) as unknown as CandidateActivity[],
     activityDetail: (id: number) => limit(() => getActivityDetail(client, id)),
     exerciseSets: (id: number) => limit(() => getActivityExerciseSets(client, id)),
-    putExerciseSets: (id: number, payload: StrictSetsPayload) => limit(() => pushExerciseSets(client, id, payload)),
+    putExerciseSets: (id: number, payload: StrictSetsPayload) => limitWrite(() => pushExerciseSets(client, id, payload)),
     updateActivityMetadata: (id: number, fields: { activityName?: string; description?: string }) =>
-      limit(() => updateActivityMetadata(client, id, fields)),
+      limitWrite(() => updateActivityMetadata(client, id, fields)),
   });
 }
 
@@ -298,7 +314,7 @@ export async function strictInPlaceSync(deps: StrictSyncDeps, options: StrictSyn
 
   // 4. Find the one original activity. Any read failure defers.
   const garmin = await deps.garmin();
-  const range = mergeSearchRange(workout);
+  const range = strictSearchRange(workout);
   if (!range) return result({ ...idBase, status: "needs_review", reason: "workout has no usable interval", issues: intent.issues });
   let listing: CandidateActivity[];
   try {
@@ -640,26 +656,35 @@ async function verifyJournalEntry(
     if (f.activityName !== undefined && name !== f.activityName) {
       metadata.push(`activityName: expected ${JSON.stringify(f.activityName)}, got ${JSON.stringify(name)}`);
     }
-    if (f.description !== undefined && desc !== f.description) metadata.push("description differs from what was written");
+    if (f.description !== undefined && (desc ?? "") !== f.description) metadata.push("description differs from what was written");
   }
   const setsUnchanged =
     spec.intendedSets == null || compareActiveSets({ exerciseSets: spec.before.exerciseSets }, readSets).length === 0;
   const metaUnchanged =
     spec.intendedMeta == null ||
     ((spec.intendedMeta.activityName === undefined || name === spec.before.activityName) &&
-      (spec.intendedMeta.description === undefined || desc === spec.before.description));
+      (spec.intendedMeta.description === undefined || (desc ?? "") === (spec.before.description ?? "")));
   const from: JournalPhase[] = ["put_sent", "put_acknowledged", "uncertain"];
 
+  // Every closing transition is a compare-and-set. If it fails, someone else
+  // moved this entry while we were reading back (a concurrent reconcile, an
+  // operator): our verdict may be stale, so writes are frozen for a person.
+  const conflict = async (): Promise<GuardedOutcome> => {
+    const reason = `journal ${journalId} changed while its read-back ran; strict writes are frozen for review`;
+    await ledger.setFrozen(true, reason);
+    return { status: "needs_review", reason, journalId, sent };
+  };
   if (!sets.length && !metadata.length && !metrics.length) {
-    await ledger.advanceJournal(journalId, from, "verified", { verifiedAt: new Date().toISOString() });
+    if (!(await ledger.advanceJournal(journalId, from, "verified", { verifiedAt: new Date().toISOString() }))) return conflict();
     return { status: "verified", reason: null, journalId, sent };
   }
   if (setsUnchanged && metaUnchanged && !metrics.length) {
     const reason = `Garmin did not apply the ${spec.step} write${sendError ? `: ${sendError}` : ""}; the activity is unchanged`;
-    await ledger.advanceJournal(journalId, from, "not_applied", { reason });
+    if (!(await ledger.advanceJournal(journalId, from, "not_applied", { reason }))) return conflict();
     return { status: "not_applied", reason, journalId, sent };
   }
   const reason = `read-back does not match the ${spec.step} write; strict writes are frozen until a person reviews journal ${journalId}`;
+  // Frozen whether or not this transition wins: a mismatch is never ignored.
   await ledger.advanceJournal(journalId, from, "needs_review", { sets, metrics, metadata });
   await ledger.setFrozen(true, `read-back mismatch on activity ${spec.activityId} (journal ${journalId})`);
   return { status: "needs_review", reason, journalId, sent, mismatches: { sets, metrics, metadata } };
@@ -702,6 +727,13 @@ export async function reconcileStrictJournal(
   if (!["put_sent", "put_acknowledged", "uncertain"].includes(entry.phase)) {
     return { status: entry.phase === "needs_review" ? "needs_review" : "not_open", reason: `journal is ${entry.phase}`, journalId, writes: 0 };
   }
+  // The writer may still be between its PUT and its own read-back. Reading back
+  // now could see the old state and close the entry as not applied just before
+  // the PUT lands. Wait until the writer's lease has expired or been released.
+  const binding = await deps.ledger.getBindingByHevy(entry.hevyId);
+  if (binding?.leaseOwner === entry.owner && binding.leaseUntil && Date.parse(binding.leaseUntil) > now.getTime()) {
+    return { status: "refused", reason: "the writer still holds its lease; try again after it finishes or the lease expires", journalId, writes: 0 };
+  }
   const backup = await deps.ledger.getBackup(entry.backupId);
   if (!backup || sha256Canonical(backup.payload) !== backup.sha256) {
     await deps.ledger.advanceJournal(journalId, [entry.phase], "needs_review", { reason: "backup missing or corrupt" });
@@ -719,6 +751,10 @@ export async function reconcileStrictJournal(
     0,
     null,
   );
+  if (out.status === "needs_review") {
+    // Same protection as a live mismatch: no manual sync may write this workout again.
+    await deps.ledger.setBindingState(entry.hevyId, "needs_review", out.reason ?? "read-back mismatch found by reconcile");
+  }
   if (out.status === "verified" || out.status === "not_applied") {
     // The rest of that sync (metadata, ledger row) is resumed by the next
     // manual sync of the workout, which finds these sets already applied.
@@ -779,7 +815,9 @@ export async function restoreStrictBackup(
   const setsPayload = { activityId, exerciseSets: target.exerciseSets };
   const metaFields: { activityName?: string; description?: string } = {};
   if (target.activityName != null && target.activityName !== snapshot.activityName) metaFields.activityName = target.activityName;
-  if (target.description != null && target.description !== snapshot.description) metaFields.description = target.description;
+  // An original without a description is restored by clearing what strict
+  // mode added (Garmin stores "no description" as empty).
+  if ((target.description ?? "") !== (snapshot.description ?? "")) metaFields.description = target.description ?? "";
 
   // A restore runs while writes are frozen (that is usually why it is needed),
   // so it bypasses the freeze check but still journals and verifies.

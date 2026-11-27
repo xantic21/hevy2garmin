@@ -41,6 +41,7 @@ from hevy2garmin.routine import (
     routine_to_garmin_workout,
     workout_content_hash,
 )
+from hevy2garmin.strict_mode import refuse_if_strict
 
 try:  # rate-limit HR fetches like other Garmin data calls
     from garmin_auth import RateLimiter
@@ -115,6 +116,7 @@ def _complete(store, hevy_id: str, payload: dict, activity_id: int) -> None:
 
 def finalize_pending(store, client, pending: dict) -> SyncOneResult:
     """Resume remote finalization from a durable checkpoint; never uploads."""
+    refuse_if_strict("The Python sync engine (finalize_pending)")
     wid = pending["hevy_id"]
     payload = pending.get("payload") or {}
     activity_id = int(pending["garmin_activity_id"])
@@ -188,6 +190,7 @@ def finalize_pending(store, client, pending: dict) -> SyncOneResult:
 
 def reconcile_pending(store, client, hevy_id: str) -> SyncOneResult:
     """Discover an accepted activity or resume finalization without uploading."""
+    refuse_if_strict("The Python sync engine (reconcile_pending)")
     pending = store.get_pending(hevy_id)
     if not pending:
         raise ValueError(f"no pending operation for {hevy_id}")
@@ -366,6 +369,7 @@ def sync_one_workout(
 
     Raises on FIT generation / upload failures so callers can map errors.
     """
+    refuse_if_strict("The Python sync engine (sync_one_workout)")
     merge_store = database if database is not None else db
     wid = workout.get("id", "unknown")
     title = workout.get("title", "Workout")
@@ -750,6 +754,7 @@ def sync(
     Returns:
         Dict with sync stats: synced, skipped, failed, total, unmapped.
     """
+    refuse_if_strict("The Python sync engine (sync)")
     cfg = config or load_config()
     store = _resolve_store()
     hevy_api_key = overrides.get("hevy_api_key") or cfg.get("hevy_api_key")
@@ -1183,6 +1188,7 @@ def sync_routines(
     Returns:
         Dict with stats: created, skipped, failed, scheduled, total.
     """
+    refuse_if_strict("The Python sync engine (sync_routines)")
     cfg = config or load_config()
     store = _resolve_store()
     hevy_api_key = overrides.get("hevy_api_key") or cfg.get("hevy_api_key")
@@ -1255,6 +1261,7 @@ def sync_routine(
     ``row`` is a render-ready dict for the routines card. Raises ``ValueError`` when the
     routine isn't found in the Hevy account.
     """
+    refuse_if_strict("The Python sync engine (sync_routine)")
     cfg = config or load_config()
     store = _resolve_store()
     hevy_api_key = overrides.get("hevy_api_key") or cfg.get("hevy_api_key")
@@ -1360,6 +1367,7 @@ def schedule_routine(
     date on the routine record for display. Returns
     ``{"scheduled": n, "workout_id": id, "dates": [...]}``.
     """
+    refuse_if_strict("The Python sync engine (schedule_routine)")
     if not dates:
         raise ValueError("no dates to schedule")
 
@@ -1406,6 +1414,7 @@ def unschedule_routine_entry(
     Unscheduling is best-effort — an entry already gone on Garmin just 404s — but
     the local row is always dropped afterward so the UI reflects the removal.
     """
+    refuse_if_strict("The Python sync engine (unschedule_routine_entry)")
     cfg = config or load_config()
     store = _resolve_store()
     garmin_email = overrides.get("garmin_email") or cfg.get("garmin_email")
