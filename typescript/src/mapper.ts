@@ -7,6 +7,13 @@ export const UNKNOWN_SUBCATEGORY = 0;
 export type CustomMappings = Record<string, [number, number]>;
 
 /**
+ * Where a mapping came from. Additive: strict mode refuses an `unmapped`
+ * exercise instead of guessing TOTAL_BODY, and records the source of every
+ * other one in its journal so a wrong mapping can be traced afterwards.
+ */
+export type MappingSource = "custom" | "builtin" | "template" | "normalized_custom" | "normalized_builtin" | "unmapped";
+
+/**
  * A name reduced to its alphanumeric skeleton, for the fallback below.
  *
  * `[^a-z0-9]` after lowercasing, matching `_normalize_name` at
@@ -58,21 +65,21 @@ export function lookupExercise(
   hevyName: string,
   templateId?: string | null,
   custom?: CustomMappings,
-): { category: number; subcategory: number; displayName: string } {
+): { category: number; subcategory: number; displayName: string; source: MappingSource } {
   // 1. Custom mappings take priority.
   if (custom && hevyName in custom) {
     const [c, s] = custom[hevyName];
-    return { category: c, subcategory: s, displayName: hevyName };
+    return { category: c, subcategory: s, displayName: hevyName, source: "custom" };
   }
   // 2. Built-in English-name table, hand-maintained and covered by tests.
   if (hevyName in HEVY_TO_GARMIN) {
     const [c, s] = HEVY_TO_GARMIN[hevyName];
-    return { category: c, subcategory: s, displayName: hevyName };
+    return { category: c, subcategory: s, displayName: hevyName, source: "builtin" };
   }
   // 3. Language-independent template id (#173), for names the table lacks.
   if (templateId && templateId in TEMPLATE_TO_GARMIN) {
     const [c, s] = TEMPLATE_TO_GARMIN[templateId];
-    return { category: c, subcategory: s, displayName: hevyName };
+    return { category: c, subcategory: s, displayName: hevyName, source: "template" };
   }
   // 4. Normalized fallback: tolerates formatting drift, never fuzzy.
   //
@@ -86,12 +93,12 @@ export function lookupExercise(
     if (custom) {
       for (const [name, pair] of Object.entries(custom)) {
         if (normalizeExerciseName(name) === norm) {
-          return { category: pair[0], subcategory: pair[1], displayName: hevyName };
+          return { category: pair[0], subcategory: pair[1], displayName: hevyName, source: "normalized_custom" };
         }
       }
     }
     const pair = getNormalizedIndex()[norm];
-    if (pair) return { category: pair[0], subcategory: pair[1], displayName: hevyName };
+    if (pair) return { category: pair[0], subcategory: pair[1], displayName: hevyName, source: "normalized_builtin" };
   }
-  return { category: UNKNOWN_CATEGORY, subcategory: UNKNOWN_SUBCATEGORY, displayName: hevyName };
+  return { category: UNKNOWN_CATEGORY, subcategory: UNKNOWN_SUBCATEGORY, displayName: hevyName, source: "unmapped" };
 }

@@ -42,6 +42,10 @@
       "types": "./dist/sync/index.d.ts",
       "default": "./dist/sync/index.js"
     },
+    "./strict": {
+      "types": "./dist/strict/index.d.ts",
+      "default": "./dist/strict/index.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [

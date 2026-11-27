@@ -1,0 +1,141 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  classifyGarminRequest,
+  createStrictFetch,
+  installStrictGarminFirewall,
+  isStrictFirewallInstalled,
+  StrictModeViolation,
+  withGarminWriteCapability,
+} from "../../src/strict";
+import { deleteActivity, pushExerciseSets, renameActivity, updateActivityMetadata, uploadFit } from "../../src/garmin";
+
+const API = "https://connectapi.garmin.com";
+const put = (body: unknown) => ({
+  method: "POST",
+  headers: { "Content-Type": "application/json", "X-HTTP-Method-Override": "PUT" },
+  body: JSON.stringify(body),
+});
+
+describe("classifyGarminRequest", () => {
+  it("passes non-Garmin hosts, reads and authentication", () => {
+    expect(classifyGarminRequest("https://api.hevyapp.com/v1/workouts", { method: "POST" }).kind).toBe("not_garmin");
+    expect(classifyGarminRequest("https://evilgarmin.com/x", { method: "DELETE" }).kind).toBe("not_garmin");
+    expect(classifyGarminRequest(`${API}/activity-service/activity/1/exerciseSets`).kind).toBe("read");
+    expect(classifyGarminRequest("https://diauth.garmin.com/di-oauth2-service/oauth/token", { method: "POST" }).kind).toBe("auth");
+    expect(classifyGarminRequest("https://sso.garmin.com/sso/signin", { method: "POST" }).kind).toBe("auth");
+    expect(classifyGarminRequest(`${API}/oauth-service/oauth/exchange/user/2.0`, { method: "POST" }).kind).toBe("auth");
+    expect(classifyGarminRequest(`${API}/di-oauth2-service/oauth/grant/service_ticket`, { method: "POST" }).kind).toBe("auth");
+  });
+
+  it.each([
+    ["FIT upload", `${API}/upload-service/upload/.fit`, { method: "POST", body: "x" }],
+    ["activity delete", `${API}/activity-service/activity/5`, { method: "DELETE" }],
+    ["delete via override", `${API}/activity-service/activity/5`, { method: "POST", headers: { "x-http-method-override": "DELETE" } }],
+    ["workout create", `${API}/workout-service/workout`, { method: "POST", body: "{}" }],
+    ["workout schedule", `${API}/workout-service/schedule/7`, { method: "POST", body: "{}" }],
+    ["gear link", `${API}/gear-service/gear/link/a/activity/5`, { method: "PUT" }],
+    ["activity type change", `${API}/activity-service/activity/5`, put({ activityId: 5, activityTypeDTO: { typeKey: "running" } })],
+    ["sets for another id", `${API}/activity-service/activity/5/exerciseSets`, put({ activityId: 6, exerciseSets: [] })],
+    ["opaque body", `${API}/activity-service/activity/5/exerciseSets`, { method: "PUT", body: new Uint8Array([1]) as unknown as BodyInit }],
+    ["GET with write override", `${API}/activity-service/activity/5`, { method: "GET", headers: { "X-HTTP-Method-Override": "PUT" } }],
+  ])("forbids %s", (_name, url, init) => {
+    expect(classifyGarminRequest(url, init as RequestInit).kind).toBe("forbidden");
+  });
+
+  it("recognises exactly the two strict writes", () => {
+    expect(classifyGarminRequest(`${API}/activity-service/activity/5/exerciseSets`, put({ activityId: 5, exerciseSets: [] }))).toEqual({
+      kind: "write",
+      write: "exercise_sets",
+      activityId: 5,
+    });
+    expect(classifyGarminRequest(`${API}/activity-service/activity/5`, put({ activityId: 5, activityName: "Push", description: "x" }))).toEqual({
+      kind: "write",
+      write: "metadata",
+      activityId: 5,
+    });
+  });
+});
+
+describe("createStrictFetch", () => {
+  const ok = () => vi.fn(async () => new Response(null, { status: 204 }));
+
+  it("never reaches the network for a refused request", async () => {
+    const base = ok();
+    const f = createStrictFetch(base as unknown as typeof fetch);
+    await expect(f(`${API}/upload-service/upload/.fit`, { method: "POST" })).rejects.toBeInstanceOf(StrictModeViolation);
+    await expect(f(`${API}/activity-service/activity/5`, { method: "DELETE" })).rejects.toBeInstanceOf(StrictModeViolation);
+    expect(base).not.toHaveBeenCalled();
+  });
+
+  it("admits a write only inside a scope for that activity and kind", async () => {
+    const base = ok();
+    const f = createStrictFetch(base as unknown as typeof fetch);
+    const url = `${API}/activity-service/activity/5/exerciseSets`;
+    await expect(f(url, put({ activityId: 5, exerciseSets: [] }))).rejects.toThrow(/outside a capability scope/);
+    await expect(
+      withGarminWriteCapability({ activityId: 6, allow: new Set(["exercise_sets"]) }, () => f(url, put({ activityId: 5, exerciseSets: [] }))),
+    ).rejects.toThrow(/not 5/);
+    await expect(
+      withGarminWriteCapability({ activityId: 5, allow: new Set(["metadata"]) }, () => f(url, put({ activityId: 5, exerciseSets: [] }))),
+    ).rejects.toThrow(/not granted/);
+    expect(base).not.toHaveBeenCalled();
+    await withGarminWriteCapability({ activityId: 5, allow: new Set(["exercise_sets"]) }, () => f(url, put({ activityId: 5, exerciseSets: [] })));
+    expect(base).toHaveBeenCalledTimes(1);
+  });
+
+  it("isolates concurrent scopes from each other", async () => {
+    const base = ok();
+    const f = createStrictFetch(base as unknown as typeof fetch);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const holder = withGarminWriteCapability({ activityId: 5, allow: new Set(["exercise_sets"]) }, async () => {
+      await gate;
+      return f(`${API}/activity-service/activity/5/exerciseSets`, put({ activityId: 5, exerciseSets: [] }));
+    });
+    // A request that starts while the other scope is open is NOT inside it.
+    const outsider = f(`${API}/activity-service/activity/5/exerciseSets`, put({ activityId: 5, exerciseSets: [] }));
+    await expect(outsider).rejects.toBeInstanceOf(StrictModeViolation);
+    release();
+    await holder;
+    expect(base).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("installStrictGarminFirewall over the real Garmin functions", () => {
+  let uninstall: () => void = () => {};
+  afterEach(() => uninstall());
+
+  const fakeClient = () =>
+    ({
+      domain: "garmin.com",
+      di_token: "t",
+      refreshDiToken: async () => {},
+      connectapi: async () => [],
+    }) as never;
+
+  it("refuses upload, delete and out-of-scope edits made by the engine's own functions", async () => {
+    const network = vi.fn(async () => new Response(JSON.stringify({}), { status: 200 }));
+    const target = { fetch: network as unknown as typeof fetch };
+    uninstall = installStrictGarminFirewall(target);
+    const original = globalThis.fetch;
+    globalThis.fetch = target.fetch;
+    try {
+      expect(isStrictFirewallInstalled(target)).toBe(true);
+      await expect(uploadFit(fakeClient(), new Uint8Array([1, 2]), undefined)).rejects.toBeInstanceOf(StrictModeViolation);
+      await expect(deleteActivity(fakeClient(), 5)).rejects.toBeInstanceOf(StrictModeViolation);
+      await expect(renameActivity(fakeClient(), 5, "x")).rejects.toBeInstanceOf(StrictModeViolation);
+      await expect(pushExerciseSets(fakeClient(), 5, { activityId: 5, exerciseSets: [] })).rejects.toBeInstanceOf(StrictModeViolation);
+      expect(network).not.toHaveBeenCalled();
+      await withGarminWriteCapability({ activityId: 5, allow: new Set(["exercise_sets", "metadata"]) }, async () => {
+        await pushExerciseSets(fakeClient(), 5, { activityId: 5, exerciseSets: [] });
+        await updateActivityMetadata(fakeClient(), 5, { activityName: "Push" });
+      });
+      expect(network).toHaveBeenCalledTimes(2);
+      // Installing twice is a no-op, not a double wrap.
+      installStrictGarminFirewall(target)();
+      expect(isStrictFirewallInstalled(target)).toBe(true);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+});

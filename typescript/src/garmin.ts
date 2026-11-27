@@ -219,6 +219,39 @@ export async function getActivity(client: GarminClient, activityId: number): Pro
   };
 }
 
+/**
+ * One activity's full detail JSON, or null on 404. Strict mode reads it before
+ * and after every write to prove the activity id, timing, heart rate and other
+ * native metrics were preserved, so nothing is narrowed or renamed here.
+ */
+export async function getActivityDetail(
+  client: GarminClient,
+  activityId: number,
+): Promise<Record<string, unknown> | null> {
+  const url = `https://connectapi.${client.domain}/activity-service/activity/${activityId}`;
+  const req = () => fetch(url, { headers: nativeHeaders(client.di_token!, { NK: "NT" }) });
+  let res = await req();
+  if (res.status === 401) { await client.refreshDiToken(); res = await req(); }
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`get activity detail ${activityId} → ${res.status}`);
+  return (await res.json()) as Record<string, unknown>;
+}
+
+/**
+ * Update only an activity's name and/or description in ONE request. Strict
+ * mode's metadata step; the firewall admits exactly these keys.
+ */
+export async function updateActivityMetadata(
+  client: GarminClient,
+  activityId: number,
+  fields: { activityName?: string; description?: string },
+): Promise<void> {
+  const body: Record<string, unknown> = { activityId };
+  if (fields.activityName !== undefined) body.activityName = fields.activityName;
+  if (fields.description !== undefined) body.description = fields.description;
+  await postJson(client, `/activity-service/activity/${activityId}`, body);
+}
+
 /** Delete an activity. */
 export async function deleteActivity(client: GarminClient, activityId: number): Promise<void> {
   const url = `https://connectapi.${client.domain}/activity-service/activity/${activityId}`;

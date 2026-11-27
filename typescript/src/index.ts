@@ -13,3 +13,5 @@ export * from "./intervals";
 export * from "./exercise-sets";
 export * from "./hr";
 export * from "./engine-identity";
+export * from "./strict-merge-policy";
+export * from "./strict";
