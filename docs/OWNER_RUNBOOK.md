@@ -58,8 +58,8 @@ Everything goes into `%LOCALAPPDATA%\hevy2garmin-gate-f`: local, not OneDrive.
 
 **Binding values** (STRICT_GATE_F.md §3c):
 
-- code commit **`338be15a7c4e0bce83a02205a25949d5f9e3af92`**
-- `gate-f.cmd` SHA-256 **`746dc29357d466a20a7a4960b65069b1d6b5125b7b192900ba6d3698dd86f4d2`**
+- code commit **`5a2432fe8a5f25df1eadfbaf0c682ce8595c2bbc`**
+- `gate-f.cmd` SHA-256 **`028f59b70e0573b2c22a08b436d30a876683a725cafc3b9b5fee74ed5bd7f179`**
 
 The file pins everything else: Node.js v22.23.5 (official ZIP, SHA-256
 `4a191082…a0e3`), `node.exe`, the source manifest and the launcher.
@@ -68,11 +68,11 @@ The file pins everything else: Node.js v22.23.5 (official ZIP, SHA-256
 | --- | --- |
 | 9 | Record a strength workout with the watch and log it in Hevy. Wait until both apps show it. Note the **Hevy workout id** (in the workout's link) and the **Garmin activity id** (`connect.garmin.com/modern/activity/<id>`) |
 | 10 | Neon console → **New project** `hevy2garmin-live` (free plan) → copy its connection string |
-| 11 | Start menu → "Command Prompt" (not as administrator). Run the three commands below. Then compare the printed hash with `746dc29357d466a20a7a4960b65069b1d6b5125b7b192900ba6d3698dd86f4d2`; if it differs, stop |
-| 12 | `gate-f.cmd setup 338be15a7c4e0bce83a02205a25949d5f9e3af92`. It downloads and checks Node.js and the source, then builds; this takes 10–20 minutes. Expect `build manifest SHA-256 …` at the end; note that value |
+| 11 | Start menu → "Command Prompt" (not as administrator). Run the three commands below. Then compare the printed hash with `028f59b70e0573b2c22a08b436d30a876683a725cafc3b9b5fee74ed5bd7f179`; if it differs, stop |
+| 12 | `gate-f.cmd setup 5a2432fe8a5f25df1eadfbaf0c682ce8595c2bbc`. It downloads and checks Node.js and the source, then builds; this takes 10–20 minutes. Expect `build manifest SHA-256 …` at the end; note that value |
 | 13 | `gate-f.cmd selftest`. Expect `SELFTEST PASS … 127.0.0.1:8096 only`. It runs without any data |
 | 14 | `gate-f.cmd prepare`. Paste the Neon connection string (the input stays hidden), then type the Hevy workout id and the Garmin activity id. It checks the database over verified TLS and that it is empty, then writes `private\gate-f.env`, readable by you only. It prints the **dashboard password** |
-| 15 | `gate-f.cmd start`. Expect `READY http://127.0.0.1:8096`, and in the line below it `commit 338be15a7c4e…`; if the commit differs, stop. Leave this window open |
+| 15 | `gate-f.cmd start`. Expect `READY http://127.0.0.1:8096`, and in the line below it `commit 5a2432fe8a5f…`; if the commit differs, stop. Leave this window open |
 | 16 | Open `http://127.0.0.1:8096` in the browser → sign in → Setup: connect **Hevy** (the new key) and **Garmin** (email, password, MFA code) |
 | 17 | Dashboard → **Gate F** panel: **1 · Preview**. Check the activity id, set count, timing and name |
 | 18 | Type the confirmation shown (`GATE-F <hevyId> <activityId>`) → **2 · Run gate F** → expect "synced". If it says the plan differs, preview again |
@@ -89,7 +89,7 @@ cd /d %LOCALAPPDATA%
 ```
 
 ```bat
-%SystemRoot%\System32\curl.exe -fsSLo gate-f.cmd https://raw.githubusercontent.com/xantic21/hevy2garmin/338be15a7c4e0bce83a02205a25949d5f9e3af92/tools/gate-f-windows/gate-f.cmd
+%SystemRoot%\System32\curl.exe -fsSLo gate-f.cmd https://raw.githubusercontent.com/xantic21/hevy2garmin/5a2432fe8a5f25df1eadfbaf0c682ce8595c2bbc/tools/gate-f-windows/gate-f.cmd
 ```
 
 ```bat

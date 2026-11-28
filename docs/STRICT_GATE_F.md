@@ -70,17 +70,17 @@ It was requalified in full on its own tree, on synthetic data only.
 | Dependencies | dashboard `npm audit` 0, with axe-core 4.13.0 as a development dependency; engine and Python unchanged (0) |
 | CI and the Vercel staging rehearsal of the pushed head | the PR #11 evidence comment. The head differs from 7b63cbf in Markdown files only. The Vercel staging preview of the documentation head 18d5243 (code a1e9a2d, `dpl_F2aSPGjMVpJ7mMBMtdJBFZSgadMb`): 38/38, with the bypass revoked right after (the revoked token gets 302) |
 
-### 3c. The Windows path: no Docker, no WSL, no administrator rights (code commit 338be15)
+### 3c. The Windows path: no Docker, no WSL, no administrator rights (code commit 5a2432f)
 
 The owner's computer runs Windows. Neither Docker nor administrator rights are
-available there, and the employer's policies stay binding. Commit `338be15`
+available there, and the employer's policies stay binding. Commit `5a2432f`
 adds `tools/gate-f-windows` on top of `7b63cbf`. Its `typescript/` and `web/`
-are identical (`git diff 7b63cbf 338be15 -- typescript web` is empty), so the
+are identical (`git diff 7b63cbf 5a2432f -- typescript web` is empty), so the
 dashboard and engine evidence of §3 carries over.
 
 | Element | How |
 | --- | --- |
-| Chain of trust | The owner checks the SHA-256 of `gate-f.cmd` (OWNER_RUNBOOK.md, from the raw file at the commit). `gate-f.cmd` pins Node.js v22.23.5 `win-x64.zip` (`4a191082…a0e3`). That value comes from the release's `SHASUMS256.txt`, whose signature was verified against Node release key `5BE8A3F6…B168D356` (listed in the v22.23.5 README and in nodejs/release-keys). It also pins `node.exe` (`247e9693…f38a`), `SOURCE_MANIFEST.sha256` (`ca356022…d1a0`) and `gate-f.mjs` (`106cb5c9…f465`), and checks both again on every command. The launcher checks all 407 files of `typescript/`, `web/` and `tools/gate-f-windows/` in GitHub's archive of the commit (same bytes, nothing added), and checks the copy it builds from again |
+| Chain of trust | The owner checks the SHA-256 of `gate-f.cmd` (OWNER_RUNBOOK.md, from the raw file at the commit). `gate-f.cmd` pins Node.js v22.23.5 `win-x64.zip` (`4a191082…a0e3`). That value comes from the release's `SHASUMS256.txt`, whose signature was verified against Node release key `5BE8A3F6…B168D356` (listed in the v22.23.5 README and in nodejs/release-keys). It also pins `node.exe` (`247e9693…f38a`), `SOURCE_MANIFEST.sha256` (`3e5a862d…a330`) and `gate-f.mjs` (`106cb5c9…f465`), and checks both again on every command. The launcher checks all 407 files of `typescript/`, `web/` and `tools/gate-f-windows/` in GitHub's archive of the commit (same bytes, nothing added), and checks the copy it builds from again |
 | The folder | `gate-f.cmd` gives the gate F folder a protected DACL holding the user's SID alone before anything is downloaded. The launcher reads that ACL back on every command, so no other local account can swap a file between a check and its use |
 | Module resolution | `module-guard.cjs` is loaded first (`--require`, through `NODE_OPTIONS` for npm, `next build` and its workers, and for the server). It keeps CommonJS and ES module resolution inside the gate F folder (build) or `app\` (server). A package in a parent `node_modules` (any local user can create `C:\node_modules`), or in the global folders, never loads: Next asks for `@opentelemetry/api`, which gate F does not ship |
 | Build | As `web/Dockerfile` does: `npm ci` with the lockfiles (no user or global `.npmrc`), the engine build and its stamp, `verify-engine`, then `next build` with a dummy database URL. It runs on the owner's computer, because the bundle carries platform binaries |
@@ -105,6 +105,7 @@ dashboard and engine evidence of §3 carries over.
 | 6 | LOW | `start` did not tie the running build to the pinned source | the manifest pin on every command; the source manifest and engine digest compared at start; the owner compares the printed commit |
 | 7 | LOW | The Windows evidence was not recorded yet; CI did not cover the default folder, a second setup or a stale stop | CI now covers all three; the run is recorded on PR #11 |
 | 8 | INFO | A second build failed on links in `node_modules\.bin` (Linux harness); SYSTEM integrity passed the admin check; OneDrive by name only; runbook gaps (hosts, Ctrl+C prompt, second window, absolute tool paths) | fixed |
+| 9 | — | Found by the Windows CI run of the first fix: `gate-f.cmd`'s own pin variables were named `NODE_*`, so Node inherited them and the launcher refused its own start | renamed `PIN_NODE_*`; `make-manifest --check` fails when `gate-f.cmd` sets any variable the launcher refuses |
 
 | Check | Result |
 | --- | --- |
