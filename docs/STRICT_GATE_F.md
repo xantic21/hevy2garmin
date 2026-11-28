@@ -68,19 +68,32 @@ It was requalified in full on its own tree, on synthetic data only.
 | Page performance (`perf-probe.mjs`, 20 warm loads per page, thresholds fixed beforehand in PES_EVIDENCE.md) | every page within them. Worst page `/dashboard`: TTFB median 50 ms, p95 65 ms (limits 300 / 800). Worst DOMContentLoaded p95 96 ms (limit 1500). Cold start to the first `/login` 0.9 s |
 | Negative controls (`strict_mutations.py`, 102) | the new P01–P04 (config file rights, atomic write, no leftover file) and G36/G37 (the panel's restore) are all caught. The other 96 target files this delta does not touch, so their results carry over (section 3b): 98 + 2 documented equivalent. The harness now counts a Python control as caught only when pytest reports a failing test. Accessibility controls, run by hand on a rebuilt dashboard, are both caught: removing the focusable region (`scrollable-region-focusable`) and removing the mapping table's scroll container (reflow). The reflow control first exposed a check that could not fail, because mobile emulation widens the viewport; that was fixed. The history table's scroll container is an equivalent mutant, since that table fits at 320 px |
 | Dependencies | dashboard `npm audit` 0, with axe-core 4.13.0 as a development dependency; engine and Python unchanged (0) |
-| CI and the Vercel staging rehearsal of the pushed head | the PR #11 evidence comment. The head differs from 7b63cbf in Markdown files only. The Vercel staging preview of the documentation head 18d5243 (code a1e9a2d, `dpl_F2aSPGjMVpJ7mMBMtdJBFZSgadMb`): 38/38, with the bypass revoked right after (the revoked token gets 302) |
+| CI and the Vercel staging rehearsal | `7b63cbf` was CI-qualified on its documentation head `b47aef4` (11/11), and gate E ran 38/38 on the Vercel preview of `b47aef4`. The gate F pin is now `9877230` (§3c). Its `typescript/` and `web/` are byte-identical to `7b63cbf`, so this evidence holds for the dashboard. Its other changes are not inputs of the dashboard build or of the deployed app (§3c lists them); their CI run is on the PR #11 evidence comment. The Vercel staging preview of the documentation head 18d5243 (code a1e9a2d, `dpl_F2aSPGjMVpJ7mMBMtdJBFZSgadMb`): 38/38, with the bypass revoked right after (the revoked token gets 302) |
 
-### 3c. The Windows path: no Docker, no WSL, no administrator rights (code commit 5a2432f)
+### 3c. The Windows path: no Docker, no WSL, no administrator rights (code commit 9877230)
 
 The owner's computer runs Windows. Neither Docker nor administrator rights are
-available there, and the employer's policies stay binding. Commit `5a2432f`
+available there, and the employer's policies stay binding. Commit `9877230`
 adds `tools/gate-f-windows` on top of `7b63cbf`. Its `typescript/` and `web/`
-are identical (`git diff 7b63cbf 5a2432f -- typescript web` is empty), so the
+are identical (`git diff 7b63cbf 9877230 -- typescript web` is empty), so the
 dashboard and engine evidence of §3 carries over.
+
+The other files that changed since `7b63cbf` are:
+
+- `.gitattributes`
+- `.github/workflows/ci.yml`
+- `tools/gate-f-windows/*`
+- `tools/gate-f/prepare-env.sh`
+- `tools/maintenance/strict_mutations.py`
+
+None of them is an input of the dashboard build or of the deployed app. They are the owner's
+launcher, the Docker path's env script, CI and the negative-control harness.
+They are qualified by this section's checks and by CI on the PR head. That head
+differs from `9877230` in Markdown files only.
 
 | Element | How |
 | --- | --- |
-| Chain of trust | The owner checks the SHA-256 of `gate-f.cmd` (OWNER_RUNBOOK.md, from the raw file at the commit). `gate-f.cmd` pins Node.js v22.23.5 `win-x64.zip` (`4a191082…a0e3`). That value comes from the release's `SHASUMS256.txt`, whose signature was verified against Node release key `5BE8A3F6…B168D356` (listed in the v22.23.5 README and in nodejs/release-keys). It also pins `node.exe` (`247e9693…f38a`), `SOURCE_MANIFEST.sha256` (`3e5a862d…a330`) and `gate-f.mjs` (`106cb5c9…f465`), and checks both again on every command. The launcher checks all 407 files of `typescript/`, `web/` and `tools/gate-f-windows/` in GitHub's archive of the commit (same bytes, nothing added), and checks the copy it builds from again |
+| Chain of trust | The owner checks the SHA-256 of `gate-f.cmd` (OWNER_RUNBOOK.md, from the raw file at the commit). `gate-f.cmd` pins Node.js v22.23.5 `win-x64.zip` (`4a191082…a0e3`). That value comes from the release's `SHASUMS256.txt`, whose signature was verified against Node release key `5BE8A3F6…B168D356` (listed in the v22.23.5 README and in nodejs/release-keys). It also pins `node.exe` (`247e9693…f38a`), `SOURCE_MANIFEST.sha256` (`081baaa2…801c`) and `gate-f.mjs` (`15cf3038…0ebc`), and checks both again on every command. The launcher checks all 407 files of `typescript/`, `web/` and `tools/gate-f-windows/` in GitHub's archive of the commit (same bytes, nothing added), and checks the copy it builds from again |
 | The folder | `gate-f.cmd` gives the gate F folder a protected DACL holding the user's SID alone before anything is downloaded. The launcher reads that ACL back on every command, so no other local account can swap a file between a check and its use |
 | Module resolution | `module-guard.cjs` is loaded first (`--require`, through `NODE_OPTIONS` for npm, `next build` and its workers, and for the server). It keeps CommonJS and ES module resolution inside the gate F folder (build) or `app\` (server). A package in a parent `node_modules` (any local user can create `C:\node_modules`), or in the global folders, never loads: Next asks for `@opentelemetry/api`, which gate F does not ship |
 | Build | As `web/Dockerfile` does: `npm ci` with the lockfiles (no user or global `.npmrc`), the engine build and its stamp, `verify-engine`, then `next build` with a dummy database URL. It runs on the owner's computer, because the bundle carries platform binaries |
@@ -106,13 +119,15 @@ dashboard and engine evidence of §3 carries over.
 | 7 | LOW | The Windows evidence was not recorded yet; CI did not cover the default folder, a second setup or a stale stop | CI now covers all three; the run is recorded on PR #11 |
 | 8 | INFO | A second build failed on links in `node_modules\.bin` (Linux harness); SYSTEM integrity passed the admin check; OneDrive by name only; runbook gaps (hosts, Ctrl+C prompt, second window, absolute tool paths) | fixed |
 | 9 | — | Found by the Windows CI run of the first fix: `gate-f.cmd`'s own pin variables were named `NODE_*`, so Node inherited them and the launcher refused its own start | renamed `PIN_NODE_*`; `make-manifest --check` fails when `gate-f.cmd` sets any variable the launcher refuses |
+| 10 | — | Found by Windows CI: `stop` and the exiting launcher removed the server record at once; Windows refused the second unlink (EPERM) and the launcher ended with an error | removing the record is retried briefly, otherwise left (a record is stale while port 8096 is free) |
+| 11 | — | Hardening while diagnosing: two ACL checks in one process used the same temporary `icacls /save` file | a fresh file name per check, `icacls` must succeed without `/C`, and the saved name line must be the file asked about (W09); `start` prints the SDDL it evaluated |
 
 | Check | Result |
 | --- | --- |
-| Launcher unit tests (`node --test`, Linux and Windows) | 14/14 |
-| Negative controls W01–W08 (`strict_mutations.py`) | 8/8 caught |
-| Local end to end (Linux, folder with a space and an umlaut, Node v22.23.5, a package planted above the folder) | build, `selftest` PASS, `prepare --rehearsal` (600/700), `start` READY (127.0.0.1 only, firewall, gate F state), gate F HTTP rehearsal 35/35 against it. Refused: a second `prepare`, a hosting variable, a second start, a readable env file, a changed `app\`. `stop`, a second `stop` that kills nothing, and a second build in the same folder all pass. The planted package never ran |
-| Windows CI as a standard user (`check-gate-f-windows`, `C:\h2g Prüfung\gate f`) | recorded in the PR #11 evidence comment for this head. Earlier runs found and fixed two Windows defects: `fs.cpSync` aborts on non-ASCII paths, and Windows does not resolve `/` in link targets |
+| Launcher unit tests (`node --test`, Linux and Windows) | 15/15 |
+| Negative controls W01–W09 (`strict_mutations.py`) | 9/9 caught |
+| Local end to end on `9877230` (Linux, folder with a space and an umlaut, Node v22.23.5, a package planted above the folder) | build, `selftest` PASS, `prepare --rehearsal` (600/700), `start` READY (127.0.0.1 only, firewall, gate F state), gate F HTTP rehearsal 35/35 against it. Refused: a second `prepare`, a hosting variable, a second start, a readable env file, a changed `app\`. `stop`, a second `stop` that kills nothing, and a second build in the same folder all pass. The planted package never ran |
+| Windows CI as a standard user (`check-gate-f-windows`, `C:\h2g Prüfung\gate f`) | the run on the PR head, which differs from `9877230` in Markdown files only, is in the PR #11 evidence comment. Earlier runs found and fixed these Windows defects: `fs.cpSync` aborts on non-ASCII paths; Windows does not resolve `/` in link targets; the bootstrap's own `NODE_*` pins (finding 9); concurrent removal of the server record (EPERM, finding 10). The secondary-logon harness needed one session for the running server. An apparent ACL miss was a CI tamper step that never changed the file; the launcher refused the widened env file ("also readable by WD") |
 
 ### 3b. The previous candidate 8ebd30d
 

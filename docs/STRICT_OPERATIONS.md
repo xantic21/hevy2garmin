@@ -50,7 +50,7 @@ deliberately, and a missing or misspelled one keeps the safe state.
 | Gate | State | Evidence / what remains |
 | --- | --- | --- |
 | A snapshot and quarantine | done | `vercel.json` (both roots) deployment off, `next.config.ts` refuses Vercel builds, no publish path, `typescript/` private with `prepublishOnly` refusal |
-| B end-to-end strict mode | done (synthetic) | engine 617 tests, web 1081 tests incl. real Postgres, e2e through firewall + Postgres, 110 negative controls (STRICT_REAUDIT_ROUND2.md, STRICT_GATE_F.md); automated accessibility checks (axe WCAG 2.1 A/AA, reflow), page timing and the owner's gate F click path gated in CI (PES_EVIDENCE.md) |
+| B end-to-end strict mode | done (synthetic) | engine 617 tests, web 1081 tests incl. real Postgres, e2e through firewall + Postgres, 111 negative controls (STRICT_REAUDIT_ROUND2.md, STRICT_GATE_F.md); automated accessibility checks (axe WCAG 2.1 A/AA, reflow), page timing and the owner's gate F click path gated in CI (PES_EVIDENCE.md) |
 | C synthetic migration and full CI | done | `web/lib/db-qualification.db.test.ts` (fresh DB, previous fork-main schema, pg_dump/restore); all CI jobs |
 | D independent review | done: round 1 9/9 closed (`docs/STRICT_REAUDIT.md`); round 2 owner findings 1–7 and independent re-audit #2 closed (`docs/STRICT_REAUDIT_ROUND2.md`) | no upload/delete path found |
 | E isolated staging | **done (synthetic, on Vercel)**: separate project `hevy2garmin-staging` with its own Neon project; every code candidate rehearsed 38/38 on its protected preview (up to a1e9a2d here; the final candidate 7b63cbf in the PR #11 evidence comment); isolation verified independently; production project unchanged | §7a; the owner may click through the preview (§7 step 5) |
