@@ -737,12 +737,12 @@ jobs:
 
           # 2. Setup: pinned Node.js, this commit's source from GitHub, every file verified, build.
           $r = Tester "$gf setup $env:COMMIT"
-          Expect ($r.Code -eq 0 -and $r.Out -match "build manifest  SHA-256 [0-9a-f]{64}") "setup: verified download and build as a standard user"
+          Expect ($r.Code -eq 0 -and $r.Out -cmatch "build manifest  SHA-256 [0-9a-f]{64}") "setup: verified download and build as a standard user"
           Expect ($r.Out -match "\d+ files identical") "setup: every source file matched the manifest"
 
           # 3. Self-test: the bare server, no database, loopback only.
           $r = Tester "$gf selftest"
-          Expect ($r.Code -eq 0 -and $r.Out -match "SELFTEST PASS: [0-9a-f]{12} answers on 127\.0\.0\.1:8096 only") "selftest"
+          Expect ($r.Code -eq 0 -and $r.Out -cmatch "SELFTEST PASS: [0-9a-f]{12} answers on 127\.0\.0\.1:8096 only") "selftest"
 
           # 4. A synthetic rehearsal against a local Postgres.
           $svc = Get-Service -Name "postgresql*" | Select-Object -First 1
@@ -754,19 +754,20 @@ jobs:
           Write-Host "::add-mask::$rpw"
           $rehearsalEnv = @{ GATE_F_REHEARSAL_DATABASE_URL = "postgres://postgres:root@127.0.0.1:5432/h2g_gate_f_win"; GATE_F_REHEARSAL_PASSWORD = $rpw }
           $r = Tester "$gf prepare --rehearsal" $rehearsalEnv
-          Expect ($r.Code -eq 0 -and $r.Out -match "Wrote private\\gate-f.env \(synthetic rehearsal") "prepare --rehearsal"
+          Expect ($r.Code -eq 0 -and $r.Out -cmatch "Wrote private\\gate-f.env \(synthetic rehearsal") "prepare --rehearsal"
           $r = Tester "icacls `"$gfHome\private\gate-f.env`""
           Expect ($r.Out -match "h2gtester:\(F\)" -and $r.Out -notmatch "(Administrators|SYSTEM|Users|Everyone|Jeder|Benutzer):") "the env file is readable by h2gtester only"
           $r = Tester "$gf prepare --rehearsal" $rehearsalEnv
-          Expect ($r.Code -ne 0 -and $r.Out -match "already exists") "a second prepare is refused"
+          Expect ($r.Code -ne 0 -and $r.Out -cmatch "already exists") "a second prepare is refused"
 
           # 5. Start, then the gate F HTTP rehearsal against it.
           $srv = Tester "$gf start" -Background
           $deadline = (Get-Date).AddMinutes(4)
-          do { Start-Sleep 2; $t = Get-Content -LiteralPath $srv.Log -Encoding utf8 -Raw -ErrorAction SilentlyContinue } until (($t -match "READY|refusing|ERROR") -or $srv.Process.HasExited -or (Get-Date) -gt $deadline)
+          # Case-sensitive and anchored: Next itself prints "Ready in …".
+          do { Start-Sleep 2; $t = Get-Content -LiteralPath $srv.Log -Encoding utf8 -Raw -ErrorAction SilentlyContinue } until (($t -cmatch "(?m)^(READY |refusing|ERROR)") -or $srv.Process.HasExited -or (Get-Date) -gt $deadline)
           Write-Host $t
           $script:last = "$t"
-          Expect ($t -match "READY \(synthetic rehearsal\) http://127\.0\.0\.1:8096") "start: identity, loopback, firewall and gate F state checked"
+          Expect ($t -cmatch "(?m)^READY \(synthetic rehearsal\) http://127\.0\.0\.1:8096") "start: identity, loopback, firewall and gate F state checked"
           $listen = Get-NetTCPConnection -LocalPort 8096 -State Listen
           Expect (($listen | Where-Object LocalAddress -ne "127.0.0.1").Count -eq 0 -and $listen.Count -ge 1) "port 8096 listens on 127.0.0.1 only"
           $owner = (Get-CimInstance Win32_Process -Filter "ProcessId=$($listen[0].OwningProcess)" | Invoke-CimMethod -MethodName GetOwner).User
@@ -778,13 +779,13 @@ jobs:
 
           # 6. Refusals while it runs.
           $r = Tester "$gf start"
-          Expect ($r.Code -ne 0 -and $r.Out -match "port 8096 is in use") "a second start is refused"
+          Expect ($r.Code -ne 0 -and $r.Out -cmatch "port 8096 is in use") "a second start is refused"
           $r = Tester "$gf status" @{ VERCEL = "1" }
-          Expect ($r.Code -ne 0 -and $r.Out -match "could steer the server: VERCEL") "a hosting variable in the window is refused"
+          Expect ($r.Code -ne 0 -and $r.Out -cmatch "could steer the server: VERCEL") "a hosting variable in the window is refused"
           $r = Tester "$gf status" @{ NODE_OPTIONS = "--require=x" }
-          Expect ($r.Code -ne 0 -and $r.Out -match "NODE_OPTIONS is set") "NODE_OPTIONS is refused before Node starts"
+          Expect ($r.Code -ne 0 -and $r.Out -cmatch "NODE_OPTIONS is set") "NODE_OPTIONS is refused before Node starts"
           $r = Tester "$gf status" @{ GATE_F_HOME = "$work\OneDrive\gate f" }
-          Expect ($r.Code -ne 0 -and $r.Out -match "inside OneDrive") "a OneDrive folder is refused"
+          Expect ($r.Code -ne 0 -and $r.Out -cmatch "inside OneDrive") "a OneDrive folder is refused"
           $env:GATE_F_HOME = $gfHome
           $r = & $cmdFile status 2>&1 | Out-String
           $script:last = $r
@@ -793,7 +794,7 @@ jobs:
 
           # 7. Stop: the server ends, the port is free, the launcher exits.
           $r = Tester "$gf stop"
-          Expect ($r.Code -eq 0 -and $r.Out -match "port 8096 is free") "stop"
+          Expect ($r.Code -eq 0 -and $r.Out -cmatch "port 8096 is free") "stop"
           Expect ($srv.Process.WaitForExit(30000)) "the launcher exited"
           Expect ((Get-NetTCPConnection -LocalPort 8096 -State Listen -ErrorAction SilentlyContinue).Count -eq 0) "nothing listens on 8096 any more"
           Write-Host (Get-Content -LiteralPath $srv.Log -Encoding utf8 -Raw)
@@ -801,8 +802,8 @@ jobs:
           # 8. Refusals of a widened env file and of a changed build.
           $r = Tester "icacls `"$gfHome\private\gate-f.env`" /grant *S-1-1-0:(R)"
           $r = Tester "$gf start"
-          Expect ($r.Code -ne 0 -and $r.Out -match "not private to you") "an env file readable by others is refused"
+          Expect ($r.Code -ne 0 -and $r.Out -cmatch "not private to you") "an env file readable by others is refused"
           $r = Tester "icacls `"$gfHome\private\gate-f.env`" /remove *S-1-1-0"
           $r = Tester "icacls `"$gfHome\app\server.js`" /grant h2gtester:(M) && echo // changed>> `"$gfHome\app\server.js`""
           $r = Tester "$gf start"
-          Expect ($r.Code -ne 0 -and $r.Out -match "differs from its build") "a changed app\ is refused"
+          Expect ($r.Code -ne 0 -and $r.Out -cmatch "differs from its build") "a changed app\ is refused"
