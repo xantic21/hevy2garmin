@@ -413,6 +413,23 @@ const portBusy = (port) =>
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Remove the server record. On Windows `stop` and the exiting launcher may remove it at the
+ * same moment, and a file whose deletion is pending refuses another unlink (EPERM): retried
+ * briefly, then left (start treats a record as stale while port 8096 is free).
+ */
+async function forgetRecord(L) {
+  for (let i = 0; i < 10; i++) {
+    try {
+      rmSync(L.pid, { force: true });
+      return;
+    } catch (e) {
+      if (e.code !== "EPERM" && e.code !== "EBUSY") throw e;
+      await sleep(200);
+    }
+  }
+}
+
 function npmCli() {
   const candidates = [
     join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js"),
@@ -753,7 +770,7 @@ async function start(L) {
   const { vars, rehearsal, expired } = parseEnvFile(readFileSync(L.env, "utf8"));
   if (await portBusy(PORT)) refuse(`refusing: port ${PORT} is in use; stop the other server first (gate-f.cmd stop)`);
 
-  rmSync(L.pid, { force: true }); // a record left by a closed window: the port is free, so it is stale
+  await forgetRecord(L); // a record left by a closed window: the port is free, so it is stale
   const child = launch(L, serverEnv(L, build, vars));
   writeFileSync(L.pid, JSON.stringify({ pid: child.pid, launcher: process.pid, port: PORT, startedAt: new Date().toISOString() }), { flag: "wx" });
   let stopping = false;
@@ -784,11 +801,11 @@ async function start(L) {
     say("  Sign in with the dashboard password from prepare. Stop with Ctrl+C in this window (or gate-f.cmd stop).");
   } catch (e) {
     await shutdown();
-    rmSync(L.pid, { force: true });
+    await forgetRecord(L);
     throw e;
   }
   const code = await exited;
-  rmSync(L.pid, { force: true });
+  await forgetRecord(L);
   await waitPortFree();
   say(`Server stopped (exit ${code ?? "signal"}).`);
 }
@@ -801,7 +818,7 @@ async function stop(L) {
   const rec = JSON.parse(readFileSync(L.pid, "utf8"));
   if (!(await portBusy(PORT))) {
     // Window closed, reboot or crash: nothing of ours runs, and the PID may belong to anything now.
-    rmSync(L.pid, { force: true });
+    await forgetRecord(L);
     say("The server is not running (stale record removed).");
     return;
   }
@@ -817,7 +834,7 @@ async function stop(L) {
     }
   }
   const free = await waitPortFree();
-  rmSync(L.pid, { force: true });
+  await forgetRecord(L);
   if (!free) refuse(`port ${PORT} is still in use`);
   say("Server stopped; port 8096 is free.");
 }
