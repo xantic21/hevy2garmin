@@ -789,7 +789,7 @@ M = [
     (
         "W09 a saved ACL of another file is accepted (stale icacls save)",
         "tools/gate-f-windows/gate-f.mjs",
-        "  if (first.toLowerCase() !== String(expectedName).toLowerCase()) return { ok: false,",
+        '  if ((lines[0] ?? "").toLowerCase() !== String(expectedName).toLowerCase()) return { ok: false,',
         "  if (false) return { ok: false,",
         (".", ["node", "--test", "tools/gate-f-windows/gate-f.test.mjs"]),
     ),

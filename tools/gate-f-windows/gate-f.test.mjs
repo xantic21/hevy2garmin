@@ -279,7 +279,7 @@ test("ACL: the saved answer must be about the file asked for (no stale save)", (
   const me = "S-1-5-21-111-222-333-1001";
   // Real icacls /save output on Windows (CI): the name line, then the SDDL.
   const env = `gate-f.env\r\nD:PAI(A;;FR;;;WD)(A;;FA;;;${me})\r\n`;
-  assert.deepEqual(savedAclOwnerOnly(env, "gate-f.env", me), { ok: false, reason: "also readable by WD" });
+  assert.deepEqual(savedAclOwnerOnly(env, "gate-f.env", me), { ok: false, reason: "also readable by WD", sddl: `D:PAI(A;;FR;;;WD)(A;;FA;;;${me})` });
   // The folder's private ACL must never stand in for the env file's.
   const folder = `gate f\r\nD:PAI(A;OICI;FA;;;${me})\r\n`;
   assert.equal(savedAclOwnerOnly(folder, "gate f", me).ok, true);

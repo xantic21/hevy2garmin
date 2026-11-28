@@ -277,9 +277,10 @@ export const loopbackOnly = (listeners) => listeners.length > 0 && listeners.eve
  * the one asked about: an answer about another file (a stale save) is never taken.
  */
 export function savedAclOwnerOnly(saved, expectedName, sid) {
-  const first = saved.replace(/^\uFEFF/, "").split(/\r?\n/)[0]?.trim() ?? "";
-  if (first.toLowerCase() !== String(expectedName).toLowerCase()) return { ok: false, reason: "its permissions could not be read reliably" };
-  return sddlOwnerOnly(saved, sid);
+  const lines = saved.replace(/^\uFEFF/, "").split(/\r?\n/).map((l) => l.trim());
+  const sddl = lines.find((l) => l.startsWith("D:")) ?? "";
+  if ((lines[0] ?? "").toLowerCase() !== String(expectedName).toLowerCase()) return { ok: false, reason: "its permissions could not be read reliably", sddl };
+  return { ...sddlOwnerOnly(saved, sid), sddl };
 }
 
 export function sddlOwnerOnly(saved, sid) {
@@ -781,7 +782,7 @@ async function start(L) {
   if (!existsSync(L.env)) refuse("refusing: no private\\gate-f.env; run gate-f.cmd prepare first");
   const acl = ownerOnly(L.env, L.root);
   if (!acl.ok) refuse(`refusing: private\\gate-f.env is not private to you (${acl.reason}); run gate-f.cmd prepare again in a new folder`);
-  say("  private\\gate-f.env: readable by you only");
+  say(`  private\\gate-f.env: readable by you only${acl.sddl ? ` (${acl.sddl})` : ""}`);
   const { vars, rehearsal, expired } = parseEnvFile(readFileSync(L.env, "utf8"));
   if (await portBusy(PORT)) refuse(`refusing: port ${PORT} is in use; stop the other server first (gate-f.cmd stop)`);
 
