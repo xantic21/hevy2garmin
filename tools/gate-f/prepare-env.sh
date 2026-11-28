@@ -37,6 +37,11 @@ ask GATE_F_GARMIN_ACTIVITY_ID "Garmin activity id (connect.garmin.com/modern/act
 days="${GATE_F_DAYS:-3}"
 
 case "$GATE_F_DATABASE_URL" in postgres://*|postgresql://*) ;; *) echo "refusing: not a Postgres connection string" >&2; exit 1 ;; esac
+# Every parameter dropped, then verified TLS: the driver treats Neon's default
+# sslmode=require as "encrypt, but accept any certificate".
+GATE_F_DATABASE_URL="${GATE_F_DATABASE_URL%%\?*}"
+[[ "$GATE_F_DATABASE_URL" =~ ^postgres(ql)?://[^:/@]+:[^@]+@[a-z0-9.-]+\.neon\.tech(:[0-9]+)?/[A-Za-z0-9_-]+$ ]] || { echo "refusing: gate F needs its new Neon database (user, password, host …neon.tech, database)" >&2; exit 1; }
+GATE_F_DATABASE_URL="${GATE_F_DATABASE_URL}?sslmode=verify-full"
 [[ "$GATE_F_HEVY_ID" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,63}$ ]] || { echo "refusing: not a Hevy workout id" >&2; exit 1; }
 [[ "$GATE_F_HEVY_ID" == syn-* ]] && { echo "refusing: syn-… ids belong to the synthetic staging" >&2; exit 1; }
 [[ "$GATE_F_GARMIN_ACTIVITY_ID" =~ ^[1-9][0-9]{0,15}$ ]] || { echo "refusing: not a Garmin activity id" >&2; exit 1; }

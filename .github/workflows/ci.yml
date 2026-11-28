@@ -660,7 +660,13 @@ jobs:
           # Failures are also written as annotations: the job log is not readable everywhere.
           $t = node --test tools/gate-f-windows/gate-f.test.mjs 2>&1 | Out-String
           Write-Host $t
-          if ($LASTEXITCODE) { Write-Host "::error::launcher unit tests failed:%0A$((($t -split "`n") | Select-String -Pattern 'not ok|error:|expected|actual' | Select-Object -First 12) -join '%0A')"; exit 1 }
+          if ($LASTEXITCODE) {
+            $lines = $t -split "`r?`n"
+            $at = ($lines | Select-String -Pattern '^not ok' | Select-Object -First 1).LineNumber
+            $block = if ($at) { $lines[($at - 1)..([Math]::Min($at + 30, $lines.Count - 1))] } else { $lines | Select-Object -Last 30 }
+            Write-Host "::error::launcher unit tests failed:%0A$(($block -join '%0A') -replace '::', ': :')"
+            exit 1
+          }
           $m = node tools/gate-f-windows/make-manifest.mjs --check 2>&1 | Out-String
           Write-Host $m
           if ($LASTEXITCODE) { Write-Host "::error::manifest check failed: $($m.Trim())"; exit 1 }

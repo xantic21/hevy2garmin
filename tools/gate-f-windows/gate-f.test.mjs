@@ -145,7 +145,7 @@ test("manifest: format, duplicates and escapes refused; a tree verifies exactly"
     rmSync(join(dir, "typescript/b.ts"));
     assert.deepEqual(verifySource(dir, manifest).missing, ["typescript/b.ts"]);
     writeFileSync(join(dir, "typescript/b.ts"), "b\n");
-    symlinkSync(join(dir, "docs"), join(dir, "web", "link"));
+    symlinkSync(join(dir, "docs"), join(dir, "web", "link"), "dir");
     assert.throws(() => verifySource(dir, manifest), /symbolic link/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -189,16 +189,17 @@ test("the standalone copy replaces links by their content, inside the build only
     mkdirSync(join(dir, "a", "node_modules", "pg"), { recursive: true });
     mkdirSync(join(dir, "a", ".next", "node_modules"), { recursive: true });
     writeFileSync(join(dir, "a", "node_modules", "pg", "index.js"), "pg\n");
-    symlinkSync("../../node_modules/pg", join(dir, "a", ".next", "node_modules", "pg-1"));
+    // As Next writes them: relative, with the platform's separator (Windows does not resolve "/").
+    symlinkSync(join("..", "..", "node_modules", "pg"), join(dir, "a", ".next", "node_modules", "pg-1"), "dir");
     copyResolved(join(dir, "a"), join(dir, "b"));
     const copied = join(dir, "b", ".next", "node_modules", "pg-1");
     assert.equal(lstatSync(copied).isSymbolicLink(), false);
     assert.equal(readFileSync(join(copied, "index.js"), "utf8"), "pg\n");
-    symlinkSync(join(dir, "outside"), join(dir, "a", "escape"));
     mkdirSync(join(dir, "outside"));
+    symlinkSync(join(dir, "outside"), join(dir, "a", "escape"), "dir");
     assert.throws(() => copyResolved(join(dir, "a"), join(dir, "c")), /outside the build/);
     rmSync(join(dir, "a", "escape"));
-    symlinkSync("..", join(dir, "a", "node_modules", "loop"));
+    symlinkSync("..", join(dir, "a", "node_modules", "loop"), "dir");
     assert.throws(() => copyResolved(join(dir, "a"), join(dir, "d")), /cycle/);
     assert.ok(existsSync(join(dir, "b")));
   } finally {
