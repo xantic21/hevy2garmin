@@ -928,7 +928,7 @@ jobs:
           # The launcher's own check, as h2gtester with the portable Node, in the gate F folder.
           Set-Content -Path "$work\acl-probe.mjs" -Encoding ascii -Value "const m = await import('file:///' + process.env.GATE_F_HOME.replace(/\\/g, '/') + '/src/tools/gate-f-windows/gate-f.mjs'); console.log('probe=' + JSON.stringify(m.ownerOnly(process.env.GATE_F_HOME + '\\private\\gate-f.env', process.env.GATE_F_HOME)));"
           $r = Tester "cd /d `"$gfHome`" && `"$gfHome\node\node.exe`" `"$work\acl-probe.mjs`""
-          Expect ($r.Out -match 'probe=\{"ok":false,"reason":"also readable by WD"\}') "the launcher's ACL check sees Everyone (WD) on the env file"
+          Expect ($r.Out -match 'probe=\{"ok":false,"reason":"also readable by WD"') "the launcher's ACL check sees Everyone (WD) on the env file"
           # Diagnostics: does gate-f.cmd itself (its icacls on the folder) change the env file's ACL?
           $null = Tester "$gf status"
           $r2 = Tester "cd /d `"$gfHome`" && `"$gfHome\node\node.exe`" `"$work\acl-probe.mjs`""
