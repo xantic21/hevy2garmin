@@ -9,28 +9,30 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fit_tool.fit_file_builder import FitFileBuilder
-from fit_tool.profile.messages.file_id_message import FileIdMessage
-from fit_tool.profile.messages.event_message import EventMessage
-from fit_tool.profile.messages.record_message import RecordMessage
-from fit_tool.profile.messages.set_message import SetMessage
-from fit_tool.profile.messages.exercise_title_message import ExerciseTitleMessage
-from fit_tool.profile.messages.session_message import SessionMessage
-from fit_tool.profile.messages.lap_message import LapMessage
 from fit_tool.profile.messages.activity_message import ActivityMessage
+from fit_tool.profile.messages.event_message import EventMessage
+from fit_tool.profile.messages.exercise_title_message import ExerciseTitleMessage
+from fit_tool.profile.messages.file_id_message import FileIdMessage
+from fit_tool.profile.messages.lap_message import LapMessage
+from fit_tool.profile.messages.record_message import RecordMessage
+from fit_tool.profile.messages.session_message import SessionMessage
+from fit_tool.profile.messages.set_message import SetMessage
 from fit_tool.profile.messages.sport_message import SportMessage
 from fit_tool.profile.profile_type import (
-    FileType,
-    Manufacturer,
-    Sport,
-    SubSport,
+    Activity,
     Event,
     EventType,
-    Activity,
+    FileType,
+    Manufacturer,
     SetType,
+    Sport,
+    SubSport,
 )
 
+from hevy2garmin._isotime import parse_iso
 from hevy2garmin.mapper import lookup_exercise
 
 # ---------------------------------------------------------------------------
@@ -41,15 +43,22 @@ _MAX_SCALE = 2.0
 _DEFAULT_HR_BPM = 90  # fallback when no HR data at all
 DEFAULT_HR_BPM = _DEFAULT_HR_BPM  # public alias
 
+# FIT date_time epoch: 1989-12-31 00:00:00 UTC, in Unix seconds. The FIT
+# ``local_timestamp`` field is a plain uint32 of seconds-since-this-epoch in
+# local wall-clock time (unlike ``timestamp``, which fit_tool takes in ms).
+_FIT_EPOCH_S = 631065600
+
 
 def _get_profile(override: dict | None = None) -> dict:
     """Get user profile + timing from config, with optional overrides."""
     from hevy2garmin.config import load_config
+
     cfg = load_config()
     profile = {
         "weight_kg": cfg.get("user_profile", {}).get("weight_kg", 80.0),
         "birth_year": cfg.get("user_profile", {}).get("birth_year", 1990),
         "vo2max": cfg.get("user_profile", {}).get("vo2max", 45.0),
+        "timezone": cfg.get("user_profile", {}).get("timezone", ""),
         "working_set_s": cfg.get("timing", {}).get("working_set_seconds", 40),
         "warmup_set_s": cfg.get("timing", {}).get("warmup_set_seconds", 25),
         "rest_sets_s": cfg.get("timing", {}).get("rest_between_sets_seconds", 75),
@@ -64,6 +73,23 @@ def _get_profile(override: dict | None = None) -> dict:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
+def _tz_offset_seconds(tz_name: str, at: datetime) -> int | None:
+    """UTC offset (seconds) for an IANA zone at a given instant, DST-correct.
+
+    Returns ``None`` for an empty or unrecognised zone — a bad timezone must
+    never crash a sync, it just means no local_timestamp is written.
+    """
+    if not tz_name:
+        return None
+    try:
+        tz = ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return None
+    off = at.astimezone(tz).utcoffset()
+    return int(off.total_seconds()) if off is not None else None
+
+
 def _ms(dt: datetime) -> int:
     """Convert a datetime to milliseconds since Unix epoch."""
     return round(dt.timestamp() * 1000)
@@ -74,7 +100,9 @@ def parse_timestamp(raw: str) -> datetime:
     return _parse_timestamp(raw)
 
 
-def calc_calories(hr_samples: list[int], duration_s: float, workout_year: int, profile: dict | None = None) -> int:
+def calc_calories(
+    hr_samples: list[int], duration_s: float, workout_year: int, profile: dict | None = None
+) -> int:
     """Calculate total calories from HR samples using the Keytel formula."""
     return _calc_calories(hr_samples, duration_s, workout_year, profile)
 
@@ -91,15 +119,15 @@ def _parse_timestamp(raw: str | None) -> datetime | None:
         return None
     try:
         if "T" in cleaned:
-            return datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
-        return datetime.strptime(cleaned, "%Y-%m-%d %H:%M:%S").replace(
-            tzinfo=timezone.utc
-        )
+            return parse_iso(cleaned)
+        return datetime.strptime(cleaned, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
     except (ValueError, TypeError):
         return None
 
 
-def _calc_calories(hr_samples: list[int], duration_s: float, workout_year: int, profile: dict | None = None) -> int:
+def _calc_calories(
+    hr_samples: list[int], duration_s: float, workout_year: int, profile: dict | None = None
+) -> int:
     """Calculate total calories from HR samples using the Keytel formula.
 
     If hr_samples is empty, uses _DEFAULT_HR_BPM.
@@ -117,8 +145,7 @@ def _calc_calories(hr_samples: list[int], duration_s: float, workout_year: int, 
     total = 0.0
     for hr in hr_samples:
         kcal_per_min = (
-            -95.7735 + 0.634 * hr + 0.404 * vo2max
-            + 0.394 * weight + 0.271 * age
+            -95.7735 + 0.634 * hr + 0.404 * vo2max + 0.394 * weight + 0.271 * age
         ) / 4.184
         total += max(0.0, kcal_per_min) * interval_min
     return round(total)
@@ -127,6 +154,7 @@ def _calc_calories(hr_samples: list[int], duration_s: float, workout_year: int, 
 # ---------------------------------------------------------------------------
 # Main generator
 # ---------------------------------------------------------------------------
+
 
 def generate_fit(
     hevy_workout: dict,
@@ -312,7 +340,9 @@ def generate_fit(
     for si in all_sets_info:
         s = si["set_data"]
         ex_idx = si["ex_idx"]
-        cat, sub, _ = lookup_exercise(exercises[ex_idx]["title"], exercises[ex_idx].get("exercise_template_id"))
+        cat, sub, _ = lookup_exercise(
+            exercises[ex_idx]["title"], exercises[ex_idx].get("exercise_template_id")
+        )
 
         set_start_ms = start_ms + round(si["start_offset_s"] * 1000)
         set_end_ms = start_ms + round(si["end_offset_s"] * 1000)
@@ -430,6 +460,12 @@ def generate_fit(
     activity.type = Activity.MANUAL
     activity.event = Event.ACTIVITY
     activity.event_type = EventType.STOP
+    # Stamp local wall-clock time when a timezone is configured. Hevy gives us
+    # UTC only, so without this the activity carries no offset and Garmin can
+    # forward it to Strava as raw UTC (a 6am workout showing up as 3am).
+    tz_offset_s = _tz_offset_seconds(p.get("timezone", ""), start_dt)
+    if tz_offset_s is not None:
+        activity.local_timestamp = (end_ms // 1000 + tz_offset_s) - _FIT_EPOCH_S
     builder.add(activity)
 
     # -- Write file --

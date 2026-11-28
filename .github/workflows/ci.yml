@@ -6,8 +6,6 @@ on:
   pull_request:
     branches: [main]
 
-
-# PES-10 (fork maintenance): least privilege by default; jobs that need more declare it themselves.
 permissions:
   contents: read
 
@@ -21,12 +19,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
-          cache-dependency-path: pyproject.toml
 
       - name: Install package with dev dependencies
         run: pip install -e ".[dev]"
@@ -39,6 +37,43 @@ jobs:
 
       - name: Run tests
         run: python -m pytest tests/ -v
+
+      - name: Exercise map drift (TypeScript copy matches the Python source of truth)
+        run: python scripts/gen_typescript_map.py --check
+
+      - name: requirements.txt matches pyproject's dependencies
+        # requirements.txt says CI asserts it; this is the assertion (#554).
+        run: |
+          python -m pip install -q 'tomli; python_version < "3.11"'
+          python - <<'PY'
+          try:
+              import tomllib
+          except ModuleNotFoundError:  # Python 3.10 in the matrix
+              import tomli as tomllib
+          want = sorted(tomllib.load(open("pyproject.toml", "rb"))["project"]["dependencies"])
+          have = sorted(l.strip() for l in open("requirements.txt") if l.strip() and not l.startswith("#"))
+          assert want == have, f"pyproject: {want}\nrequirements.txt: {have}"
+          print("requirements.txt matches", len(want), "dependencies")
+          PY
+
+  check-ruff:
+    # Pinned: ruff 0.16 enables 826 rules by default where 0.14 enabled far fewer, so an
+    # unpinned `uvx ruff` moves the gate with every release (#553). Bump the version here and
+    # in pyproject's comment together, and re-run the campaign at the new version first.
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+
+      - name: ruff check
+        run: uvx ruff@0.16.7 check .
+
+      - name: ruff format --check
+        run: uvx ruff@0.16.7 format --check .
 
   check-postgres:
     name: Tests (Postgres)
@@ -61,12 +96,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: pyproject.toml
 
       - name: Install package with cloud + dev dependencies
         run: pip install -e ".[dev,cloud]"
@@ -75,3 +110,842 @@ jobs:
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/hevy2garmin_test
         run: python -m pytest tests/ -v
+
+  check-typescript:
+    name: Tests (TypeScript)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: typescript
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+  check-universal:
+    # The Expo app was in no job at all (#551): tsc failed on a fresh checkout and nothing ran
+    # its tests. `expo lint` is not used here on purpose: it rewrites package.json, the lockfile
+    # and writes an eslint config before reporting, so a CI run would dirty the tree.
+    name: Tests (Universal)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: universal
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Install exactly from the lockfile
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        # The committed flat config (#549); `expo lint` would scaffold and rewrite, eslint does not.
+        run: npm run lint -- --max-warnings 0
+
+      - name: Test
+        run: npm test
+
+  check-web:
+    name: Tests (Web)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+
+    # Exercise the app the way it is deployed. next.config.ts sets
+    # `output: "standalone"` only OFF Vercel, so without VERCEL this whole job
+    # built and served the self-hosting shape rather than the shipping one.
+    #
+    # Job-level on purpose, not per-step. `next start` re-reads next.config.ts,
+    # so setting it on the build alone leaves the server disagreeing with the
+    # build it is serving and printing a standalone warning about a
+    # non-standalone build. `process.env.VERCEL` is also read at RUNTIME by
+    # app/api/toggle-autosync/route.ts, and on Vercel that variable is always
+    # set, so job scope is the production-faithful choice rather than a
+    # convenience. Verified: vitest 213/213 and the smoke pass with it set.
+    #
+    # No coverage is traded: check-fresh-fork-web still builds without VERCEL,
+    # so the standalone path stays covered there.
+    env:
+      VERCEL: "1"
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Build the fork-local engine the dashboard installs (contract item 4)
+        working-directory: typescript
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install
+        run: npm ci
+
+      - name: The dashboard runs exactly this commit's engine
+        run: npm run verify:engine
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Lint
+        # eslint flat config (#552); `next lint` no longer exists in Next 16. Zero warnings is the gate.
+        run: npm run lint -- --max-warnings 0
+
+      - name: Build
+        # Routes are force-dynamic, so no real DB is touched at build time.
+        env:
+          DATABASE_URL: postgres://ci:ci@localhost:5432/ci
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+      - name: Playwright smoke (desktop + mobile)
+        # A production build started with only a password: no database, every page must still render.
+        #
+        # Both projects, not just desktop. The two navs are separate markup: a top
+        # bar on desktop, a bottom tab bar on mobile, and CSS shows one. A
+        # desktop-only run cannot see a mobile-only regression, and that is not
+        # hypothetical — the nav walk added in #468 passed desktop and failed
+        # mobile, because the mobile bar composes a link from an icon span and a
+        # label span, giving a different accessible name. Running one project
+        # would have shipped that green.
+        run: |
+          npx playwright install --with-deps chromium
+          npx playwright test
+        env:
+          CI: "1"
+
+  check-fresh-fork-web:
+    # What a forker's Vercel deploy of the Next.js dashboard gets: a strict `npm ci` (a stale
+    # lockfile must FAIL here, not on their first deploy), a build, and a boot with nothing but
+    # a database URL in the environment. Mirror of check-fresh-fork for the web path (#457).
+    name: Fresh fork (web, Vercel-style install)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Build the fork-local engine the dashboard installs (contract item 4)
+        working-directory: typescript
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install exactly from the lockfile (no fallback)
+        run: npm ci
+
+      - name: Build
+        # Routes are force-dynamic; the build must not need a real database.
+        env:
+          DATABASE_URL: postgres://ci:ci@localhost:5432/ci
+        run: npm run build
+
+      - name: Boot the standalone server with a bare environment and answer on /login
+        # next.config.ts builds `output: standalone` off Vercel, and Next warns that `next start`
+        # does not serve a standalone build, so the server a self-hoster runs was never the one
+        # exercised here (#554). This boots the built server the way a Docker image does.
+        run: |
+          env -i PATH="$PATH" HOME="$HOME" DATABASE_URL=postgres://ci:ci@localhost:5432/ci PORT=8097 HOSTNAME=127.0.0.1 node .next/standalone/server.js > start.log 2>&1 &
+          for i in $(seq 1 30); do
+            sleep 1
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8097/login || true)
+            case "$code" in 2*|3*) echo "GET /login -> $code"; exit 0;; esac
+          done
+          echo "dashboard did not answer on /login"; cat start.log; exit 1
+
+  check-web-container:
+    # The self-hosting image (web/Dockerfile), built the way the docs say, from the
+    # repository root so it compiles the fork-local strict engine. Built and run
+    # locally on the runner only: never tagged for or pushed to any registry.
+    name: Container image (web, strict engine)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Build the image (engine compiled and identity-verified inside)
+        run: docker build -f web/Dockerfile -t h2g-web-ci:local .
+
+      - name: Boot it with a bare environment; strict firewall at start, login answers
+        run: |
+          docker run -d --name h2g -p 127.0.0.1:8096:8096 -e H2G_PASSWORD=ci-test-password \
+            -e HEVY2GARMIN_SECRET=ci-test-secret-32-chars-abcdefgh h2g-web-ci:local
+          for i in $(seq 1 40); do
+            sleep 1
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8096/login || true)
+            case "$code" in 2*|3*) break;; esac
+          done
+          docker logs h2g > container.log 2>&1
+          cat container.log
+          [ "$code" = "200" ] || { echo "GET /login -> $code"; exit 1; }
+          grep -q "\[strict\] Garmin network firewall installed" container.log || { echo "firewall not installed in the image"; exit 1; }
+          [ "$(docker inspect -f '{{.Config.User}}' h2g)" = "node" ] || { echo "image does not run as the unprivileged node user"; exit 1; }
+          docker rm -f h2g
+
+  check-web-empty-db:
+    # The gap that let #475 through. check-web runs the Playwright smoke with NO
+    # DATABASE_URL, and check-fresh-fork-web never provisions a database, so
+    # nothing covered a database that is PRESENT and EMPTY — which is exactly
+    # where a forker lands after adding Neon as the README tells them to.
+    # Reads were never the problem: every page returns 200 against an empty
+    # database. This asserts a WRITE round-trips, which is what actually broke.
+    name: Web against an empty database
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: h2g_empty
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://test:test@localhost:5432/h2g_empty
+      H2G_PASSWORD: ci-test-password
+      HEVY2GARMIN_SECRET: ci-test-secret-32-chars-abcdefgh
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      # No Python bootstrap here on purpose (#475): the database starts with zero
+      # tables and the web app must create them itself on first use. Putting the
+      # Python _ensure_tables() back would hide the exact bug this job exists for.
+      - name: The database really is empty
+        run: |
+          N=$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM pg_tables WHERE schemaname = 'public'")
+          echo "tables before: $N"
+          [ "$N" = "0" ] || { echo "expected an empty database"; exit 1; }
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build the fork-local engine the dashboard installs (contract item 4)
+        working-directory: typescript
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install and build the web app
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - name: A write must round-trip against an empty database
+        working-directory: web
+        run: |
+          npx next start --port 8100 --hostname 127.0.0.1 > start.log 2>&1 &
+          for i in $(seq 1 40); do
+            sleep 1
+            curl -sf -o /dev/null http://127.0.0.1:8100/login && break
+          done
+
+          COOKIE=$(curl -s -i -X POST -H 'Content-Type: application/json' \
+            -d '{"password":"'"$H2G_PASSWORD"'"}' \
+            http://127.0.0.1:8100/api/login \
+            | grep -i '^set-cookie:' | head -1 | sed 's/^[Ss]et-[Cc]ookie: //' | cut -d';' -f1)
+          if [ -z "$COOKIE" ]; then echo "could not authenticate"; cat start.log; exit 1; fi
+
+          CODE=$(curl -s -o body.json -w '%{http_code}' -X POST \
+            -H 'Content-Type: application/json' -H "Cookie: $COOKIE" \
+            -d '{"auto_sync":{"enabled":true,"interval_minutes":720}}' \
+            http://127.0.0.1:8100/api/settings)
+
+          echo "POST /api/settings -> $CODE"; cat body.json; echo
+          if [ "$CODE" != "200" ]; then
+            echo "A write failed against an empty database. See #475."
+            cat start.log
+            exit 1
+          fi
+
+          # Strict in-place mode on the production server itself: the network
+          # firewall is ENFORCED (a network-free self-test, which a marker check
+          # cannot fake once Next.js wraps fetch), the ledger is ready, automatic
+          # runs are locked without the owner gate, and destructive routes answer 423.
+          grep -q "\[strict\] Garmin network firewall installed" start.log || { echo "firewall not installed at start"; cat start.log; exit 1; }
+          curl -s -H "Cookie: $COOKIE" http://127.0.0.1:8100/api/strict/status > strict.json
+          python3 - <<'PYCHECK'
+          import json
+          s = json.load(open("strict.json"))["status"]
+          assert s["mode"] == "strict_inplace", s["mode"]
+          assert s["firewall"]["installed"] is True, s["firewall"]
+          assert s["schema"]["ready"] is True, s["schema"]
+          assert s["automaticEnabled"] is False
+          print("strict status OK:", s["firewall"], s["schema"])
+          PYCHECK
+          for p in /api/unsync-all /api/routines/sync /api/update-fork /api/setup-actions /api/toggle-autosync; do
+            c=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Cookie: $COOKIE" "http://127.0.0.1:8100$p")
+            [ "$c" = "423" ] || { echo "$p answered $c, expected 423"; exit 1; }
+          done
+          c=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:8100/api/sync-one?live=1" -d '{}')
+          [ "$c" = "401" ] || { echo "anonymous live sync answered $c, expected 401"; exit 1; }
+          echo "strict locks verified on the production server"
+
+      - name: The web app created the nine tables itself
+        run: |
+          for t in synced_workouts sync_log hr_cache pending_uploads platform_credentials custom_mappings app_cache synced_routines routine_schedules; do
+            psql "$DATABASE_URL" -tAc "SELECT to_regclass('public.$t')" | grep -qx "$t" || { echo "missing table: $t"; exit 1; }
+          done
+          echo "all nine tables present"
+
+      - name: The web app created the strict ledger, with its insert-only trigger
+        run: |
+          for t in strict_bindings strict_backups strict_journal strict_control strict_activity_locks strict_gate_f; do
+            psql "$DATABASE_URL" -tAc "SELECT to_regclass('public.$t')" | grep -qx "$t" || { echo "missing strict table: $t"; exit 1; }
+          done
+          for g in strict_backups_insert_only strict_backups_no_truncate; do
+            psql "$DATABASE_URL" -tAc "SELECT tgname FROM pg_trigger WHERE tgname = '$g'" | grep -qx "$g" || { echo "missing trigger: $g"; exit 1; }
+          done
+          # A synthetic row: a row-level trigger only fires when there is a row to change.
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -qc "INSERT INTO strict_backups (garmin_activity_id, hevy_id, kind, payload, sha256) VALUES (1, 'ci-synthetic', 'pre_write', '{}', repeat('0', 64))"
+          for stmt in "DELETE FROM strict_backups" "UPDATE strict_backups SET payload = '{\"x\":1}'" "TRUNCATE strict_backups"; do
+            if psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -qc "$stmt" 2>/dev/null; then echo "backups accepted: $stmt"; exit 1; fi
+          done
+          echo "strict ledger present and insert-only"
+
+      - name: The write must have persisted, not just returned 200
+        run: |
+          VAL=$(psql "$DATABASE_URL" -At -c "SELECT value::text FROM app_cache WHERE key='auto_sync';")
+          echo "app_cache.auto_sync = $VAL"
+          case "$VAL" in
+            *720*) echo "persisted";;
+            *) echo "the row is missing or wrong; a 200 was returned without a durable write"; exit 1;;
+          esac
+
+      # The store's upserts need a real Postgres, and this job is the one that
+      # has it. Last, so the checks above see the database as the app left it;
+      # the tests delete only the rows they wrote. Without TEST_DATABASE_URL
+      # they skip, so an unset URL fails here rather than passing silently (#709).
+      - name: The store's upserts against real Postgres
+        working-directory: web
+        run: TEST_DATABASE_URL="${DATABASE_URL:?}" npx vitest run lib/pending-store.db.test.ts
+
+      # Strict in-place merge against real Postgres (contract item 8): the
+      # ledger contract, insert-only backups, exclusivity in the schema, and the
+      # end-to-end merge through the real firewall with Garmin simulated over
+      # HTTP. Synthetic data only. They recreate the strict tables they use.
+      # Contract item 7 on synthetic data: fresh empty DB, the previous fork
+      # main's exact legacy schema migrated additively and idempotently, and a
+      # pg_dump/pg_restore round-trip in which the strict ledger stays
+      # insert-only. Scratch databases are created and dropped by the test.
+      - name: Database migration, backup and restore qualification
+        working-directory: web
+        run: |
+          # Client tools must match the server's major version: a newer pg_dump
+          # writes settings Postgres 16 refuses on restore. Run them from the
+          # server's own image rather than the runner's packages.
+          export PG_DOCKER_IMAGE=postgres:16
+          docker run --rm "$PG_DOCKER_IMAGE" pg_dump --version
+          REQUIRE_PG_DUMP=1 TEST_DATABASE_URL="${DATABASE_URL:?}" npx vitest run --project upstream lib/db-qualification.db.test.ts
+
+      - name: Strict ledger and end-to-end merge against real Postgres
+        working-directory: web
+        run: |
+          TEST_DATABASE_URL="${DATABASE_URL:?}" npx vitest run --project upstream lib/strict-ledger-store.db.test.ts
+          TEST_DATABASE_URL="${DATABASE_URL:?}" npx vitest run --project strict lib/strict-e2e.db.strict.test.ts lib/strict-duplicate-audit.db.strict.test.ts
+          # Review round 2: sealed credentials (vault, token store, rotation) and synthetic staging.
+          TEST_DATABASE_URL="${DATABASE_URL:?}" npx vitest run --project strict lib/credential-vault.db.strict.test.ts lib/staging.db.strict.test.ts
+
+  check-staging-rehearsal:
+    # Gate E rehearsed in CI: the production build in synthetic staging mode
+    # (H2G_STAGING=synthetic) against an empty Postgres, driven over HTTP by the
+    # same script that rehearses the Vercel staging preview: credential routes
+    # locked, every scenario (merge, mismatch and restore, lost response,
+    # outage and reconcile, ambiguous, missing, rejected, legacy duplicate),
+    # and the evidence that only the simulated hosts were contacted. Then the
+    # isolation proof: pointed at a database holding a credential, the staging
+    # server refuses every query and creates nothing in it.
+    name: Synthetic staging rehearsal (gate E)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: h2g_staging
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://test:test@localhost:5432/h2g_staging
+      H2G_PASSWORD: ci-staging-password
+      HEVY2GARMIN_SECRET: ci-staging-secret-32-chars-abcdefgh
+      H2G_STAGING: synthetic
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build the fork-local engine
+        working-directory: typescript
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install and build the web app
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Rehearse every scenario over HTTP
+        working-directory: web
+        run: |
+          npx next start --port 8120 --hostname 127.0.0.1 > start.log 2>&1 &
+          for i in $(seq 1 40); do
+            sleep 1
+            curl -sf -o /dev/null http://127.0.0.1:8120/login && break
+          done
+          grep -q "\[staging\] synthetic staging" start.log || { echo "staging mode not announced"; cat start.log; exit 1; }
+          H2G_REHEARSAL_URL=http://127.0.0.1:8120 H2G_REHEARSAL_PASSWORD="$H2G_PASSWORD" node scripts/staging-rehearsal.mjs || { cat start.log; exit 1; }
+
+      - name: Rehearse gate F over HTTP (synthetic authorization, its own database)
+        # The same production build with a synthetic gate F authorization: every
+        # other sync path locked, the typed confirmation, the one run, no repeat,
+        # evidence, restore, and only PUTs on the one authorized activity.
+        working-directory: web
+        run: |
+          psql postgresql://test:test@localhost:5432/postgres -v ON_ERROR_STOP=1 -qc "CREATE DATABASE h2g_gate_f"
+          EXP=$(node -e 'console.log(new Date(Date.now() + 3 * 3600e3).toISOString())')
+          DATABASE_URL=postgresql://test:test@localhost:5432/h2g_gate_f \
+          H2G_GATE_F=approved-by-owner H2G_GATE_F_HEVY_ID=syn-legs H2G_GATE_F_GARMIN_ACTIVITY_ID=9100001 H2G_GATE_F_EXPIRES="$EXP" \
+            npx next start --port 8122 --hostname 127.0.0.1 > gate-f.log 2>&1 &
+          for i in $(seq 1 40); do
+            sleep 1
+            curl -sf -o /dev/null http://127.0.0.1:8122/login && break
+          done
+          H2G_REHEARSAL_URL=http://127.0.0.1:8122 H2G_REHEARSAL_PASSWORD="$H2G_PASSWORD" node scripts/gate-f-rehearsal.mjs || { cat gate-f.log; exit 1; }
+
+      - name: Pointed at a database with a credential, staging refuses and creates nothing
+        working-directory: web
+        run: |
+          psql postgresql://test:test@localhost:5432/postgres -v ON_ERROR_STOP=1 -qc "CREATE DATABASE h2g_foreign"
+          F=postgresql://test:test@localhost:5432/h2g_foreign
+          psql "$F" -v ON_ERROR_STOP=1 -qc "CREATE TABLE platform_credentials (platform VARCHAR(50) PRIMARY KEY, auth_type VARCHAR(20), credentials JSONB NOT NULL DEFAULT '{}', status VARCHAR(20))" \
+            -c "INSERT INTO platform_credentials VALUES ('hevy', 'api_key', '{\"api_key\": \"synthetic\"}', 'active')"
+          DATABASE_URL="$F" npx next start --port 8121 --hostname 127.0.0.1 > foreign.log 2>&1 &
+          for i in $(seq 1 40); do
+            sleep 1
+            curl -sf -o /dev/null http://127.0.0.1:8121/login && break
+          done
+          if H2G_REHEARSAL_URL=http://127.0.0.1:8121 H2G_REHEARSAL_PASSWORD="$H2G_PASSWORD" node scripts/staging-rehearsal.mjs > foreign-rehearsal.txt 2>&1; then
+            echo "the rehearsal ran against a database holding a credential"; cat foreign-rehearsal.txt; exit 1
+          fi
+          grep -q "STOP: not a synthetic staging deployment" foreign-rehearsal.txt || { cat foreign-rehearsal.txt; exit 1; }
+          grep -q "refusing: this database holds 1 stored credential" foreign-rehearsal.txt || { cat foreign-rehearsal.txt; exit 1; }
+          T=$(psql "$F" -tAc "SELECT string_agg(tablename, ',' ORDER BY tablename) FROM pg_tables WHERE schemaname = 'public'")
+          [ "$T" = "platform_credentials" ] || { echo "staging created tables in a foreign database: $T"; exit 1; }
+          echo "isolation proven: refused before any change"
+
+      - name: The owner's gate F path through the dashboard (fresh synthetic gate F database)
+        # Preview, typed confirmation, run, evidence, the restore of the original
+        # and the evidence again, clicked in Chromium as OWNER_RUNBOOK.md block B
+        # describes it.
+        working-directory: web
+        run: |
+          npx playwright install --with-deps chromium
+          psql postgresql://test:test@localhost:5432/postgres -v ON_ERROR_STOP=1 -qc "CREATE DATABASE h2g_gate_f_ui"
+          EXP=$(node -e 'console.log(new Date(Date.now() + 3 * 3600e3).toISOString())')
+          DATABASE_URL=postgresql://test:test@localhost:5432/h2g_gate_f_ui \
+          H2G_GATE_F=approved-by-owner H2G_GATE_F_HEVY_ID=syn-legs H2G_GATE_F_GARMIN_ACTIVITY_ID=9100001 H2G_GATE_F_EXPIRES="$EXP" \
+            npx next start --port 8123 --hostname 127.0.0.1 > gate-f-ui.log 2>&1 &
+          for i in $(seq 1 40); do
+            sleep 1
+            curl -sf -o /dev/null http://127.0.0.1:8123/login && break
+          done
+          H2G_UI_URL=http://127.0.0.1:8123 H2G_UI_PASSWORD="$H2G_PASSWORD" node scripts/gate-f-ui-check.mjs || { cat gate-f-ui.log; exit 1; }
+
+      - name: Accessibility (WCAG 2.1 A/AA, reflow) and page performance over the rehearsed pages
+        # Automated axe checks of every page's initial state, desktop, mobile and
+        # 320 px reflow, on the staging data the rehearsal left behind, and the
+        # gate F panel after its run: any WCAG A/AA violation or page that does
+        # not load fails. Then the page timing thresholds of docs/PES_EVIDENCE.md.
+        working-directory: web
+        run: |
+          H2G_A11Y_URL=http://127.0.0.1:8120 H2G_A11Y_PASSWORD="$H2G_PASSWORD" node scripts/a11y-scan.mjs
+          H2G_A11Y_URL=http://127.0.0.1:8123 H2G_A11Y_PASSWORD="$H2G_PASSWORD" H2G_A11Y_PAGES=/dashboard node scripts/a11y-scan.mjs
+          H2G_PERF_URL=http://127.0.0.1:8120 H2G_PERF_PASSWORD="$H2G_PASSWORD" node scripts/perf-probe.mjs
+
+  check-gate-f-windows:
+    # Gate F on the owner's Windows path (tools/gate-f-windows, OWNER_RUNBOOK.md
+    # block B), rehearsed as a STANDARD user without administrator rights, in a
+    # folder whose name has a space and an umlaut: gate-f.cmd downloads and
+    # verifies the pinned Node.js and THIS commit's source from GitHub, builds,
+    # self-tests, prepares a synthetic rehearsal against a local Postgres and
+    # starts; the gate F HTTP rehearsal runs against it; then every refusal.
+    # Synthetic only: no credential, no Garmin or Hevy, nothing leaves the runner
+    # but the downloads from nodejs.org, codeload.github.com and the npm registry.
+    name: Gate F on Windows (portable, no Docker, standard user)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Launcher unit tests and the manifest pins of this commit
+        shell: pwsh
+        run: |
+          # Failures are also written as annotations: the job log is not readable everywhere.
+          $t = node --test tools/gate-f-windows/gate-f.test.mjs 2>&1 | Out-String
+          Write-Host $t
+          if ($LASTEXITCODE) {
+            $lines = $t -split "`r?`n"
+            $at = ($lines | Select-String -Pattern '^not ok' | Select-Object -First 1).LineNumber
+            $block = if ($at) { $lines[($at - 1)..([Math]::Min($at + 30, $lines.Count - 1))] } else { $lines | Select-Object -Last 30 }
+            Write-Host "::error::launcher unit tests failed:%0A$(($block -join '%0A') -replace '::', ': :')"
+            exit 1
+          }
+          $m = node tools/gate-f-windows/make-manifest.mjs --check 2>&1 | Out-String
+          Write-Host $m
+          if ($LASTEXITCODE) { Write-Host "::error::manifest check failed: $($m.Trim())"; exit 1 }
+
+      - name: The owner's path as a standard user, then every refusal
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          trap { Write-Host "::error::unexpected: $($_.Exception.Message) $($_.InvocationInfo.PositionMessage -replace "`r?`n", '%0A')"; exit 1 }
+          $script:last = ""
+          $work = "C:\h2g Prüfung"
+          $gfHome = "$work\gate f"
+          $cmdFile = "$work\gate-f.cmd"
+          New-Item -ItemType Directory -Force -Path "$work\tmp", "$work\logs" | Out-Null
+          Copy-Item tools/gate-f-windows/gate-f.cmd $cmdFile
+
+          # A standard user (no group but Users), with a random password.
+          $pw = "H" + [guid]::NewGuid().ToString("N") + "!a1"
+          Write-Host "::add-mask::$pw"
+          $sec = ConvertTo-SecureString $pw -AsPlainText -Force
+          & net user h2gtester $pw /add /y | Out-Null
+          if ($LASTEXITCODE) { exit 1 }
+          & icacls $work /grant "h2gtester:(OI)(CI)M" /T /Q | Out-Null
+
+          # A planted package where any local user may create folders (C:\node_modules): Next
+          # asks for @opentelemetry/api, which gate F does not ship. It must never run.
+          $marker = "C:\h2g-planted\ran.txt"
+          New-Item -ItemType Directory -Force -Path "C:\node_modules\@opentelemetry\api", "C:\h2g-planted" | Out-Null
+          & icacls "C:\h2g-planted" /grant "h2gtester:(OI)(CI)M" /Q | Out-Null
+          Set-Content -Path "C:\node_modules\@opentelemetry\api\package.json" -Value '{"name":"@opentelemetry/api","version":"1.9.0","main":"index.js"}'
+          Set-Content -Path "C:\node_modules\@opentelemetry\api\index.js" -Value "require('fs').appendFileSync('C:/h2g-planted/ran.txt', process.argv.join(' ') + '\n'); module.exports = {};"
+
+          $script:n = 0
+          $script:serverLog = $null
+          function Tester([string]$args1, [hashtable]$extra = @{}, [switch]$Background, [int]$Minutes = 6, [switch]$DefaultHome, [switch]$NoFail) {
+            $script:n++
+            $log = "$work\logs\step$($script:n).log"
+            $psi = [System.Diagnostics.ProcessStartInfo]::new("$env:SystemRoot\System32\cmd.exe", "/d /s /c `"$args1 > `"$log`" 2>&1`"")
+            $psi.UserName = "h2gtester"; $psi.Domain = $env:COMPUTERNAME; $psi.Password = $sec
+            $psi.LoadUserProfile = $true; $psi.UseShellExecute = $false; $psi.WorkingDirectory = $work
+            # A typical user's window: none of the runner's variables (PG*, NODE_*, …).
+            $psi.Environment.Clear()
+            foreach ($k in "SystemRoot", "windir", "ComSpec", "PATHEXT", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS", "COMPUTERNAME") {
+              $psi.Environment[$k] = [Environment]::GetEnvironmentVariable($k)
+            }
+            $psi.Environment["PATH"] = "$env:SystemRoot\System32;$env:SystemRoot;$env:SystemRoot\System32\WindowsPowerShell\v1.0"
+            $psi.Environment["USERNAME"] = "h2gtester"
+            $psi.Environment["USERPROFILE"] = "C:\Users\h2gtester"
+            $psi.Environment["LOCALAPPDATA"] = "C:\Users\h2gtester\AppData\Local"
+            $psi.Environment["APPDATA"] = "C:\Users\h2gtester\AppData\Roaming"
+            $psi.Environment["TEMP"] = "$work\tmp"; $psi.Environment["TMP"] = "$work\tmp"
+            if (-not $DefaultHome) { $psi.Environment["GATE_F_HOME"] = $gfHome }
+            foreach ($k in $extra.Keys) { $psi.Environment[$k] = $extra[$k] }
+            $p = [System.Diagnostics.Process]::Start($psi)
+            if ($Background) { return @{ Process = $p; Log = $log } }
+            if (-not $p.WaitForExit($Minutes * 60000)) {
+              $p.Kill($true)
+              if ($NoFail) { return @{ Code = -1; Out = "$(Get-Content -LiteralPath $log -Encoding utf8 -Raw -ErrorAction SilentlyContinue)" } }
+              if ($script:serverLog) {
+                $sl = "$(Get-Content -LiteralPath $script:serverLog -Encoding utf8 -Raw -ErrorAction SilentlyContinue)"
+                Write-Host "::warning::server log tail: $(($sl.Substring([Math]::Max(0, $sl.Length - 1200))) -replace '%', '%25' -replace "`r?`n", '%0A')"
+              }
+              $script:last = "$(Get-Content -LiteralPath $log -Encoding utf8 -Raw -ErrorAction SilentlyContinue)"
+              Expect $false "timed out after $Minutes min: $args1 (this step's own log follows)"
+            }
+            $out = if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log -Encoding utf8 -Raw } else { "" }
+            Write-Host "---- [$($p.ExitCode)] $args1"
+            Write-Host $out
+            $script:last = $out
+            return @{ Code = $p.ExitCode; Out = $out }
+          }
+          function Expect([bool]$ok, [string]$what) {
+            if (-not $ok) {
+              $tail = if ($script:last.Length -gt 1500) { $script:last.Substring($script:last.Length - 1500) } else { $script:last }
+              Write-Host "::error::FAILED: $what%0A$($tail -replace '%', '%25' -replace "`r?`n", '%0A')"
+              exit 1
+            }
+            Write-Host "PASS  $what"
+          }
+          function NothingPlantedRan([string]$when) {
+            $script:last = if (Test-Path $marker) { Get-Content $marker -Raw } else { "" }
+            Expect (-not (Test-Path $marker)) "the planted C:\node_modules package never ran ($when)"
+          }
+          $gf = "`"$cmdFile`""
+
+          # 1. Who runs it: a standard user, medium integrity, not an administrator.
+          $r = Tester "whoami /groups"
+          Expect ($r.Out -match "S-1-16-8192" -and $r.Out -notmatch "S-1-16-12288") "the steps run as a standard user (medium integrity, no administrator token)"
+          Expect (-not ((& net localgroup Administrators | Out-String) -match "h2gtester")) "h2gtester is not in Administrators"
+
+          # 2. Setup: pinned Node.js, this commit's source from GitHub, every file verified, build.
+          $r = Tester "$gf setup $env:COMMIT" -Minutes 25
+          Expect ($r.Code -eq 0 -and $r.Out -cmatch "build manifest  SHA-256 [0-9a-f]{64}") "setup: verified download and build as a standard user"
+          Expect ($r.Out -match "\d+ files identical") "setup: every source file matched the manifest"
+          NothingPlantedRan "build"
+          $r = Tester "icacls `"$gfHome`""
+          Expect ($r.Out -match "h2gtester:\(OI\)\(CI\)\(F\)" -and $r.Out -notmatch "(Administrators|SYSTEM|Users|Everyone|Jeder|Benutzer|Authenticated)") "the gate F folder is h2gtester's alone"
+
+          # 3. Self-test: the bare server, no database, loopback only.
+          $r = Tester "$gf selftest"
+          Expect ($r.Code -eq 0 -and $r.Out -cmatch "SELFTEST PASS: [0-9a-f]{12} answers on 127\.0\.0\.1:8096 only") "selftest"
+          NothingPlantedRan "selftest"
+
+          # 4. A synthetic rehearsal against a local Postgres.
+          $svc = Get-Service -Name "postgresql*" | Select-Object -First 1
+          Set-Service -Name $svc.Name -StartupType Manual; Start-Service -Name $svc.Name
+          $env:PGPASSWORD = "root"
+          & "$env:PGBIN\psql.exe" -U postgres -h 127.0.0.1 -v ON_ERROR_STOP=1 -qc "CREATE DATABASE h2g_gate_f_win"
+          if ($LASTEXITCODE) { exit 1 }
+          $rpw = [guid]::NewGuid().ToString("N")
+          Write-Host "::add-mask::$rpw"
+          $rehearsalEnv = @{ GATE_F_REHEARSAL_DATABASE_URL = "postgres://postgres:root@127.0.0.1:5432/h2g_gate_f_win"; GATE_F_REHEARSAL_PASSWORD = $rpw }
+          $r = Tester "$gf prepare --rehearsal" $rehearsalEnv
+          Expect ($r.Code -eq 0 -and $r.Out -cmatch "Wrote private\\gate-f.env \(synthetic rehearsal") "prepare --rehearsal"
+          $r = Tester "icacls `"$gfHome\private\gate-f.env`""
+          Expect ($r.Out -match "h2gtester:\(F\)" -and $r.Out -notmatch "(Administrators|SYSTEM|Users|Everyone|Jeder|Benutzer):") "the env file is readable by h2gtester only"
+          $r = Tester "$gf prepare --rehearsal" $rehearsalEnv
+          Expect ($r.Code -ne 0 -and $r.Out -cmatch "already exists") "a second prepare is refused"
+
+          # 5-7. The running server, in ONE standard-user session: Windows' secondary logon
+          # (how the runner acts as h2gtester) ends a user's processes when one of its sessions
+          # ends, so start, rehearsal, refusals and stop run from a single script. The
+          # administrator side checks the listener while the script waits at a flag.
+          $L = "$work\logs"
+          $phase = @'
+          @echo off
+          setlocal EnableExtensions
+          set "L=%WORK%\logs"
+          start "" /b cmd /d /c ""%WORK%\gate-f.cmd" start > "%L%\server.log" 2>&1"
+          set /a n=0
+          :wait
+          ping -n 3 127.0.0.1 >nul
+          findstr /b /c:"READY " "%L%\server.log" >nul && goto ready
+          findstr /c:"refusing" /c:"ERROR" "%L%\server.log" >nul && goto failed
+          set /a n+=1
+          if %n% lss 120 goto wait
+          :failed
+          >"%L%\phase.failed" echo failed
+          exit /b 1
+          :ready
+          >"%L%\ready.flag" echo ready
+          set /a n=0
+          :waitc
+          if exist "%L%\continue.flag" goto go
+          ping -n 2 127.0.0.1 >nul
+          set /a n+=1
+          if %n% lss 300 goto waitc
+          goto failed
+          :go
+          setlocal
+          set "H2G_REHEARSAL_URL=http://127.0.0.1:8096"
+          set "H2G_REHEARSAL_PASSWORD=%REHEARSAL_PW%"
+          "%GATE_F_HOME%\node\node.exe" "%GATE_F_HOME%\src\web\scripts\gate-f-rehearsal.mjs" > "%L%\rehearsal.log" 2>&1
+          >"%L%\rehearsal.rc" echo %errorlevel%
+          endlocal
+          call "%WORK%\gate-f.cmd" start > "%L%\start2.log" 2>&1
+          >"%L%\start2.rc" echo %errorlevel%
+          setlocal
+          set "VERCEL=1"
+          call "%WORK%\gate-f.cmd" status > "%L%\vercel.log" 2>&1
+          >"%L%\vercel.rc" echo %errorlevel%
+          endlocal
+          setlocal
+          set "NODE_OPTIONS=--require=x"
+          call "%WORK%\gate-f.cmd" status > "%L%\nodeopt.log" 2>&1
+          >"%L%\nodeopt.rc" echo %errorlevel%
+          endlocal
+          setlocal
+          set "OPENSSL_CONF=C:\x.cnf"
+          call "%WORK%\gate-f.cmd" status > "%L%\openssl.log" 2>&1
+          >"%L%\openssl.rc" echo %errorlevel%
+          endlocal
+          setlocal
+          set "NODE_USE_SYSTEM_CA=1"
+          call "%WORK%\gate-f.cmd" status > "%L%\sysca.log" 2>&1
+          >"%L%\sysca.rc" echo %errorlevel%
+          endlocal
+          setlocal
+          set "GATE_F_HOME=%WORK%\OneDrive\gate f"
+          call "%WORK%\gate-f.cmd" status > "%L%\onedrive.log" 2>&1
+          >"%L%\onedrive.rc" echo %errorlevel%
+          endlocal
+          call "%WORK%\gate-f.cmd" stop > "%L%\stop.log" 2>&1
+          >"%L%\stop.rc" echo %errorlevel%
+          set /a n=0
+          :waitstop
+          findstr /c:"Server stopped" "%L%\server.log" >nul && goto stopped
+          ping -n 2 127.0.0.1 >nul
+          set /a n+=1
+          if %n% lss 30 goto waitstop
+          :stopped
+          call "%WORK%\gate-f.cmd" stop > "%L%\stop2.log" 2>&1
+          >"%L%\stop2.rc" echo %errorlevel%
+          >"%L%\phase.done" echo done
+          '@
+          # ASCII only (cmd reads batch files in the OEM code page); the paths come from variables.
+          [IO.File]::WriteAllText("$work\phase.cmd", (($phase -split "`r?`n" | ForEach-Object { $_ -replace '^          ', '' }) -join "`r`n"), [Text.Encoding]::ASCII)
+          $script:serverLog = "$L\server.log"
+          # Only neutral names in the session: the launcher refuses H2G_* variables in its window.
+          $run = Tester "`"$work\phase.cmd`"" @{ WORK = $work; REHEARSAL_PW = $rpw } -Background
+          $deadline = (Get-Date).AddMinutes(5)
+          while (-not ((Test-Path "$L\ready.flag") -or (Test-Path "$L\phase.failed") -or $run.Process.HasExited -or (Get-Date) -gt $deadline)) { Start-Sleep 2 }
+          $t = Get-Content -LiteralPath "$L\server.log" -Encoding utf8 -Raw -ErrorAction SilentlyContinue
+          Write-Host $t
+          $script:last = "$t"
+          Expect ((Test-Path "$L\ready.flag") -and $t -cmatch "(?m)^READY \(synthetic rehearsal\) http://127\.0\.0\.1:8096") "start: Node, source and build verified; identity, loopback, firewall and gate F state checked"
+          $listen = Get-NetTCPConnection -LocalPort 8096 -State Listen
+          Expect (($listen | Where-Object LocalAddress -ne "127.0.0.1").Count -eq 0 -and $listen.Count -ge 1) "port 8096 listens on 127.0.0.1 only"
+          $owner = (Get-CimInstance Win32_Process -Filter "ProcessId=$($listen[0].OwningProcess)" | Invoke-CimMethod -MethodName GetOwner).User
+          Expect ($owner -eq "h2gtester") "the server runs as h2gtester"
+          Set-Content -Path "$L\continue.flag" -Value "go"
+          $deadline = (Get-Date).AddMinutes(10)
+          while (-not ((Test-Path "$L\phase.done") -or (Test-Path "$L\phase.failed") -or (Get-Date) -gt $deadline)) { Start-Sleep 3 }
+          function Step([string]$name) {
+            $out = Get-Content -LiteralPath "$L\$name.log" -Encoding utf8 -Raw -ErrorAction SilentlyContinue
+            $rc = (Get-Content -LiteralPath "$L\$name.rc" -ErrorAction SilentlyContinue | Select-Object -First 1)
+            Write-Host "---- [$rc] $name"; Write-Host $out
+            $script:last = "$out"
+            return @{ Code = [int]("$rc".Trim() -replace '^$', '-1'); Out = "$out" }
+          }
+          $r = Step "rehearsal"
+          Expect ($r.Code -eq 0 -and $r.Out -cmatch "35 passed, 0 failed") "gate F HTTP rehearsal against the Windows server (one write on the authorized pair only, refusals, evidence, restore)"
+          $r = Step "start2"
+          Expect ($r.Code -ne 0 -and $r.Out -cmatch "port 8096 is in use") "a second start is refused"
+          $r = Step "vercel"
+          Expect ($r.Code -ne 0 -and $r.Out -cmatch "could steer the server: VERCEL") "a hosting variable in the window is refused"
+          $r = Step "nodeopt"
+          Expect ($r.Code -ne 0 -and $r.Out -cmatch "NODE_OPTIONS is set") "NODE_OPTIONS is refused before Node starts"
+          $r = Step "openssl"
+          Expect ($r.Code -ne 0 -and $r.Out -cmatch "OPENSSL_CONF is set") "OPENSSL_CONF is refused before Node starts"
+          $r = Step "sysca"
+          Expect ($r.Code -ne 0 -and $r.Out -cmatch "NODE_USE_SYSTEM_CA is set") "NODE_USE_SYSTEM_CA is refused before Node starts"
+          $r = Step "onedrive"
+          Expect ($r.Code -ne 0 -and $r.Out -cmatch "inside OneDrive") "a OneDrive folder is refused"
+          $r = Step "stop"
+          Expect ($r.Code -eq 0 -and $r.Out -cmatch "port 8096 is free") "stop"
+          $t = Get-Content -LiteralPath "$L\server.log" -Encoding utf8 -Raw
+          $script:last = "$t"
+          Expect ($t -cmatch "Server stopped") "the launcher exited after stop"
+          Expect ((Get-NetTCPConnection -LocalPort 8096 -State Listen -ErrorAction SilentlyContinue).Count -eq 0) "nothing listens on 8096 any more"
+          $r = Step "stop2"
+          Expect ($r.Code -eq 0 -and $r.Out -cmatch "No server record") "a second stop kills nothing"
+          Expect (Test-Path "$L\phase.done") "the server phase ran to its end"
+          NothingPlantedRan "start and rehearsal"
+
+          # Refusals that need no running server.
+          $env:GATE_F_HOME = $gfHome
+          $r = & $cmdFile status 2>&1 | Out-String
+          $script:last = $r
+          Remove-Item Env:GATE_F_HOME
+          Expect ($r -match "runs as administrator") "an administrator window is refused"
+          $r = Tester "$gf status" -DefaultHome
+          Expect ($r.Code -ne 0 -and $r.Out -cmatch "Node.js is not set up here") "the default folder %LOCALAPPDATA%\hevy2garmin-gate-f is found, created and made private"
+
+          # 8. Refusals of a widened env file and of a changed build (no server may start).
+          $r = Tester "icacls `"$gfHome\private\gate-f.env`" /grant *S-1-1-0:(R)"
+          Expect ($r.Code -eq 0 -and $r.Out -match "Successfully processed 1 files") "the env file was widened to Everyone (read) for the test"
+          $r = Tester "icacls `"$gfHome\private\gate-f.env`""
+          Expect ($r.Out -match "(Everyone|Jeder):\(R\)") "Everyone can now read the env file"
+          # The launcher's own check, as h2gtester with the portable Node, in the gate F folder.
+          Set-Content -Path "$work\acl-probe.mjs" -Encoding ascii -Value "const m = await import('file:///' + process.env.GATE_F_HOME.replace(/\\/g, '/') + '/src/tools/gate-f-windows/gate-f.mjs'); console.log('probe=' + JSON.stringify(m.ownerOnly(process.env.GATE_F_HOME + '\\private\\gate-f.env', process.env.GATE_F_HOME)));"
+          $r = Tester "cd /d `"$gfHome`" && `"$gfHome\node\node.exe`" `"$work\acl-probe.mjs`""
+          Expect ($r.Out -match 'probe=\{"ok":false,"reason":"also readable by WD"') "the launcher's ACL check sees Everyone (WD) on the env file"
+          $r = Tester "$gf start" -Minutes 3 -NoFail
+          if ($r.Code -eq -1 -or $r.Out -cmatch "(?m)^READY ") { $null = Tester "$gf stop" }
+          $script:last = $r.Out
+          Expect ($r.Code -ne 0 -and $r.Code -ne -1 -and $r.Out -cmatch "not private to you \(also readable by WD\)") "an env file readable by others is refused"
+          $r = Tester "icacls `"$gfHome\private\gate-f.env`" /remove *S-1-1-0"
+          Expect ($r.Code -eq 0) "the env file is private again"
+          # Parenthesised: the step's own "> log" must not take the echo's output away from the file.
+          $r = Tester "icacls `"$gfHome\app\server.js`" /grant h2gtester:(M) && (echo // changed>> `"$gfHome\app\server.js`")"
+          $r2 = Tester "findstr /c:`"// changed`" `"$gfHome\app\server.js`""
+          Expect ($r.Code -eq 0 -and $r2.Code -eq 0) "app\server.js changed for the test"
+          $r = Tester "$gf start" -Minutes 3 -NoFail
+          if ($r.Code -eq -1 -or $r.Out -cmatch "(?m)^READY ") { $null = Tester "$gf stop" }
+          $script:last = $r.Out
+          Expect ($r.Code -ne 0 -and $r.Code -ne -1 -and $r.Out -cmatch "differs from its build") "a changed app\ is refused"
+
+          # 9. A second setup in the same folder rebuilds cleanly.
+          $r = Tester "$gf setup $env:COMMIT" -Minutes 25
+          Expect ($r.Code -eq 0 -and $r.Out -cmatch "build manifest  SHA-256 [0-9a-f]{64}") "a second setup in the same folder"
+          NothingPlantedRan "second build"

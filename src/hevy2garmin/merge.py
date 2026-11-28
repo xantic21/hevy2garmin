@@ -14,8 +14,9 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
+from hevy2garmin._isotime import parse_iso
 from hevy2garmin.garmin import (
     find_matching_garmin_activity,
     generate_description,
@@ -24,7 +25,8 @@ from hevy2garmin.garmin import (
     rename_activity,
     set_description,
 )
-from hevy2garmin.mapper import lookup_exercise
+from hevy2garmin.mapper import fit_exercise_strings, lookup_exercise
+from hevy2garmin.strict_mode import refuse_if_strict
 
 logger = logging.getLogger("hevy2garmin")
 
@@ -36,6 +38,7 @@ _consecutive_failures = 0
 @dataclass
 class MergeResult:
     """Result of a merge attempt."""
+
     merged: bool
     activity_id: int | None = None
     fallback_reason: str | None = None
@@ -60,7 +63,7 @@ def _names_applied(client, activity_id) -> bool:
     time.sleep(4)  # let Garmin process the PUT before reading back
     try:
         after = get_activity_exercise_sets(client, activity_id)
-    except Exception:
+    except Exception:  # noqa: BLE001  # unreadable sets after a push are treated as accepted
         return True
     cats = [
         e.get("category")
@@ -80,7 +83,7 @@ def _restore_sets(client, activity_id, database) -> None:
         original = (backup or {}).get("original_sets")
         if original and original.get("exerciseSets") is not None:
             push_exercise_sets(client, activity_id, original)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001  # best-effort Garmin step; the merge result does not depend on it
         logger.warning("Could not restore sets for %s: %s", activity_id, e)
 
 
@@ -102,25 +105,42 @@ def _circuit_breaker_tripped() -> bool:
 # These are the categories from the FIT SDK profile, used in the
 # exerciseSets PUT payload.
 _CATEGORY_NAMES: dict[int, str] = {
-    0: "BENCH_PRESS", 1: "CALF_RAISE", 2: "CARDIO", 3: "CARRY",
-    4: "CHOP", 5: "CORE", 6: "CRUNCH", 7: "CURL", 8: "DEADLIFT",
-    9: "FLYE", 10: "HIP_RAISE", 11: "HIP_STABILITY", 12: "HIP_SWING",
-    13: "HYPEREXTENSION", 14: "LATERAL_RAISE", 15: "LEG_CURL",
-    16: "LEG_RAISE", 17: "LUNGE", 18: "OLYMPIC_LIFT", 19: "PLANK",
-    20: "PLYO", 21: "PULL_UP", 22: "PUSH_UP", 23: "ROW",
-    24: "SHOULDER_PRESS", 25: "SHOULDER_STABILITY", 26: "SHRUG",
-    27: "SIT_UP", 28: "SQUAT", 29: "TOTAL_BODY",
-    30: "TRICEPS_EXTENSION", 31: "WARM_UP", 32: "RUN",
+    0: "BENCH_PRESS",
+    1: "CALF_RAISE",
+    2: "CARDIO",
+    3: "CARRY",
+    4: "CHOP",
+    5: "CORE",
+    6: "CRUNCH",
+    7: "CURL",
+    8: "DEADLIFT",
+    9: "FLYE",
+    10: "HIP_RAISE",
+    11: "HIP_STABILITY",
+    12: "HIP_SWING",
+    13: "HYPEREXTENSION",
+    14: "LATERAL_RAISE",
+    15: "LEG_CURL",
+    16: "LEG_RAISE",
+    17: "LUNGE",
+    18: "OLYMPIC_LIFT",
+    19: "PLANK",
+    20: "PLYO",
+    21: "PULL_UP",
+    22: "PUSH_UP",
+    23: "ROW",
+    24: "SHOULDER_PRESS",
+    25: "SHOULDER_STABILITY",
+    26: "SHRUG",
+    27: "SIT_UP",
+    28: "SQUAT",
+    29: "TOTAL_BODY",
+    30: "TRICEPS_EXTENSION",
+    31: "WARM_UP",
+    32: "RUN",
     65534: "UNKNOWN",
 }
 
-# Subcategory names per category. Built from the FIT SDK profile.
-# Only the most common ones are listed — unmapped subs fall back to
-# the category's generic "0" name.
-# Format: {(category_id, subcategory_id): "GARMIN_STRING_NAME"}
-#
-# We populate this lazily from fit_tool if available, otherwise
-# use the category name as the exercise name (Garmin accepts this).
 
 def _category_to_string(cat_id: int) -> str:
     return _CATEGORY_NAMES.get(cat_id, "UNKNOWN")
@@ -135,17 +155,7 @@ def _exercise_to_string(cat_id: int, sub_id: int) -> str | None:
     *name* as **"Unknown"** (#138), whereas a ``null`` name under a valid parent
     category is accepted and shown as the category's generic label.
     """
-    try:
-        import fit_tool.profile.profile_type as pt
-        from fit_tool.profile.profile_type import ExerciseCategory
-        # e.g. BENCH_PRESS (0) → BenchPressExerciseName enum
-        cat_name = ExerciseCategory(cat_id).name  # "BENCH_PRESS"
-        sub_enum_cls = getattr(pt, cat_name.title().replace("_", "") + "ExerciseName", None)
-        if sub_enum_cls is not None:
-            return sub_enum_cls(sub_id).name
-    except (ValueError, AttributeError, ImportError):
-        pass
-    return None
+    return fit_exercise_strings(cat_id, sub_id)[1]
 
 
 def _strip_exercise_names(payload: dict) -> dict:
@@ -214,16 +224,16 @@ def _push_stripping_offenders(client, activity_id: int, payload: dict) -> None:
         head = cand[:mid]
         try:
             push_exercise_sets(client, activity_id, _strip_names_for(payload, set(head)))
-            cand = head          # stripping head fixed it → offender(s) in head
-        except Exception as e:   # noqa: BLE001
+            cand = head  # stripping head fixed it → offender(s) in head
+        except Exception as e:
             if not _is_subcategory_rejection(e):
                 raise
-            cand = cand[mid:]    # still rejected → offender(s) in the tail
+            cand = cand[mid:]  # still rejected → offender(s) in the tail
     # Narrowed to one candidate: strip just it. If that still fails there is more
     # than one offender split across halves, so fall back to stripping every name.
     try:
         push_exercise_sets(client, activity_id, _strip_names_for(payload, set(cand)))
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         if not _is_subcategory_rejection(e):
             raise
         push_exercise_sets(client, activity_id, _strip_exercise_names(payload))
@@ -241,6 +251,7 @@ def _is_subcategory_rejection(exc: Exception) -> bool:
 # ---------------------------------------------------------------------------
 # Payload builder
 # ---------------------------------------------------------------------------
+
 
 def build_exercise_sets_payload(
     hevy_workout: dict,
@@ -263,7 +274,7 @@ def build_exercise_sets_payload(
     start_str = activity_start_time.replace(" ", "T")
     if "+" not in start_str and not start_str.endswith("Z"):
         start_str += "+00:00"
-    act_start = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+    act_start = parse_iso(start_str)
 
     exercises = hevy_workout.get("exercises", [])
     if not exercises:
@@ -296,12 +307,14 @@ def build_exercise_sets_payload(
             else:
                 rest_dur = rest_sets_s
 
-            all_sets.append({
-                "ex_idx": ex_idx,
-                "set_data": s,
-                "set_dur": set_dur,
-                "rest_dur": rest_dur,
-            })
+            all_sets.append(
+                {
+                    "ex_idx": ex_idx,
+                    "set_data": s,
+                    "set_dur": set_dur,
+                    "rest_dur": rest_dur,
+                }
+            )
 
     # Scale to fit actual activity duration
     ideal_total = sum(si["set_dur"] + si["rest_dur"] for si in all_sets)
@@ -318,7 +331,9 @@ def build_exercise_sets_payload(
         ex_idx = si["ex_idx"]
         ex = exercises[ex_idx]
 
-        cat_id, sub_id, _ = lookup_exercise(ex.get("title") or ex.get("name", "Unknown"), ex.get("exercise_template_id"))
+        cat_id, sub_id, _ = lookup_exercise(
+            ex.get("title") or ex.get("name", "Unknown"), ex.get("exercise_template_id")
+        )
         cat_str = _category_to_string(cat_id)
         sub_name = _exercise_to_string(cat_id, sub_id)
         # Garmin rejects an UNKNOWN category, so fall back to the generic
@@ -337,8 +352,10 @@ def build_exercise_sets_payload(
         reps = s.get("reps")
         weight_kg = s.get("weight_kg")
 
+        # probability must be non-zero: Connect renders any exercise whose stored
+        # confidence is 0 as "Unknown" (#325). The web UI's own edits send 100.
         active_set: dict = {
-            "exercises": [{"category": cat_str, "name": sub_name, "probability": None}],
+            "exercises": [{"category": cat_str, "name": sub_name, "probability": 100}],
             "duration": round(scaled_dur, 3),
             "repetitionCount": int(reps) if reps is not None else 0,
             "weight": float(round(weight_kg * 1000)) if weight_kg else 0.0,
@@ -370,6 +387,73 @@ def build_exercise_sets_payload(
     return {"activityId": activity_id, "exerciseSets": exercise_sets}
 
 
+def build_preserved_payload(synth_payload: dict, existing: dict) -> dict | None:
+    """Overlay Hevy's names, reps and weights onto the watch's own set timing.
+
+    The watch recorded a real timeline: each set's startTime, its duration, and
+    the rest between them. `build_exercise_sets_payload` throws that away and
+    invents a uniform duration for every set (the 33 seconds of #748). When the
+    workout was recorded on both the watch and Hevy, the watch's timing is the
+    accurate one, so this keeps the watch's whole set list unchanged and only
+    writes Hevy's exercise identity, reps and weight onto the ACTIVE sets.
+
+    The two set lists are matched by ACTIVE-set position, in order. That is safe
+    only when they have the same number of ACTIVE sets: the same workout logged
+    in both places. When the counts differ there is no sound mapping, so this
+    returns None and the caller keeps the synthesized timing rather than guess.
+
+    Args:
+        synth_payload: the output of `build_exercise_sets_payload`, which already
+            carries each ACTIVE set's resolved exercises, reps and weight.
+        existing: the activity's current sets, as `get_activity_exercise_sets`
+            returns them ({"exerciseSets": [...]}), i.e. the watch's recording.
+
+    Returns:
+        A payload that keeps the watch's startTime/duration on every set and
+        overlays Hevy's identity on the ACTIVE ones, or None when the ACTIVE-set
+        counts do not match.
+    """
+    existing_sets = (existing or {}).get("exerciseSets")
+    if not existing_sets:
+        return None
+
+    synth_active = [
+        s for s in synth_payload.get("exerciseSets", []) if s.get("setType") == "ACTIVE"
+    ]
+    watch_active = [s for s in existing_sets if s.get("setType") == "ACTIVE"]
+    if not watch_active or len(watch_active) != len(synth_active):
+        return None
+
+    out: list[dict] = []
+    ai = 0
+    for es in existing_sets:
+        if es.get("setType") == "ACTIVE":
+            h = synth_active[ai]
+            ai += 1
+            out.append(
+                {
+                    # Identity, reps and weight come from Hevy; the wktStepIndex too,
+                    # so sets group under the exercise they belong to rather than the
+                    # watch's own grouping of nameless sets.
+                    "exercises": h["exercises"],
+                    "repetitionCount": h.get("repetitionCount", 0),
+                    "weight": h.get("weight", 0.0),
+                    "wktStepIndex": h.get("wktStepIndex", 0),
+                    # Timing stays exactly as the watch recorded it (#748).
+                    "duration": es.get("duration"),
+                    "startTime": es.get("startTime"),
+                    "setType": "ACTIVE",
+                    "messageIndex": es.get("messageIndex"),
+                }
+            )
+        else:
+            # A REST (or any non-ACTIVE) set is the watch's own, kept untouched so
+            # its real rest duration survives. Copy it so the backup is not mutated.
+            out.append(dict(es))
+
+    return {"activityId": synth_payload.get("activityId"), "exerciseSets": out}
+
+
 def _apply_name_and_description(client, activity_id, hevy_workout) -> None:
     """Rename a Garmin activity to the Hevy title and set its exercise description."""
     title = hevy_workout.get("title", "Workout")
@@ -385,6 +469,7 @@ def _apply_name_and_description(client, activity_id, hevy_workout) -> None:
 # Orchestrator
 # ---------------------------------------------------------------------------
 
+
 def attempt_merge(
     client,
     hevy_workout: dict,
@@ -393,19 +478,35 @@ def attempt_merge(
     max_drift_minutes: int = 20,
     activity_types: set[str] | None = None,
     watch_strategy: str = "replace",
+    preserve_watch_timing: bool = True,
 ) -> MergeResult:
     """Try to merge Hevy exercise data into a matching Garmin activity.
 
     Returns MergeResult with merged=True if successful, or merged=False
     with a fallback_reason explaining why (no match, circuit breaker, etc.)
     """
+    refuse_if_strict("The Python merge path")
     global _consecutive_failures
 
     if _circuit_breaker_tripped():
         return MergeResult(merged=False, fallback_reason="Circuit breaker: too many PUT failures")
 
+    # Activities the ledger already maps to another Hevy workout: never merge a
+    # back-to-back session into a sibling's own upload (#796).
+    try:
+        known_ids = database.known_garmin_activity_ids(exclude_hevy_id=hevy_workout.get("id"))
+    except Exception:  # noqa: BLE001  # a ledger read failure must not block the merge attempt
+        known_ids = set()
+
     # Find matching activity
-    match = find_matching_garmin_activity(client, hevy_workout, overlap_threshold=overlap_threshold, max_drift_minutes=max_drift_minutes, activity_types=activity_types)
+    match = find_matching_garmin_activity(
+        client,
+        hevy_workout,
+        overlap_threshold=overlap_threshold,
+        max_drift_minutes=max_drift_minutes,
+        activity_types=activity_types,
+        exclude_activity_ids=known_ids,
+    )
     if not match:
         return MergeResult(merged=False, fallback_reason="No matching Garmin activity found")
 
@@ -432,11 +533,12 @@ def attempt_merge(
         # activities) and no upload, so it stays one activity.
         logger.info(
             "  Match %s recorded by %s; enriching its description (watch_strategy=describe)",
-            activity_id, manufacturer,
+            activity_id,
+            manufacturer,
         )
         try:
             _apply_name_and_description(client, activity_id, hevy_workout)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # best-effort Garmin step; the merge result does not depend on it
             logger.warning("Rename/description failed for %s: %s", activity_id, e)
         return MergeResult(merged=True, activity_id=activity_id)
 
@@ -445,7 +547,8 @@ def attempt_merge(
         # workout shows up exactly once with named exercises.
         logger.info(
             "  Match %s recorded by %s; uploading a named activity and removing the watch copy (watch_strategy=replace)",
-            activity_id, manufacturer,
+            activity_id,
+            manufacturer,
         )
         return MergeResult(
             merged=False,
@@ -462,23 +565,43 @@ def attempt_merge(
         # sets/reps/weights land in the activity. One activity, no upload/delete.
         logger.info(
             "  Match %s recorded by %s; merging sets in place, names may show as Unknown (watch_strategy=merge)",
-            activity_id, manufacturer,
+            activity_id,
+            manufacturer,
         )
 
     # Backup existing exercise sets
+    existing_sets: dict | None = None
     try:
         existing_sets = get_activity_exercise_sets(client, activity_id)
         database.set_app_config(
             f"merge_backup_{activity_id}",
             {"activity_id": activity_id, "original_sets": existing_sets},
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001  # best-effort Garmin step; the merge result does not depend on it
         logger.warning("Could not backup exercise sets for %s: %s", activity_id, e)
         # Continue anyway — backup is best-effort
 
     # Build payload
-    title = hevy_workout.get("title", "Workout")
     payload = build_exercise_sets_payload(hevy_workout, activity_id, act_start, act_duration)
+
+    # Keep the watch's own per-set execution and rest timing when we can (#748).
+    # Only for a watch recording: a DEVELOPMENT activity's existing sets are a
+    # previous hevy2garmin upload, not real device timing worth preserving. The
+    # overlay maps set-for-set, so it falls back to the synthesized timing when
+    # the watch and Hevy disagree on how many sets there were.
+    if preserve_watch_timing and is_watch and existing_sets:
+        preserved = build_preserved_payload(payload, existing_sets)
+        if preserved is not None:
+            logger.info(
+                "  Keeping the watch's own set timing on activity %s (preserve_watch_timing)",
+                activity_id,
+            )
+            payload = preserved
+        else:
+            logger.info(
+                "  Watch and Hevy set counts differ on activity %s; using synthesized timing",
+                activity_id,
+            )
 
     # PUT exercise sets. The exerciseSets PUT is atomic: a single exercise whose
     # (category, subcategory) pair Garmin rejects 400s the WHOLE payload and would
@@ -490,18 +613,24 @@ def attempt_merge(
     try:
         push_exercise_sets(client, activity_id, payload)
         _consecutive_failures = 0
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001  # the rejection is recognised by its message, whatever the client raised
         if _is_subcategory_rejection(e):
             logger.warning(
                 "  exerciseSets rejected a subcategory for activity %s (%s); "
-                "retrying, stripping only the offending exercise name(s)", activity_id, e,
+                "retrying, stripping only the offending exercise name(s)",
+                activity_id,
+                e,
             )
             try:
                 _push_stripping_offenders(client, activity_id, payload)
                 _consecutive_failures = 0
-            except Exception as e2:
+            except Exception as e2:  # noqa: BLE001  # a second failure of any type parks the merge
                 _consecutive_failures += 1
-                logger.error("PUT exerciseSets failed for activity %s even without names: %s", activity_id, e2)
+                logger.error(
+                    "PUT exerciseSets failed for activity %s even without names: %s",
+                    activity_id,
+                    e2,
+                )
                 return MergeResult(merged=False, fallback_reason=f"PUT failed: {e2}")
         else:
             _consecutive_failures += 1
@@ -527,7 +656,7 @@ def attempt_merge(
     # Rename + set description
     try:
         _apply_name_and_description(client, activity_id, hevy_workout)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001  # best-effort Garmin step; the merge result does not depend on it
         logger.warning("Rename/description failed after merge for %s: %s", activity_id, e)
         # Non-fatal, sets were already pushed
 

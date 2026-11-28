@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -40,8 +42,10 @@ class TestLoadConfig:
 
     def test_save_load_roundtrip(self, tmp_path: Path) -> None:
         config_file = tmp_path / "config.json"
-        with patch("hevy2garmin.config.CONFIG_DIR", tmp_path), \
-             patch("hevy2garmin.config.CONFIG_FILE", config_file):
+        with (
+            patch("hevy2garmin.config.CONFIG_DIR", tmp_path),
+            patch("hevy2garmin.config.CONFIG_FILE", config_file),
+        ):
             original = load_config()
             original["hevy_api_key"] = "test-key-123"
             original["user_profile"]["weight_kg"] = 75.5
@@ -54,7 +58,9 @@ class TestLoadConfig:
     def test_deep_merge_preserves_defaults(self, tmp_path: Path) -> None:
         config_file = tmp_path / "config.json"
         # Save partial config (missing timing)
-        config_file.write_text(json.dumps({"hevy_api_key": "key", "user_profile": {"weight_kg": 90}}))
+        config_file.write_text(
+            json.dumps({"hevy_api_key": "key", "user_profile": {"weight_kg": 90}})
+        )
 
         with patch("hevy2garmin.config.CONFIG_FILE", config_file):
             config = load_config()
@@ -71,6 +77,26 @@ class TestLoadConfig:
         with patch("hevy2garmin.config.CONFIG_FILE", config_file):
             config = load_config()
             assert config["user_profile"]["weight_kg"] == 80.0
+
+    def test_strips_whitespace_from_credentials(self, tmp_path: Path) -> None:
+        # A stray leading/trailing newline on a pasted credential (#257) is
+        # normalized on read, so it can't break the API call and an existing bad
+        # value self-heals on the next load.
+        config_file = tmp_path / "config.json"
+        config_file.write_text(
+            json.dumps(
+                {
+                    "hevy_api_key": "  abc123\n",
+                    "garmin_email": "\tuser@example.com ",
+                    "garmin_password": " pw ",
+                }
+            )
+        )
+        with patch("hevy2garmin.config.CONFIG_FILE", config_file):
+            config = load_config()
+            assert config["hevy_api_key"] == "abc123"
+            assert config["garmin_email"] == "user@example.com"
+            assert config["garmin_password"] == "pw"
 
 
 class TestIsConfigured:
@@ -112,10 +138,12 @@ class TestSaveConfigCloud:
             "timing": {"working_set_seconds": 45},
             "hr_fusion": {"enabled": True},
         }
-        with patch("hevy2garmin.config.CONFIG_DIR", tmp_path), \
-             patch("hevy2garmin.config.CONFIG_FILE", tmp_path / "config.json"), \
-             patch("hevy2garmin.db.get_database_url", return_value="postgresql://x"), \
-             patch("hevy2garmin.db.get_db", return_value=fake_db):
+        with (
+            patch("hevy2garmin.config.CONFIG_DIR", tmp_path),
+            patch("hevy2garmin.config.CONFIG_FILE", tmp_path / "config.json"),
+            patch("hevy2garmin.db.get_database_url", return_value="postgresql://x"),
+            patch("hevy2garmin.db.get_db", return_value=fake_db),
+        ):
             save_config(cfg)
 
         written = {c.args[0]: c.args[1] for c in fake_db.set_app_config.call_args_list}
@@ -124,20 +152,24 @@ class TestSaveConfigCloud:
 
     def test_no_db_write_when_local(self, tmp_path: Path) -> None:
         fake_db = MagicMock()
-        with patch("hevy2garmin.config.CONFIG_DIR", tmp_path), \
-             patch("hevy2garmin.config.CONFIG_FILE", tmp_path / "config.json"), \
-             patch("hevy2garmin.db.get_database_url", return_value=None), \
-             patch("hevy2garmin.db.get_db", return_value=fake_db):
+        with (
+            patch("hevy2garmin.config.CONFIG_DIR", tmp_path),
+            patch("hevy2garmin.config.CONFIG_FILE", tmp_path / "config.json"),
+            patch("hevy2garmin.db.get_database_url", return_value=None),
+            patch("hevy2garmin.db.get_db", return_value=fake_db),
+        ):
             save_config({"user_profile": {"weight_kg": 80.0}})
         fake_db.set_app_config.assert_not_called()
 
     def test_db_failure_does_not_raise(self, tmp_path: Path) -> None:
         fake_db = MagicMock()
         fake_db.set_app_config.side_effect = RuntimeError("db down")
-        with patch("hevy2garmin.config.CONFIG_DIR", tmp_path), \
-             patch("hevy2garmin.config.CONFIG_FILE", tmp_path / "config.json"), \
-             patch("hevy2garmin.db.get_database_url", return_value="postgresql://x"), \
-             patch("hevy2garmin.db.get_db", return_value=fake_db):
+        with (
+            patch("hevy2garmin.config.CONFIG_DIR", tmp_path),
+            patch("hevy2garmin.config.CONFIG_FILE", tmp_path / "config.json"),
+            patch("hevy2garmin.db.get_database_url", return_value="postgresql://x"),
+            patch("hevy2garmin.db.get_db", return_value=fake_db),
+        ):
             # Must not propagate — settings save should never 500 on a DB hiccup
             save_config({"user_profile": {"weight_kg": 80.0}})
 
@@ -145,3 +177,64 @@ class TestSaveConfigCloud:
 def test_default_has_grace_period() -> None:
     """DEFAULT_CONFIG must include sync.grace_period_minutes."""
     assert DEFAULT_CONFIG["sync"]["grace_period_minutes"] == 120
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes only")
+class TestConfigFilePermissions:
+    """The config file holds the Hevy key and Garmin credentials: owner-only (PES HEVY2GARMIN-F04)."""
+
+    @pytest.fixture(autouse=True)
+    def _usual_umask(self):
+        # 022 is the common default; the guarantees must not depend on a stricter one.
+        old = os.umask(0o022)
+        yield
+        os.umask(old)
+
+    @staticmethod
+    def _save(folder: Path, config: dict) -> Path:
+        config_file = folder / "config.json"
+        with (
+            patch("hevy2garmin.config.CONFIG_DIR", folder),
+            patch("hevy2garmin.config.CONFIG_FILE", config_file),
+            patch("hevy2garmin.db.get_database_url", return_value=None),
+        ):
+            save_config(config)
+        return config_file
+
+    def test_new_file_is_owner_only(self, tmp_path) -> None:
+        folder = tmp_path / "h2g"
+        config_file = self._save(folder, {"hevy_api_key": "synthetic-key"})
+        assert stat.S_IMODE(config_file.stat().st_mode) == 0o600
+        assert stat.S_IMODE(folder.stat().st_mode) == 0o700
+        assert json.loads(config_file.read_text())["hevy_api_key"] == "synthetic-key"
+        assert sorted(p.name for p in folder.iterdir()) == ["config.json"]
+
+    def test_existing_world_readable_file_is_replaced_owner_only(self, tmp_path) -> None:
+        config_file = tmp_path / "config.json"
+        config_file.write_text("{}")
+        config_file.chmod(0o644)
+        self._save(tmp_path, {"hevy_api_key": "synthetic-key"})
+        assert stat.S_IMODE(config_file.stat().st_mode) == 0o600
+        assert json.loads(config_file.read_text())["hevy_api_key"] == "synthetic-key"
+
+    def test_a_failed_write_keeps_the_old_config(self, tmp_path) -> None:
+        config_file = tmp_path / "config.json"
+        config_file.write_text('{"hevy_api_key": "old-key"}')
+        with (
+            patch("hevy2garmin.config.os.fsync", side_effect=OSError("disk full")),
+            patch("hevy2garmin.config._write_in_place", side_effect=OSError("disk full")),
+        ):
+            self._save(tmp_path, {"hevy_api_key": "new-key"})
+        assert json.loads(config_file.read_text())["hevy_api_key"] == "old-key"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["config.json"]
+
+    def test_without_a_temporary_file_it_still_writes_in_place(self, tmp_path) -> None:
+        # e.g. a folder that takes no new file, or a file bind-mounted into a container
+        config_file = tmp_path / "config.json"
+        config_file.write_text("{}")
+        config_file.chmod(0o644)
+        with patch("hevy2garmin.config.os.replace", side_effect=OSError("busy")):
+            self._save(tmp_path, {"hevy_api_key": "synthetic-key"})
+        assert json.loads(config_file.read_text())["hevy_api_key"] == "synthetic-key"
+        assert stat.S_IMODE(config_file.stat().st_mode) == 0o600
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["config.json"]

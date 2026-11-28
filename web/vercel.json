@@ -1,0 +1,10 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "git": {
+    "deploymentEnabled": false
+  },
+  "ignoreCommand": "node scripts/vercel-ignore.mjs",
+  "installCommand": "cd ../typescript && npm ci --no-audit --no-fund && npm run build && cd ../web && npm ci --no-audit --no-fund",
+  "buildCommand": "npm run build",
+  "crons": []
+}

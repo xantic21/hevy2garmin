@@ -2,7 +2,7 @@
 
 The graphic in [icon.svg](icon.svg) is an **original xantform portfolio icon** (formerly the xantic21 portfolio illustration) for GitHub documentation only. It is deliberately distinct from the application's original upstream icon.
 
-- **Canvas:** 108 × 108 SVG, 26-unit corner radius, consistent with the xantic21 portfolio icon family.
+- **Canvas:** 108 × 108 SVG, 26-unit corner radius, consistent with the xantform portfolio icon family.
 - **Palette (xantform Design System 2.0, 25 November 2026):** light tile `#E6F3EE`, dumbbell in ink `#1F5A4D` (7.01 : 1), synchronization arrow in medium `#A4C7B7`; tonal dark variant on `#253F38`. Geometry unchanged from the earlier portfolio illustration; the arrow moved from `#309780` to the approved secondary tone.
 - **Meaning:** strength-training activity plus transfer/synchronization to Garmin Connect.
 - **Presentation surfaces:** this repository's README, hero and social preview, and the public `xantic21/xantic21` profile use the same SVG geometry. The hero and social preview embed the identical tile; the profile copy is byte-identical to `icon.svg`. The social preview previously showed an unrelated check-mark motif and now uses the icon.

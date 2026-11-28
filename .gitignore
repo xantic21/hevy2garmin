@@ -15,6 +15,13 @@ venv/
 .env
 .env.*
 !.env.example
+# gate F authorization written by tools/gate-f/prepare-env.sh (database URL, keys)
+/gate-f.env
+
+# Local Garmin workout dumps from scripts/dump_garmin_workout.py (personal data)
+manual.json
+sync.json
+*.workout.json
 
 # IDE
 .idea/
@@ -44,5 +51,8 @@ fit_output/
 worker/.wrangler/
 worker-di/.wrangler/
 
-# Claude Code local instructions (never committed)
+# Claude Code local instructions (never committed). The root CLAUDE.md only
+# points to AGENTS.md (the repository's governance contract) and is committed.
 CLAUDE.md
+CLAUDE.local.md
+!/CLAUDE.md

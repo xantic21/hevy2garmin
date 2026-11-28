@@ -1,0 +1,23 @@
+# Context is the repository root (docker build -f web/Dockerfile .). Only the
+# engine source (typescript/) and the dashboard (web/) are needed; everything
+# else is excluded, and nothing built or secret on the host is ever copied.
+*
+!typescript
+!web
+typescript/node_modules
+typescript/dist
+web/node_modules
+web/.next
+web/out
+web/build
+web/coverage
+web/test-results
+web/playwright-report
+web/blob-report
+web/.vercel
+web/.env*
+!web/.env.example
+**/*.tsbuildinfo
+web/next-env.d.ts
+web/Dockerfile
+web/docker-compose*.yml

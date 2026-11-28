@@ -1,0 +1,5 @@
+@import "tailwindcss";
+/* xantform Design System 2.0, light (One UI 9.5 inspired). Local, no package:
+   it replaces upstream's soma-style, keeping its token and class names so every
+   component renders in the new system unchanged. */
+@import "../styles/xantform.css";

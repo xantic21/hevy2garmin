@@ -22,7 +22,7 @@ _instance: Database | None = None
 # Check all common names so users don't have to change the prefix.
 # Prefer pooled URLs (pgbouncer) for faster connections on serverless
 _POSTGRES_URL_VARS = [
-    "POSTGRES_URL",       # Neon pooled (pgbouncer) — fastest for serverless
+    "POSTGRES_URL",  # Neon pooled (pgbouncer) — fastest for serverless
     "DATABASE_URL",
     "STORAGE_URL",
     "NEON_DATABASE_URL",
@@ -74,6 +74,11 @@ def get_garmin_id(hevy_id: str, **kw) -> str | None:
     return get_db().get_garmin_id(hevy_id)
 
 
+def known_garmin_activity_ids(exclude_hevy_id: str | None = None, **kw) -> set[str]:
+    """Garmin activity ids the ledger already maps to a workout (#796)."""
+    return get_db().known_garmin_activity_ids(exclude_hevy_id)
+
+
 def mark_synced(
     hevy_id: str,
     garmin_activity_id: str | None = None,
@@ -85,7 +90,9 @@ def mark_synced(
 ) -> None:
     """Record a successfully synced workout."""
     kw.pop("db_path", None)  # consumed by test dispatcher, not by backends
-    return get_db().mark_synced(hevy_id, garmin_activity_id, title, calories, avg_hr, hevy_updated_at, **kw)
+    return get_db().mark_synced(
+        hevy_id, garmin_activity_id, title, calories, avg_hr, hevy_updated_at, **kw
+    )
 
 
 def unsync(hevy_id: str, **kw) -> bool:
@@ -106,6 +113,21 @@ def get_synced_count(**kw) -> int:
 def get_recent_synced(limit: int = 10, **kw) -> list[dict]:
     """Get recently synced workouts."""
     return get_db().get_recent_synced(limit)
+
+
+def get_routine_stats(**kw) -> dict:
+    """Get routine sync counts: {"synced": int, "scheduled": int}."""
+    return get_db().get_routine_stats()
+
+
+def get_recent_synced_routines(limit: int = 5, **kw) -> list[dict]:
+    """Get recently synced routines, newest first."""
+    return get_db().get_recent_synced_routines(limit)
+
+
+def get_synced_routine(hevy_routine_id: str, **kw) -> dict | None:
+    """Get a single synced-routine record (used by `sync-routines --list`)."""
+    return get_db().get_synced_routine(hevy_routine_id)
 
 
 def record_sync_log(
@@ -147,3 +169,39 @@ def get_app_config(key: str, **kw) -> dict | None:
 def set_app_config(key: str, value: dict, **kw) -> None:
     """Store a JSON value in the generic key-value app cache."""
     return get_db().set_app_config(key, value)
+
+
+def claim_pending(hevy_id: str, payload: dict, **kw) -> bool:
+    return get_db().claim_pending(hevy_id, payload)
+
+
+def get_pending(hevy_id: str, **kw) -> dict | None:
+    return get_db().get_pending(hevy_id)
+
+
+def list_pending(**kw) -> list[dict]:
+    return get_db().list_pending()
+
+
+def update_pending(hevy_id: str, **changes) -> None:
+    return get_db().update_pending(hevy_id, **changes)
+
+
+def delete_pending(hevy_id: str, **kw) -> bool:
+    return get_db().delete_pending(hevy_id)
+
+
+def complete_pending(hevy_id: str, terminal: dict, **kw) -> None:
+    return get_db().complete_pending(hevy_id, terminal)
+
+
+def resolve_terminal(hevy_id: str, **kwargs) -> None:
+    return get_db().resolve_terminal(hevy_id, **kwargs)
+
+
+def get_workout_states(hevy_ids: list[str], **kw) -> dict[str, dict]:
+    return get_db().get_workout_states(hevy_ids)
+
+
+def get_terminal_counts(**kw) -> dict[str, int]:
+    return get_db().get_terminal_counts()
