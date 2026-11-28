@@ -50,7 +50,7 @@ This is recorded as an exception for step 7 only, not as a passed rotation.
 - Windows 10 (1803 or later) or 11, x64.
 - A **normal Command Prompt**, not "Run as administrator".
 - About 3 GB of free space.
-- Internet access to nodejs.org, github.com, the npm registry and Neon.
+- Internet access to nodejs.org, raw.githubusercontent.com, codeload.github.com, registry.npmjs.org, Neon, and Garmin and Hevy.
 - On a work computer: only if its rules allow it. Nothing here bypasses them.
   Otherwise use a personal computer.
 
@@ -58,8 +58,8 @@ Everything goes into `%LOCALAPPDATA%\hevy2garmin-gate-f`: local, not OneDrive.
 
 **Binding values** (STRICT_GATE_F.md §3c):
 
-- code commit **`73baaf4826b2a07863b169bc1c3d8aa4766a7786`**
-- `gate-f.cmd` SHA-256 **`e852c27d90aea218cd5208c10d8b450e7bc65f64de6cf383bde5f4fc0abb758a`**
+- code commit **`338be15a7c4e0bce83a02205a25949d5f9e3af92`**
+- `gate-f.cmd` SHA-256 **`746dc29357d466a20a7a4960b65069b1d6b5125b7b192900ba6d3698dd86f4d2`**
 
 The file pins everything else: Node.js v22.23.5 (official ZIP, SHA-256
 `4a191082…a0e3`), `node.exe`, the source manifest and the launcher.
@@ -68,19 +68,19 @@ The file pins everything else: Node.js v22.23.5 (official ZIP, SHA-256
 | --- | --- |
 | 9 | Record a strength workout with the watch and log it in Hevy. Wait until both apps show it. Note the **Hevy workout id** (in the workout's link) and the **Garmin activity id** (`connect.garmin.com/modern/activity/<id>`) |
 | 10 | Neon console → **New project** `hevy2garmin-live` (free plan) → copy its connection string |
-| 11 | Start menu → "Command Prompt" (not as administrator). Run the three commands below. Then compare the printed hash with `e852c27d90aea218cd5208c10d8b450e7bc65f64de6cf383bde5f4fc0abb758a`; if it differs, stop |
-| 12 | `gate-f.cmd setup 73baaf4826b2a07863b169bc1c3d8aa4766a7786`. It downloads and checks Node.js and the source, then builds; this takes 10–20 minutes. Expect `build manifest SHA-256 …` at the end; note that value |
+| 11 | Start menu → "Command Prompt" (not as administrator). Run the three commands below. Then compare the printed hash with `746dc29357d466a20a7a4960b65069b1d6b5125b7b192900ba6d3698dd86f4d2`; if it differs, stop |
+| 12 | `gate-f.cmd setup 338be15a7c4e0bce83a02205a25949d5f9e3af92`. It downloads and checks Node.js and the source, then builds; this takes 10–20 minutes. Expect `build manifest SHA-256 …` at the end; note that value |
 | 13 | `gate-f.cmd selftest`. Expect `SELFTEST PASS … 127.0.0.1:8096 only`. It runs without any data |
 | 14 | `gate-f.cmd prepare`. Paste the Neon connection string (the input stays hidden), then type the Hevy workout id and the Garmin activity id. It checks the database over verified TLS and that it is empty, then writes `private\gate-f.env`, readable by you only. It prints the **dashboard password** |
-| 15 | `gate-f.cmd start`. Expect `READY http://127.0.0.1:8096`. Leave this window open |
+| 15 | `gate-f.cmd start`. Expect `READY http://127.0.0.1:8096`, and in the line below it `commit 338be15a7c4e…`; if the commit differs, stop. Leave this window open |
 | 16 | Open `http://127.0.0.1:8096` in the browser → sign in → Setup: connect **Hevy** (the new key) and **Garmin** (email, password, MFA code) |
 | 17 | Dashboard → **Gate F** panel: **1 · Preview**. Check the activity id, set count, timing and name |
 | 18 | Type the confirmation shown (`GATE-F <hevyId> <activityId>`) → **2 · Run gate F** → expect "synced". If it says the plan differs, preview again |
 | 19 | **3 · Evidence** → expect "verdict OK (merged)" → save the JSON |
 | 20 | Garmin Connect, web and phone. Heart-rate graph, calories, training effect and duration must be unchanged. Exercises, reps and weights must match Hevy. Note whether the exercise **names** are shown or read "Unknown": a known Garmin display limit on watch recordings (upstream #325), not a data fault. Accepting it is your decision |
 | 21 | Not accepted? Type the restore confirmation shown (`RESTORE <journal id>`) → **4 · Restore original** → expect "restored" → **3 · Evidence** → expect "verdict OK (original)". If the restore is refused or the verdict is not OK: Strict panel → **Stop all writes**, and tell Claude |
-| 22 | Press Ctrl+C in the `start` window, or run `gate-f.cmd stop`. Put `private\gate-f.env`, the dashboard password and the evidence JSON into your password manager; gate G needs `H2G_CREDENTIALS_KEY` from that file |
-| 23 | Tell Claude "Gate F: akzeptiert" (or "abgelehnt", with what you saw), share the evidence file and the build manifest value from step 12. A rejection means a code fix in PR #11, a newly qualified commit, and block B again from step 9 in a new folder (`set GATE_F_HOME=…`), with a new workout and a new Neon project. All of this comes before C |
+| 22 | Press Ctrl+C in the `start` window and answer `Y` to "Terminate batch job". Or, in a second Command Prompt, run `cd /d %LOCALAPPDATA%` and then `gate-f.cmd stop`. Put `private\gate-f.env`, the dashboard password and the evidence JSON into your password manager; gate G needs `H2G_CREDENTIALS_KEY` from that file |
+| 23 | Tell Claude "Gate F: akzeptiert" (or "abgelehnt", with what you saw), share the evidence file and the build manifest value from step 12. A rejection means a code fix in PR #11, a newly qualified commit, and block B again from step 9 in a new folder under `%LOCALAPPDATA%` (`set GATE_F_HOME=%LOCALAPPDATA%\hevy2garmin-gate-f-2`), with a new workout and a new Neon project. All of this comes before C |
 
 The commands for step 11 (Command Prompt):
 
@@ -89,11 +89,11 @@ cd /d %LOCALAPPDATA%
 ```
 
 ```bat
-curl.exe -fsSLo gate-f.cmd https://raw.githubusercontent.com/xantic21/hevy2garmin/73baaf4826b2a07863b169bc1c3d8aa4766a7786/tools/gate-f-windows/gate-f.cmd
+%SystemRoot%\System32\curl.exe -fsSLo gate-f.cmd https://raw.githubusercontent.com/xantic21/hevy2garmin/338be15a7c4e0bce83a02205a25949d5f9e3af92/tools/gate-f-windows/gate-f.cmd
 ```
 
 ```bat
-certutil -hashfile gate-f.cmd SHA256
+%SystemRoot%\System32\certutil.exe -hashfile gate-f.cmd SHA256
 ```
 
 Steps 12–15 run in that same window, from `%LOCALAPPDATA%`.
@@ -102,7 +102,7 @@ Steps 12–15 run in that same window, from `%LOCALAPPDATA%`.
 
 - an administrator window
 - a OneDrive folder
-- a variable such as `NODE_OPTIONS` or `DATABASE_URL` set in the window
+- a variable such as `NODE_OPTIONS`, `OPENSSL_CONF` or `DATABASE_URL` set in the window
 - port 8096 in use
 - a changed file
 
