@@ -701,7 +701,7 @@ jobs:
 
           $script:n = 0
           $script:serverLog = $null
-          function Tester([string]$args1, [hashtable]$extra = @{}, [switch]$Background, [int]$Minutes = 6, [switch]$DefaultHome) {
+          function Tester([string]$args1, [hashtable]$extra = @{}, [switch]$Background, [int]$Minutes = 6, [switch]$DefaultHome, [switch]$NoFail) {
             $script:n++
             $log = "$work\logs\step$($script:n).log"
             $psi = [System.Diagnostics.ProcessStartInfo]::new("$env:SystemRoot\System32\cmd.exe", "/d /s /c `"$args1 > `"$log`" 2>&1`"")
@@ -724,6 +724,7 @@ jobs:
             if ($Background) { return @{ Process = $p; Log = $log } }
             if (-not $p.WaitForExit($Minutes * 60000)) {
               $p.Kill($true)
+              if ($NoFail) { return @{ Code = -1; Out = "$(Get-Content -LiteralPath $log -Encoding utf8 -Raw -ErrorAction SilentlyContinue)" } }
               if ($script:serverLog) {
                 $sl = "$(Get-Content -LiteralPath $script:serverLog -Encoding utf8 -Raw -ErrorAction SilentlyContinue)"
                 Write-Host "::warning::server log tail: $(($sl.Substring([Math]::Max(0, $sl.Length - 1200))) -replace '%', '%25' -replace "`r?`n", '%0A')"
@@ -934,8 +935,11 @@ jobs:
           $r2 = Tester "cd /d `"$gfHome`" && `"$gfHome\node\node.exe`" `"$work\acl-probe.mjs`""
           $l2 = Tester "icacls `"$gfHome\private\gate-f.env`" & icacls `"$gfHome\private`" & icacls `"$gfHome\app\server.js`" & icacls `"$gfHome`""
           Write-Host "::warning::after gate-f.cmd status: $(($r2.Out -replace "`r?`n", ' ').Trim()) || $(($l2.Out -replace '%', '%25' -replace "`r?`n", ' | ').Trim())"
-          $r = Tester "$gf start" -Minutes 3
-          if ($r.Code -eq 0 -or $r.Out -cmatch "(?m)^READY ") { $null = Tester "$gf stop" }
+          $r = Tester "$gf start" @{ GATE_F_DIAG = "1" } -Minutes 2 -NoFail
+          $null = Tester "$gf stop"
+          $r3 = Tester "cd /d `"$gfHome`" && `"$gfHome\node\node.exe`" `"$work\acl-probe.mjs`""
+          Write-Host "::warning::start said: $((($r.Out -split "`n") | Select-String -Pattern 'private\\gate-f.env|diag:|refusing') -join ' || ') || probe after start: $(($r3.Out -replace "`r?`n", ' ').Trim())"
+          $script:last = $r.Out
           Expect ($r.Code -ne 0 -and $r.Out -cmatch "not private to you") "an env file readable by others is refused"
           $r = Tester "icacls `"$gfHome\private\gate-f.env`" /remove *S-1-1-0"
           Expect ($r.Code -eq 0) "the env file is private again"

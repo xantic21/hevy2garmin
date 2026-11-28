@@ -783,6 +783,10 @@ async function start(L) {
   const acl = ownerOnly(L.env, L.root);
   if (!acl.ok) refuse(`refusing: private\\gate-f.env is not private to you (${acl.reason}); run gate-f.cmd prepare again in a new folder`);
   say(`  private\\gate-f.env: readable by you only${acl.sddl ? ` (${acl.sddl})` : ""}`);
+  if (IS_WIN && process.env.GATE_F_DIAG === "1") {
+    const listing = capture(sys("icacls"), [L.env]).stdout ?? "";
+    say(`  diag: ${JSON.stringify(L.env)} cwd=${JSON.stringify(process.cwd())} icacls=${JSON.stringify(listing.trim())}`);
+  }
   const { vars, rehearsal, expired } = parseEnvFile(readFileSync(L.env, "utf8"));
   if (await portBusy(PORT)) refuse(`refusing: port ${PORT} is in use; stop the other server first (gate-f.cmd stop)`);
 
