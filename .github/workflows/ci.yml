@@ -925,16 +925,15 @@ jobs:
           Expect ($r.Code -eq 0 -and $r.Out -match "Successfully processed 1 files") "the env file was widened to Everyone (read) for the test"
           $r = Tester "icacls `"$gfHome\private\gate-f.env`""
           Expect ($r.Out -match "(Everyone|Jeder):\(R\)") "Everyone can now read the env file"
-          # Diagnostics: what icacls /save writes, and what the launcher's parser makes of it.
-          $r = Tester "icacls `"$gfHome\private\gate-f.env`" /save `"$work\logs\acl-diag.txt`" /C /Q & whoami /user /fo csv /nh"
-          $raw = [IO.File]::ReadAllBytes("$work\logs\acl-diag.txt")
-          $txt = [Text.Encoding]::Unicode.GetString($raw)
-          $sid = ([regex]::Match($r.Out, "S-1-5-[0-9-]+")).Value
-          $parsed = & node -e "import('./tools/gate-f-windows/gate-f.mjs').then(m => console.log(JSON.stringify(m.sddlOwnerOnly(require('fs').readFileSync(process.argv[1], 'utf16le'), process.argv[2]))))" "$work\logs\acl-diag.txt" $sid 2>&1 | Out-String
           # The launcher's own check, as h2gtester with the portable Node, in the gate F folder.
           Set-Content -Path "$work\acl-probe.mjs" -Encoding ascii -Value "const m = await import('file:///' + process.env.GATE_F_HOME.replace(/\\/g, '/') + '/src/tools/gate-f-windows/gate-f.mjs'); console.log('probe=' + JSON.stringify(m.ownerOnly(process.env.GATE_F_HOME + '\\private\\gate-f.env', process.env.GATE_F_HOME)));"
-          $pr = Tester "cd /d `"$gfHome`" && `"$gfHome\node\node.exe`" `"$work\acl-probe.mjs`""
-          Write-Host "::warning::acl-diag bytes=$($raw.Length) text=$($txt -replace "`r", '\r' -replace "`n", '\n') sid=$sid parsed=$($parsed.Trim()) launcher=$(($pr.Out -replace "`r?`n", ' ').Trim())"
+          $r = Tester "cd /d `"$gfHome`" && `"$gfHome\node\node.exe`" `"$work\acl-probe.mjs`""
+          Expect ($r.Out -match 'probe=\{"ok":false,"reason":"also readable by WD"\}') "the launcher's ACL check sees Everyone (WD) on the env file"
+          # Diagnostics: does gate-f.cmd itself (its icacls on the folder) change the env file's ACL?
+          $null = Tester "$gf status"
+          $r2 = Tester "cd /d `"$gfHome`" && `"$gfHome\node\node.exe`" `"$work\acl-probe.mjs`""
+          $l2 = Tester "icacls `"$gfHome\private\gate-f.env`" & icacls `"$gfHome\private`" & icacls `"$gfHome\app\server.js`" & icacls `"$gfHome`""
+          Write-Host "::warning::after gate-f.cmd status: $(($r2.Out -replace "`r?`n", ' ').Trim()) || $(($l2.Out -replace '%', '%25' -replace "`r?`n", ' | ').Trim())"
           $r = Tester "$gf start" -Minutes 3
           if ($r.Code -eq 0 -or $r.Out -cmatch "(?m)^READY ") { $null = Tester "$gf stop" }
           Expect ($r.Code -ne 0 -and $r.Out -cmatch "not private to you") "an env file readable by others is refused"
