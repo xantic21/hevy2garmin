@@ -21,6 +21,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 ENV = dict(os.environ)
 
 ENG = ("typescript", ["npx", "vitest", "run", "tests/strict"])
+PY_CONFIG = (
+    ".",
+    [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests/test_config.py"],
+)
 
 
 def web(*files, project="strict"):
@@ -710,6 +714,28 @@ M = [
         "    if (rows > 0) {\n      throw new GateFDatabaseError(",
         "    if (false) {\n      throw new GateFDatabaseError(",
         web("lib/gate-f-guard.db.strict.test.ts"),
+    ),
+    # PES HEVY2GARMIN-F04: the config file holds the Hevy key and Garmin credentials
+    (
+        "P01 config written with default file rights",
+        "src/hevy2garmin/config.py",
+        "        _write_private(CONFIG_FILE, json.dumps(config, indent=2))\n",
+        "        CONFIG_DIR.mkdir(parents=True, exist_ok=True)\n        CONFIG_FILE.write_text(json.dumps(config, indent=2))\n",
+        PY_CONFIG,
+    ),
+    (
+        "P02 an existing world-readable config file is not narrowed",
+        "src/hevy2garmin/config.py",
+        '        if hasattr(os, "fchmod"):\n            os.fchmod(fd, 0o600)\n',
+        "",
+        PY_CONFIG,
+    ),
+    (
+        "P03 config folder created with default rights",
+        "src/hevy2garmin/config.py",
+        "    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)",
+        "    path.parent.mkdir(parents=True, exist_ok=True)",
+        PY_CONFIG,
     ),
 ]
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -154,6 +155,23 @@ def load_config() -> dict[str, Any]:
     return config
 
 
+def _write_private(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` readable by the owner only.
+
+    The config file holds the Hevy API key and Garmin credentials, so the
+    folder is created ``0700`` and the file ``0600``; an existing file with
+    wider rights is narrowed before the new content is written.
+    """
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
+        os.write(fd, text.encode("utf-8"))
+    finally:
+        os.close(fd)
+
+
 def save_config(config: dict[str, Any]) -> None:
     """Persist config: to file (local/Docker) and to the DB on cloud deployments.
 
@@ -163,8 +181,7 @@ def save_config(config: dict[str, Any]) -> None:
     stateless invocations instead of reverting to defaults (#139, #145).
     """
     try:
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        CONFIG_FILE.write_text(json.dumps(config, indent=2))
+        _write_private(CONFIG_FILE, json.dumps(config, indent=2))
     except OSError:
         logger.debug("Skipping config file write (read-only filesystem)")
 

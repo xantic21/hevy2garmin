@@ -580,6 +580,17 @@ jobs:
           done
           H2G_REHEARSAL_URL=http://127.0.0.1:8122 H2G_REHEARSAL_PASSWORD="$H2G_PASSWORD" node scripts/gate-f-rehearsal.mjs || { cat gate-f.log; exit 1; }
 
+      - name: Accessibility (WCAG 2.1 A/AA, reflow) and page performance over the rehearsed pages
+        # Every dashboard page, desktop, mobile and 320 px reflow, on the staging
+        # data the rehearsal left behind, and the gate F panel: any WCAG A/AA
+        # violation fails. Then the page timing thresholds of docs/PES_EVIDENCE.md.
+        working-directory: web
+        run: |
+          npx playwright install --with-deps chromium
+          H2G_A11Y_URL=http://127.0.0.1:8120 H2G_A11Y_PASSWORD="$H2G_PASSWORD" node scripts/a11y-scan.mjs
+          H2G_A11Y_URL=http://127.0.0.1:8122 H2G_A11Y_PASSWORD="$H2G_PASSWORD" H2G_A11Y_PAGES=/dashboard node scripts/a11y-scan.mjs
+          H2G_PERF_URL=http://127.0.0.1:8120 H2G_PERF_PASSWORD="$H2G_PASSWORD" node scripts/perf-probe.mjs
+
       - name: Pointed at a database with a credential, staging refuses and creates nothing
         working-directory: web
         run: |

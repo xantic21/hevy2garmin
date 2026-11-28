@@ -292,7 +292,7 @@ export function WorkoutRow({
   } as const;
 
   return (
-    <li className={`px-4 py-3 ${item.kind === "terminal" ? "opacity-70" : ""}`}>
+    <li className={`px-4 py-3 ${item.kind === "terminal" ? "bg-base/60" : ""}`}>
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
           <div className="truncate text-sm font-medium text-text">{item.title || "Untitled workout"}</div>
@@ -311,7 +311,7 @@ export function WorkoutRow({
                   href={`https://connect.garmin.com/modern/activity/${item.garmin_activity_id}`}
                   target="_blank"
                   rel="noreferrer"
-                  className="text-teal underline underline-offset-2 hover:text-teal/80"
+                  className="text-teal underline underline-offset-2 hover:text-teal-light"
                   onClick={(e) => e.stopPropagation()}
                 >
                   Garmin {item.garmin_activity_id}
@@ -455,7 +455,7 @@ export function WorkoutRow({
               type="button"
               onClick={() => resolve("mark-synced")}
               disabled={acting}
-              className="rounded-lg bg-warm/20 px-3 py-1.5 text-xs font-medium text-warm transition-colors hover:bg-warm/30 disabled:opacity-50"
+              className="rounded-lg border border-warm/40 bg-warm-bg px-3 py-1.5 text-xs font-medium text-warm transition-colors hover:bg-warm-dim/40 disabled:opacity-50"
             >
               {acting ? "Working…" : "Mark as synced"}
             </button>

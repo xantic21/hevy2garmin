@@ -67,7 +67,7 @@ export function MappingsTable({
           {filtered.length} of {entries.length}
         </span>
       </div>
-      <div className="overflow-x-auto rounded-xl border border-border bg-surface-elevated">
+      <div className="overflow-x-auto rounded-xl border border-border bg-surface-elevated" tabIndex={0} role="region" aria-label="Exercise mappings">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-text-muted">

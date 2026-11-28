@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -175,3 +177,33 @@ class TestSaveConfigCloud:
 def test_default_has_grace_period() -> None:
     """DEFAULT_CONFIG must include sync.grace_period_minutes."""
     assert DEFAULT_CONFIG["sync"]["grace_period_minutes"] == 120
+
+
+@pytest.mark.skipif(not hasattr(os, "fchmod"), reason="POSIX file modes only")
+class TestConfigFilePermissions:
+    """The config file holds the Hevy key and Garmin credentials: owner-only (PES HEVY2GARMIN-F04)."""
+
+    def test_new_file_is_owner_only(self, tmp_path) -> None:
+        folder = tmp_path / "h2g"
+        config_file = folder / "config.json"
+        with (
+            patch("hevy2garmin.config.CONFIG_DIR", folder),
+            patch("hevy2garmin.config.CONFIG_FILE", config_file),
+            patch("hevy2garmin.db.get_database_url", return_value=None),
+        ):
+            save_config({"hevy_api_key": "synthetic-key"})
+        assert stat.S_IMODE(config_file.stat().st_mode) == 0o600
+        assert stat.S_IMODE(folder.stat().st_mode) == 0o700
+        assert json.loads(config_file.read_text())["hevy_api_key"] == "synthetic-key"
+
+    def test_existing_world_readable_file_is_narrowed(self, tmp_path) -> None:
+        config_file = tmp_path / "config.json"
+        config_file.write_text("{}")
+        config_file.chmod(0o644)
+        with (
+            patch("hevy2garmin.config.CONFIG_DIR", tmp_path),
+            patch("hevy2garmin.config.CONFIG_FILE", config_file),
+            patch("hevy2garmin.db.get_database_url", return_value=None),
+        ):
+            save_config({"hevy_api_key": "synthetic-key"})
+        assert stat.S_IMODE(config_file.stat().st_mode) == 0o600
