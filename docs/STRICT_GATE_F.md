@@ -40,31 +40,35 @@ its own owner authorization, separate from gate G:
 | Only from the dashboard itself (F9) | operator routes refuse another origin (403) and non-JSON bodies (415) | unit, HTTP | G32, G33 |
 | Evidence (F3) | original backup (before), journaled intents with integrity check, fresh read (after), comparisons of sets, name, description and native metrics, a verdict that is OK only when every comparison for the expected state ran and passed, SHA-256 | e2e (verdict fails when Garmin's name was changed elsewhere; OK again after a restore), HTTP | G29 |
 
-## 3. Qualification of the final candidate a1e9a2d
+## 3. Qualification of the final candidate 7b63cbf
 
-a1e9a2d is the gate F pin. Compared with 8ebd30d (section 3b) it changes:
+7b63cbf is the gate F pin. Compared with 8ebd30d (section 3b) it adds:
 
-- the Python CLI's config file rights (owner-only, PES HEVY2GARMIN-F04)
-- dashboard presentation (contrast, focusable table regions)
-- the accessibility and performance gates
-- three negative controls
+- the owner's **Restore original** in the gate F panel
+- the Python CLI's owner-only, atomic config write (PES HEVY2GARMIN-F04)
+- dashboard contrast and focusable table regions
+- the browser gates: the gate F click path, accessibility and page timing
+- six negative controls
 
-It changes no file of the engine (`typescript/`), of gate F or of the strict
-dashboard logic. It was requalified in full on its own tree. Synthetic data only.
+The engine (`typescript/`), the gate F server logic and the strict dashboard
+logic in `web/lib/` are unchanged. The intermediate candidate a1e9a2d was
+reviewed by an independent auditor (section 4a); 7b63cbf closes its findings.
+It was requalified in full on its own tree, on synthetic data only.
 
 | Check | Result |
 | --- | --- |
-| Engine (`typescript/`): tsc, vitest | clean; 617/617 |
-| Dashboard (`web/`): engine identity, tsc, eslint, vitest incl. Postgres and pg_dump/pg_restore | verified; clean; clean; 1081/1081 (110 files) |
-| Python: pytest SQLite / Postgres; ruff 0.16.7 check and format | 482 passed, 8 skipped / 489 passed, 1 skipped; clean |
+| Engine (`typescript/`) | unchanged since 8ebd30d: 617/617 carries over; the dashboard's copy is verified identical to the source ("Engine identity verified") |
+| Dashboard (`web/`): tsc, eslint, vitest incl. Postgres and pg_dump/pg_restore | clean; clean; 1087/1087 (111 files) |
+| Python: pytest SQLite / Postgres; ruff 0.16.7 check and format | 484 passed, 8 skipped / 491 passed, 1 skipped; clean |
 | Playwright smoke (desktop + mobile) | 6/6 |
 | Gate E over HTTP, production build (`staging-rehearsal.mjs`) | 38/38 |
-| Gate F over HTTP, same build (`gate-f-rehearsal.mjs`) | 35/35. Garmin writes: one sets PUT and one name/description PUT on activity 9100001 for the run, the same two for the restore. No other write, only the two simulated hosts |
-| Accessibility (`a11y-scan.mjs`, axe-core 4.10.3, WCAG 2.0/2.1 A/AA) | 0 violations on 30 page views: login plus 7 pages on staging data, each at desktop 1280 px, mobile 390 px and reflow 320 px; the gate F panel the same way |
-| Page performance (`perf-probe.mjs`, thresholds fixed beforehand in PES_EVIDENCE.md) | every page within them. Worst page: TTFB p95 69 ms (limit 800), DOMContentLoaded p95 87 ms (limit 1500). Cold start to the first `/login` 1.3 s (limit 15 s) |
-| Negative controls | the new P01–P03 (config file rights) all caught. The other 96 target files this delta does not touch, so their results (section 3b) carry over. Accessibility controls, run by hand on a rebuilt dashboard: without the focusable region the scan fails (`scrollable-region-focusable`), and without the mapping table's scroll container it fails on reflow. That second control first passed: under mobile emulation Chromium widens the viewport to fit the content, so the first reflow check could not fail. The check now measures against a fixed 320 px viewport without emulation, and the control is caught. Removing the history table's scroll container is an equivalent mutant: that table already fits at 320 px |
-| Dependencies | dashboard `npm audit` 0, with axe-core 4.10.3 as a development dependency; engine and Python unchanged since 8ebd30d (0) |
-| CI and the Vercel staging rehearsal of the pushed head | recorded on PR #11. The head differs from a1e9a2d only in documentation |
+| Gate F over HTTP, same build (`gate-f-rehearsal.mjs`) | 35/35. Garmin writes: one sets PUT and one name/description PUT on activity 9100001 for the run, the same two for the restore. No other write; only the two simulated hosts |
+| The owner's gate F path in Chromium (`gate-f-ui-check.mjs`, fresh database) | 11/11: seed, panel shown, no restore before a write, preview, the run refused until the confirmation is typed exactly, synced, evidence downloaded with "verdict OK (merged)", restore offered and refused until `RESTORE <journal id>` is typed exactly, restored, evidence "verdict OK (original)", nothing left to restore and the record done. Refuses a used gate F database and a non-synthetic deployment (both controls run) |
+| Accessibility (`a11y-scan.mjs`, axe-core 4.13.0, WCAG 2.0/2.1 A/AA, each page's initial state) | 0 violations on 30 page views: login and 7 pages on staging data at desktop 1280 px, mobile 390 px and reflow 320 px, plus the gate F panel. Every page answered 200 on its own path. Axe left 66 nodes undecided: 49 icon-only elements with no text, and 17 bottom-navigation labels under the translucent bar. Those labels were computed by hand against the darkest possible content behind the bar: 7.25:1 active, 5.57:1 inactive (AA needs 4.5) |
+| Page performance (`perf-probe.mjs`, 20 warm loads per page, thresholds fixed beforehand in PES_EVIDENCE.md) | every page within them. Worst page `/dashboard`: TTFB median 50 ms, p95 65 ms (limits 300 / 800). Worst DOMContentLoaded p95 96 ms (limit 1500). Cold start to the first `/login` 0.9 s |
+| Negative controls (`strict_mutations.py`, 102) | the new P01–P04 (config file rights, atomic write, no leftover file) and G36/G37 (the panel's restore) are all caught. The other 96 target files this delta does not touch, so their results carry over (section 3b): 98 + 2 documented equivalent. The harness now counts a Python control as caught only when pytest reports a failing test. Accessibility controls, run by hand on a rebuilt dashboard, are both caught: removing the focusable region (`scrollable-region-focusable`) and removing the mapping table's scroll container (reflow). The reflow control first exposed a check that could not fail, because mobile emulation widens the viewport; that was fixed. The history table's scroll container is an equivalent mutant, since that table fits at 320 px |
+| Dependencies | dashboard `npm audit` 0, with axe-core 4.13.0 as a development dependency; engine and Python unchanged (0) |
+| CI and the Vercel staging rehearsal of the pushed head | the PR #11 evidence comment. The head differs from 7b63cbf in Markdown files only. The Vercel staging preview of the documentation head 18d5243 (code a1e9a2d, `dpl_F2aSPGjMVpJ7mMBMtdJBFZSgadMb`): 38/38, with the bypass revoked right after (the revoked token gets 302) |
 
 ### 3b. The previous candidate 8ebd30d
 
@@ -106,6 +110,28 @@ separate.
 | F7 | INFO | A run whose record was taken over reported "synced" without the freeze | the run returns a warning, the panel shows it | e2e |
 | F8 | INFO | Restore while frozen, unfreeze in gate F mode, token refresh during reads, staging seed resets the record | documented as intended (recovery, operator control, authentication, staging only) | STRICT_OPERATIONS.md §8 |
 | F9 | LOW | Cross-site request forgery from another local port (`SameSite` treats ports as one site) | same-origin and JSON-only check on every operator route | unit, HTTP; G32, G33 |
+
+## 4a. Independent final audit (separate agent, read-only, on a1e9a2d and its documentation)
+
+Scope: the delta since 8ebd30d and the owner documentation. Engine and gate F
+were not audited again (unchanged).
+
+| # | Severity | Finding | Closed by |
+| --- | --- | --- | --- |
+| 1 | HIGH | The runbook's rollback after a run that reported success could not be done from the dashboard: "Restore backup…" appears only for uncertain writes | "4 · Restore original" in the gate F panel, its unit test and G36/G37, and the click-path check in CI; runbook step 18 |
+| 2 | MEDIUM | `O_TRUNC` before `fchmod`: where `fchmod` fails (another owner, FAT, CIFS) `config.json` was left empty | atomic write via a 0600 temporary file with fsync and replace, falling back to the previous in-place write; tests for both paths and for a failed write; P01–P04 |
+| 3 | MEDIUM | The config change looked outside the approved scope | recorded under contract item 7 (credential storage) in STRICT_MERGE_MIGRATION.md and AGENTS.md; listed as fork-specific in SECURITY.md. The PES register's F04 fix (no fork code change) is for the governance lane to update |
+| 4 | MEDIUM | The merge step relied on the three required checks; "CI on that exact SHA" cannot hold for a commit that is not a PR head | runbook step 21: every check on the head green, and the head differs from the gate F commit in documentation only; AGENTS.md says "exact code tree" |
+| 5 | MEDIUM | A rejected gate F did not say it must be repeated | runbook step 20: fix, new candidate, block B again with a new workout, database and `gate-f.env`, all before C |
+| 6 | MEDIUM | Step 6 asked about a secret's value, which GitHub never shows | runbook: the secret held the legacy production connection string; rotate now, or record an explicit deferral |
+| 7 | LOW | The scan could pass on an error page or a redirect; undecided nodes were ignored; it covers initial states only | page must answer 200 on its own path; undecided nodes recorded and assessed; wording "initial state" |
+| 8 | LOW | The browser checks would also run against a real deployment | `browser-target.mjs` refuses anything but synthetic staging (controlled) |
+| 9 | LOW | The browser step ran before the isolation proof; p95 of 10 is the maximum | isolation proof first; 20 loads |
+| 10 | LOW | The tests depended on the umask; any exit counted as caught | umask fixture; pytest must report a failure |
+| 11 | LOW | `gate-f.env` was not git-ignored | `/gate-f.env` in `.gitignore` |
+| 12 | LOW | PES_EVIDENCE.md had no results or finding map | completed |
+| 13 | LOW | "Exercise names shown" vs. the known "Unknown" display (upstream #325); step 4 had no deployment id | step 17 makes it an explicit owner decision; step 4 names `dpl_3xaUyy9uvxcNnJQPUYHnjeFJibjA` |
+| 14 | INFO | Garmin token revocation by password change unverified; brand files wording; script header; axe-core moved down to 4.10.3; extra approval for unattributed commits | worded as unverified; corrected; corrected; 4.13.0; runbook step 21 |
 
 ## 5. Fresh cloud environment
 

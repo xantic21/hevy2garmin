@@ -50,10 +50,10 @@ deliberately, and a missing or misspelled one keeps the safe state.
 | Gate | State | Evidence / what remains |
 | --- | --- | --- |
 | A snapshot and quarantine | done | `vercel.json` (both roots) deployment off, `next.config.ts` refuses Vercel builds, no publish path, `typescript/` private with `prepublishOnly` refusal |
-| B end-to-end strict mode | done (synthetic) | engine 617 tests, web 1081 tests incl. real Postgres, e2e through firewall + Postgres, 99 negative controls (STRICT_REAUDIT_ROUND2.md, STRICT_GATE_F.md); accessibility (WCAG 2.1 A/AA incl. reflow) and page timing gated in CI (PES_EVIDENCE.md) |
+| B end-to-end strict mode | done (synthetic) | engine 617 tests, web 1081 tests incl. real Postgres, e2e through firewall + Postgres, 102 negative controls (STRICT_REAUDIT_ROUND2.md, STRICT_GATE_F.md); automated accessibility checks (axe WCAG 2.1 A/AA, reflow), page timing and the owner's gate F click path gated in CI (PES_EVIDENCE.md) |
 | C synthetic migration and full CI | done | `web/lib/db-qualification.db.test.ts` (fresh DB, previous fork-main schema, pg_dump/restore); all CI jobs |
 | D independent review | done: round 1 9/9 closed (`docs/STRICT_REAUDIT.md`); round 2 owner findings 1–7 and independent re-audit #2 closed (`docs/STRICT_REAUDIT_ROUND2.md`) | no upload/delete path found |
-| E isolated staging | **done (synthetic, on Vercel)**: separate project `hevy2garmin-staging` with its own Neon project; every code candidate rehearsed 38/38 on its protected preview (8ebd30d here; the final candidate a1e9a2d on PR #11); isolation verified independently; production project unchanged | §7a; the owner may click through the preview (§7 step 5) |
+| E isolated staging | **done (synthetic, on Vercel)**: separate project `hevy2garmin-staging` with its own Neon project; every code candidate rehearsed 38/38 on its protected preview (up to a1e9a2d here; the final candidate 7b63cbf in the PR #11 evidence comment); isolation verified independently; production project unchanged | §7a; the owner may click through the preview (§7 step 5) |
 | F one owner-accepted real activity | **ready for the owner**: gate F mode built and qualified (`docs/STRICT_GATE_F.md`); production hardening prepared (§14) | owner steps in `docs/OWNER_RUNBOOK.md`; procedure and design §8 |
 | G production activation | **owner** | set `H2G_STRICT_AUTOMATIC` only after F; keep stop switches documented |
 
@@ -229,14 +229,15 @@ Garmin or Hevy, and the production project and its database were not changed.
 | `dpl_4JR3unrcMBQjGdngW2VLdFGyKQUr` | preview of 37c16b1 (code = candidate 73e134a) with the database: build log `[quarantine] synthetic staging preview: building`, engine digest `ea30e153…4cbe3c`, "Engine identity verified"; rehearsal 38/38 |
 | `dpl_CQ5z44kWf9gLa35rM4RPLLQUVWsp` | preview of 0a32304 (the deny-list fix from the independent isolation audit): `/api/version` reports 0a32304; rehearsal 38/38 |
 | `dpl_9dYbb1TKXSgMQF655d3XYHMKmfgD` | preview of 6dd7002 (gate F mode, first candidate): rehearsal 38/38 |
-| `dpl_31VrTq6riv2Q1Lijz1qqUzA12B93` | **the current qualified preview, 8ebd30d** (gate F after re-audit #3): `/api/version` reports 8ebd30d; rehearsal 38/38; same-origin check verified behind Vercel's proxy with a real session (own origin 200, other origins 403, non-JSON 415). Branch alias `hevy2garmin-staging-git-migration-str-9ef2d5-xantic21s-projects.vercel.app` points here |
+| `dpl_31VrTq6riv2Q1Lijz1qqUzA12B93` | **the current qualified preview, 8ebd30d** (gate F after re-audit #3): `/api/version` reports 8ebd30d; rehearsal 38/38; same-origin check verified behind Vercel's proxy with a real session (own origin 200, other origins 403, non-JSON 415). Branch alias `hevy2garmin-staging-git-migration-str-9ef2d5-xantic21s-projects.vercel.app` pointed here until the next one |
+| `dpl_F2aSPGjMVpJ7mMBMtdJBFZSgadMb` | preview of 18d5243 (documentation head of code a1e9a2d): `/api/version` reports 18d5243; rehearsal 38/38. Later previews are recorded on PR #11 |
 
 **Results.**
 
 | Check | Result |
 | --- | --- |
 | Without Vercel sign-in | `/`, `/api/staging/status`, `/api/session-epoch`, `/api/strict/credentials`, `/api/cron/sync` and `POST /api/staging/seed` all end at Vercel Authentication (302 to the SSO page); the app is never reached. The revoked bypass token also gets 302 |
-| Rehearsal (`staging-rehearsal.mjs`, temporary automation bypass, one per run, each revoked right after) | **38/38** on every code candidate: 37c16b1, 0a32304, 6dd7002, 8ebd30d (same staging database, marker unchanged): credential routes 423 (POST and GET), destructive routes 423, every scenario, outage → uncertain → reconcile without a write, mismatch → freeze → restore, read-only duplicate audit |
+| Rehearsal (`staging-rehearsal.mjs`, temporary automation bypass, one per run, each revoked right after) | **38/38** on every code candidate: 37c16b1, 0a32304, 6dd7002, 8ebd30d, a1e9a2d (same staging database, marker unchanged): credential routes 423 (POST and GET), destructive routes 423, every scenario, outage → uncertain → reconcile without a write, mismatch → freeze → restore, read-only duplicate audit |
 | Database was empty and is staging-only | the guard accepted it only because it held no row in any app table, and marked it at the first request (`2026-11-27T21:42:30Z`); 0 credential rows; automatic sync off |
 | Network | 90 simulated requests, only to the in-process `api.hevyapp.com` / `connectapi.garmin.com`; 0 to any other host; every write a sets or name/description PUT on a synthetic activity 91000xx |
 | Firewall | enforcement self-test passes through the global `fetch`. It reports `outermost: false` on Vercel: Next.js 16 patches the global `fetch` once per process after instrumentation installed the firewall, so the firewall sits inside Next's wrapper (still on every request's path); `ensureStrictFirewall` wraps once more on top before any Garmin client is built. Expected, no action |
@@ -320,10 +321,15 @@ owner's own computer, and nothing else.
    unchanged.
 6. **Evidence** → expect "verdict OK (merged)"; keep the JSON. On Garmin Connect (web and phone) compare: HR
    graph, calories, training effect, duration unchanged; exercises, reps and
-   weights as in Hevy; **exercise names displayed** (read-back verifies the stored
-   state; the display is confirmed here — upstream #159/#325).
-7. If anything differs: "Stop all writes", then "Restore backup…" → original,
-   then Evidence again.
+   weights as in Hevy; note whether the exercise names are displayed or read
+   "Unknown" (a known Garmin display limit on watch recordings, upstream
+   #159/#325; the read-back verifies the stored exercises, the display is the
+   owner's acceptance decision).
+7. If not accepted: Gate F panel → type `RESTORE <journal id>` → **4 · Restore
+   original** (also after the authorization expired), then Evidence again
+   ("verdict OK (original)"). If that is refused or not OK: "Stop all writes".
+   The whole path, restore included, is clicked through in CI
+   (`web/scripts/gate-f-ui-check.mjs`).
 8. Stop the container. Keep `gate-f.env` (its `H2G_CREDENTIALS_KEY` is needed at
    gate G) and the evidence in the password manager. Gate G only after acceptance.
 
@@ -348,7 +354,7 @@ owner's own computer, and nothing else.
 | Package set | Production | All | Note |
 | --- | --- | --- | --- |
 | `typescript/` engine | 0 | 0 | vitest 5.0.5 |
-| `web/` dashboard | 0 | 0 | vitest 4.1.12; axe-core 4.10.3 (development, accessibility gate); soma-style removed (it pulled react-native/metro/image-size) |
+| `web/` dashboard | 0 | 0 | vitest 4.1.12; axe-core 4.13.0 (development, accessibility gate); soma-style removed (it pulled react-native/metro/image-size) |
 | Python (`requirements.txt`) | 0 | — | pip-audit |
 | `universal/` Expo app | 7 (4 high) | — | needs an Expo SDK major; not deployed, GET-only, never built or published by CI |
 
@@ -470,7 +476,7 @@ Read-only findings on the production project `hevy2garmin`
 | H4 | 40 deployments (14 production, 26 preview), all created by the owner, all behind Vercel Authentication, none from a fork or Dependabot. **Each keeps the variables it was built with**: changing a variable's targets later does not remove them from existing deployments | old previews keep a working production database connection string |
 | H5 | `GARMIN_PASSWORD`/`GARMIN_EMAIL` are read only by the legacy app (fallback password login; its setup also stores email and password in `platform_credentials`). The strict dashboard never reads them; gate F refuses to start with them set | not needed for gate F or G; no migration to Sensitive needed, delete them |
 | H6 | `GITHUB_PAT` lets the legacy app write `.github/workflows/sync.yml` (repository write). In strict mode the routes that use it are locked | not needed; a write-capable token in 40 deployment snapshots |
-| H7 | The legacy setup obtains Garmin tokens through the shared upstream Worker (`hevy2garmin-exchange-di.gkos.workers.dev`), which sees the tokens it issues. The production database may hold them and other credentials in plain text (not inspected: no database access was used) | gate F signs in directly; the old tokens should die with the password change |
+| H7 | The legacy setup obtains Garmin tokens through the shared upstream Worker (`hevy2garmin-exchange-di.gkos.workers.dev`), which sees the tokens it issues. The production database may hold them and other credentials in plain text (not inspected: no database access was used) | gate F signs in directly. The password change is the strongest available step; whether it revokes tokens already issued is not verified, so also sign out of other sessions where Garmin offers it |
 
 **Rotation: required** for `GITHUB_PAT` (revoke) and the **Garmin password**
 (stored readable since July, present in 40 deployment snapshots, possibly in

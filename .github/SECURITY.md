@@ -5,7 +5,7 @@ hevy2garmin here is a **public fork** of [drkostas/hevy2garmin](https://github.c
 ## Reporting a vulnerability
 
 - **In the upstream application** (anything that also exists in [drkostas/hevy2garmin](https://github.com/drkostas/hevy2garmin)): report it to the upstream maintainer through the upstream repository's private channel (a GitHub security advisory there, if enabled), not through a public issue.
-- **Specific to this fork**: report it privately to the fork owner through a draft GitHub security advisory in this repository (*Security → Advisories*). Fork-specific are the strict in-place merge (`typescript/src/strict/`, the strict parts of `web/`, `src/hevy2garmin/strict_mode.py`), the credential vault, the deployment quarantine, gate F, the synthetic staging, the presentation files and the fork-only maintenance workflows.
+- **Specific to this fork**: report it privately to the fork owner through a draft GitHub security advisory in this repository (*Security → Advisories*). Fork-specific are the strict in-place merge (`typescript/src/strict/`, the strict parts of `web/`, `src/hevy2garmin/strict_mode.py`), the owner-only config file write (`src/hevy2garmin/config.py`), the credential vault, the deployment quarantine, gate F, the synthetic staging, the presentation files and the fork-only maintenance workflows.
 - Never paste Hevy or Garmin credentials, API keys, session tokens or personal workout data into issues, pull requests or chats.
 
 ## Supported versions
