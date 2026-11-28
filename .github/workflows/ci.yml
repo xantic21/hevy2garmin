@@ -916,13 +916,20 @@ jobs:
           $r = Tester "$gf status" -DefaultHome
           Expect ($r.Code -ne 0 -and $r.Out -cmatch "Node.js is not set up here") "the default folder %LOCALAPPDATA%\hevy2garmin-gate-f is found, created and made private"
 
-          # 8. Refusals of a widened env file and of a changed build.
+          # 8. Refusals of a widened env file and of a changed build (no server may start).
           $r = Tester "icacls `"$gfHome\private\gate-f.env`" /grant *S-1-1-0:(R)"
-          $r = Tester "$gf start"
+          Expect ($r.Code -eq 0 -and $r.Out -match "Successfully processed 1 files") "the env file was widened to Everyone (read) for the test"
+          $r = Tester "icacls `"$gfHome\private\gate-f.env`""
+          Expect ($r.Out -match "(Everyone|Jeder):\(R\)") "Everyone can now read the env file"
+          $r = Tester "$gf start" -Minutes 3
+          if ($r.Code -eq 0 -or $r.Out -cmatch "(?m)^READY ") { $null = Tester "$gf stop" }
           Expect ($r.Code -ne 0 -and $r.Out -cmatch "not private to you") "an env file readable by others is refused"
           $r = Tester "icacls `"$gfHome\private\gate-f.env`" /remove *S-1-1-0"
+          Expect ($r.Code -eq 0) "the env file is private again"
           $r = Tester "icacls `"$gfHome\app\server.js`" /grant h2gtester:(M) && echo // changed>> `"$gfHome\app\server.js`""
-          $r = Tester "$gf start"
+          Expect ($r.Code -eq 0) "app\server.js changed for the test"
+          $r = Tester "$gf start" -Minutes 3
+          if ($r.Code -eq 0 -or $r.Out -cmatch "(?m)^READY ") { $null = Tester "$gf stop" }
           Expect ($r.Code -ne 0 -and $r.Out -cmatch "differs from its build") "a changed app\ is refused"
 
           # 9. A second setup in the same folder rebuilds cleanly.
