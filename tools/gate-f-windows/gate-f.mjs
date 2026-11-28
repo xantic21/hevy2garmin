@@ -32,7 +32,7 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 import {
-  chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync,
+  chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync,
   writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
@@ -280,8 +280,11 @@ export function sddlOwnerOnly(saved, sid) {
 }
 
 /**
- * Copy a tree with every link replaced by what it points to (fs.cpSync's
- * `dereference` keeps nested links). A link must stay inside `within`; cycles refused.
+ * Copy a tree with every link replaced by what it points to. A link must stay
+ * inside `within`; cycles refused. Plain JS over copyFileSync on purpose:
+ * fs.cpSync's native implementation aborts the process on Windows for paths
+ * with non-ASCII characters (a user name with an umlaut), and its `dereference`
+ * keeps nested links.
  */
 export function copyResolved(from, to, within = realpathSync(from), stack = new Set()) {
   const st = lstatSync(from);
@@ -491,8 +494,8 @@ function build(L, { commit, from }) {
     unlock(d);
     rmSync(d, { recursive: true, force: true });
   }
-  for (const s of SCOPES) cpSync(join(fromDir, s), join(L.src, s), { recursive: true });
-  cpSync(join(fromDir, MANIFEST_PATH), join(L.src, MANIFEST_PATH));
+  for (const s of SCOPES) copyResolved(join(fromDir, s), join(L.src, s));
+  copyFileSync(join(fromDir, MANIFEST_PATH), join(L.src, MANIFEST_PATH));
   mkdirSync(L.cache, { recursive: true });
 
   const npm = npmCli();
@@ -532,7 +535,7 @@ function build(L, { commit, from }) {
   // administrator rights as junctions to absolute paths in the build tree. Real copies
   // keep app\ self-contained, relocatable and fully covered by its manifest.
   copyResolved(standalone, L.app);
-  cpSync(join(web, ".next", "static"), join(L.app, ".next", "static"), { recursive: true });
+  copyResolved(join(web, ".next", "static"), join(L.app, ".next", "static"));
   mkdirSync(join(L.app, ".next", "cache"), { recursive: true });
 
   const files = listFiles(L.app).filter((p) => !p.startsWith(".next/cache/")).map((p) => [p, sha256File(join(L.app, ...p.split("/")))]);
@@ -924,7 +927,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   main(process.argv.slice(2)).then(
     () => process.exit(0),
     (e) => {
-      process.stderr.write(`\n${e.refusal ? "" : "ERROR: "}${e.message}\n`);
+      process.stderr.write(`\n${e.refusal ? e.message : `ERROR: ${e.stack ?? e.message}`}\n`);
       process.exit(1);
     },
   );

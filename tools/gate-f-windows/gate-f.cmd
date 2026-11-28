@@ -19,8 +19,8 @@ rem ==========================================================================
 set "NODE_VERSION=v22.23.5"
 set "NODE_ZIP_SHA256=4a191082e9706866830379d577d2cc8a50c776fcd9436a8d061b063ed0d9a0e3"
 set "NODE_EXE_SHA256=247e9693d316da9857e44990e5e11709f596f18112251b8026ec6eed80bdf38a"
-set "MANIFEST_SHA256=2cc146ca72f4810f29eda962b8ae1114a1512744d867abc505b5d2473762693e"
-set "LAUNCHER_SHA256=c07a7ef6ef38ffabd83bf7816acc2045638b6670cadeae834994a0f5886bb4c9"
+set "MANIFEST_SHA256=c3944f083de5d2cfc50a3edff2549319e3499567631e79095fde9233b6ed5281"
+set "LAUNCHER_SHA256=40c794f974fb408afd9b78ad4f0ca70cdc9e122795cb7ff5f0c8e41f787f5727"
 set "REPO=xantic21/hevy2garmin"
 set "SYS=%SystemRoot%\System32"
 
@@ -71,6 +71,7 @@ call :check "src\tools\gate-f-windows\gate-f.mjs" %LAUNCHER_SHA256%
 if errorlevel 1 goto fail
 "node\node.exe" "src\tools\gate-f-windows\gate-f.mjs" %*
 set "RC=%ERRORLEVEL%"
+if not "%RC%"=="0" echo gate-f: %~1 ended with exit code %RC%
 popd
 exit /b %RC%
 
@@ -102,6 +103,7 @@ call :check "%SRC%\tools\gate-f-windows\gate-f.mjs" %LAUNCHER_SHA256%
 if errorlevel 1 goto fail
 "node\node.exe" "%SRC%\tools\gate-f-windows\gate-f.mjs" build --commit %COMMIT% --from "%SRC%"
 set "RC=%ERRORLEVEL%"
+if not "%RC%"=="0" echo gate-f: setup ended with exit code %RC%
 popd
 exit /b %RC%
 
