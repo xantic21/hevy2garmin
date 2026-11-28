@@ -33,20 +33,31 @@ const launcher = files.includes("tools/gate-f-windows/gate-f.mjs") ? sha256(git(
 if (!launcher) throw new Error("gate-f.mjs is not committed");
 
 const cmdPath = join(repo, "tools", "gate-f-windows", "gate-f.cmd");
-const cmd = readFileSync(cmdPath, "latin1");
+// --check compares the COMMITTED bytes (what the owner downloads), never a checkout that
+// core.autocrlf may have rewritten; writing works on the working tree.
+const committed = (p) => {
+  try {
+    return git("show", `HEAD:${p}`);
+  } catch {
+    return Buffer.alloc(0);
+  }
+};
+const cmd = check ? committed("tools/gate-f-windows/gate-f.cmd").toString("latin1") : readFileSync(cmdPath, "latin1");
 const pin = (text, name, value) => {
   const re = new RegExp(`(set "${name}=)[0-9a-f]{64}(")`);
   if (!re.test(text)) throw new Error(`gate-f.cmd has no pin ${name}`);
   return text.replace(re, `$1${value}$2`);
 };
 const nextCmd = pin(pin(cmd, "MANIFEST_SHA256", sha256(Buffer.from(manifest))), "LAUNCHER_SHA256", launcher);
-const current = (() => {
-  try {
-    return readFileSync(join(repo, MANIFEST_PATH), "utf8");
-  } catch {
-    return "";
-  }
-})();
+const current = check
+  ? committed(MANIFEST_PATH).toString("utf8")
+  : (() => {
+      try {
+        return readFileSync(join(repo, MANIFEST_PATH), "utf8");
+      } catch {
+        return "";
+      }
+    })();
 
 if (check) {
   const stale = [];

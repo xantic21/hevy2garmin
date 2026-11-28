@@ -657,15 +657,20 @@ jobs:
       - name: Launcher unit tests and the manifest pins of this commit
         shell: pwsh
         run: |
-          node --test tools/gate-f-windows/gate-f.test.mjs
-          if ($LASTEXITCODE) { exit 1 }
-          node tools/gate-f-windows/make-manifest.mjs --check
-          if ($LASTEXITCODE) { exit 1 }
+          # Failures are also written as annotations: the job log is not readable everywhere.
+          $t = node --test tools/gate-f-windows/gate-f.test.mjs 2>&1 | Out-String
+          Write-Host $t
+          if ($LASTEXITCODE) { Write-Host "::error::launcher unit tests failed:%0A$((($t -split "`n") | Select-String -Pattern 'not ok|error:|expected|actual' | Select-Object -First 12) -join '%0A')"; exit 1 }
+          $m = node tools/gate-f-windows/make-manifest.mjs --check 2>&1 | Out-String
+          Write-Host $m
+          if ($LASTEXITCODE) { Write-Host "::error::manifest check failed: $($m.Trim())"; exit 1 }
 
       - name: The owner's path as a standard user, then every refusal
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          trap { Write-Host "::error::unexpected: $($_.Exception.Message) $($_.InvocationInfo.PositionMessage -replace "`r?`n", '%0A')"; exit 1 }
+          $script:last = ""
           $work = "C:\h2g Prüfung"
           $gfHome = "$work\gate f"
           $cmdFile = "$work\gate-f.cmd"
@@ -706,10 +711,15 @@ jobs:
             $out = if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log -Encoding utf8 -Raw } else { "" }
             Write-Host "---- [$($p.ExitCode)] $args1"
             Write-Host $out
+            $script:last = $out
             return @{ Code = $p.ExitCode; Out = $out }
           }
           function Expect([bool]$ok, [string]$what) {
-            if (-not $ok) { Write-Host "::error::FAILED: $what"; exit 1 }
+            if (-not $ok) {
+              $tail = if ($script:last.Length -gt 1500) { $script:last.Substring($script:last.Length - 1500) } else { $script:last }
+              Write-Host "::error::FAILED: $what%0A$($tail -replace '%', '%25' -replace "`r?`n", '%0A')"
+              exit 1
+            }
             Write-Host "PASS  $what"
           }
           $gf = "`"$cmdFile`""
@@ -749,13 +759,15 @@ jobs:
           $deadline = (Get-Date).AddMinutes(4)
           do { Start-Sleep 2; $t = Get-Content -LiteralPath $srv.Log -Encoding utf8 -Raw -ErrorAction SilentlyContinue } until (($t -match "READY|refusing|ERROR") -or $srv.Process.HasExited -or (Get-Date) -gt $deadline)
           Write-Host $t
+          $script:last = "$t"
           Expect ($t -match "READY \(synthetic rehearsal\) http://127\.0\.0\.1:8096") "start: identity, loopback, firewall and gate F state checked"
           $listen = Get-NetTCPConnection -LocalPort 8096 -State Listen
           Expect (($listen | Where-Object LocalAddress -ne "127.0.0.1").Count -eq 0 -and $listen.Count -ge 1) "port 8096 listens on 127.0.0.1 only"
           $owner = (Get-CimInstance Win32_Process -Filter "ProcessId=$($listen[0].OwningProcess)" | Invoke-CimMethod -MethodName GetOwner).User
           Expect ($owner -eq "h2gtester") "the server runs as h2gtester"
           $env:H2G_REHEARSAL_URL = "http://127.0.0.1:8096"; $env:H2G_REHEARSAL_PASSWORD = $rpw
-          & "$gfHome\node\node.exe" "$gfHome\src\web\scripts\gate-f-rehearsal.mjs"
+          $script:last = & "$gfHome\node\node.exe" "$gfHome\src\web\scripts\gate-f-rehearsal.mjs" 2>&1 | Out-String
+          Write-Host $script:last
           Expect ($LASTEXITCODE -eq 0) "gate F HTTP rehearsal against the Windows server (one write on the authorized pair only, refusals, evidence, restore)"
 
           # 6. Refusals while it runs.
@@ -769,6 +781,7 @@ jobs:
           Expect ($r.Code -ne 0 -and $r.Out -match "inside OneDrive") "a OneDrive folder is refused"
           $env:GATE_F_HOME = $gfHome
           $r = & $cmdFile status 2>&1 | Out-String
+          $script:last = $r
           Remove-Item Env:GATE_F_HOME
           Expect ($r -match "runs as administrator") "an administrator window is refused"
 
