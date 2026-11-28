@@ -1,68 +1,113 @@
 # Owner checklist: from here to gate G
 
-The only steps left are ones that need you personally, listed in order. Everything else is done and recorded:
+The only steps left are ones that need you personally, in order. Everything else is done and recorded:
 code, tests, rehearsals, the independent audits and the read-only checks. See
 [STRICT_OPERATIONS.md](STRICT_OPERATIONS.md) and [STRICT_GATE_F.md](STRICT_GATE_F.md).
 Each block ends with a message to Claude. Claude then checks the result read-only and records it.
 
 This document approves nothing. Each block starts only when you decide.
 
-| Block | What | Time | Unlocks |
+| Block | What | State | Unlocks |
 | --- | --- | --- | --- |
-| A | Production hardening, incl. the old repository secret | about 20 min, browser | B |
-| B | Gate F: one real activity | about 45 min, your computer | C |
+| A | Production hardening | **done** (28.11.2026, owner attestation; step 7 waived; read-back below) | B |
+| B | Gate F: one real activity, on your Windows computer | about 60 min (the first build takes 10–20) | C |
 | C | Merge PR #11 into `main` | about 5 min, GitHub | governance re-baseline |
 | D | Gate G | later, separate decision | production |
 
-## A — Production hardening
+## A — Production hardening (done)
 
-Why:
+You confirmed all eight steps on 28.11.2026 (PR #11 comments 7238714843 and 7238742921).
+Claude read back what the available read-only access shows on 28.11.2026:
 
-- The legacy production app still has a daily sync that uploads FIT files.
-- Its real credentials reach every preview build (STRICT_OPERATIONS.md §14).
-- The legacy app also wrote its production database's connection string into the repository secret `DATABASE_URL`. That secret fed the fork's old auto-sync workflow (PES HEVY2GARMIN-F02).
+| # | Step | State | Read-back |
+| --- | --- | --- | --- |
+| 1 | Disable the Vercel cron jobs | done (owner) | not readable with Claude's tools |
+| 2 | Database variables to Production only | done | all 18 Neon variables target Production only |
+| 3 | Delete `GITHUB_PAT`, `GARMIN_EMAIL`, `GARMIN_PASSWORD`; `HEVY_API_KEY` Production only | done | gone; `HEVY_API_KEY` Production only |
+| 4 | Delete old deployments | done | one deployment left: `dpl_4HByTtU3rQTNzMYgQCvnWkieSJe5` (production, main `5e36566`, redeployed 28.11. 11:21 UTC); no preview |
+| 5 | Revoke the GitHub token | done (owner) | not readable |
+| 6 | Delete the `DATABASE_URL` repository secret, rotate the Neon credential (O-12) | done (owner) | not readable; the Neon variables were re-issued at 11:36 UTC |
+| 7 | Change the Garmin password | **waived, owner risk acceptance**, not a rotation | see below |
+| 8 | Regenerate the Hevy API key | done (owner) | not readable |
 
-| # | Where | What |
-| --- | --- | --- |
-| 1 | Vercel → project `hevy2garmin` → Settings → Cron Jobs | **Disable Cron Jobs** |
-| 2 | Vercel → Storage → `neon-champagne-mountain` → Projects → `hevy2garmin` | environments: **Production only** |
-| 3 | Vercel → `hevy2garmin` → Settings → Environment Variables | delete `GITHUB_PAT`, `GARMIN_EMAIL`, `GARMIN_PASSWORD`. Set `HEVY_API_KEY` to Production only, or delete it |
-| 4 | Vercel → `hevy2garmin` → Deployments | keep only `dpl_3xaUyy9uvxcNnJQPUYHnjeFJibjA`, marked "Current"; select every other deployment → Delete |
-| 5 | GitHub → Settings → Developer settings → Tokens | revoke the token that was `GITHUB_PAT` |
-| 6 | GitHub → `xantic21/hevy2garmin` → Settings → Secrets and variables → Actions | delete `DATABASE_URL` if it is listed. Then rotate the credential it held: Neon console → the project behind `neon-champagne-mountain` → Roles → reset the password of the app's role. The legacy dashboard then cannot reach its database until its connection string is updated; nothing syncs after step 1, and gate G retires it. To keep the legacy dashboard readable until then, defer the reset: tell Claude "F02 deferred" in step 9 |
-| 7 | Garmin account | change the password (sign in again on the phone app if asked) |
-| 8 | Hevy → Settings → API | regenerate the API key; keep the new one for block B only |
-| 9 | Claude | "Härtung erledigt" → read-only check of cron, variables and deployments |
+**Step 7, owner risk acceptance (28.11.2026).** You decided not to rotate the
+Garmin password and accepted the remaining risk (PR #11 comment 7238714843).
+This is recorded as an exception for step 7 only, not as a passed rotation.
 
-Until step 3 is done, push no branch other than `migration/strict-inplace-20261127`.
-Any other branch would build a preview with the old credentials. Claude cannot see
-the repository's secrets (step 6). GitHub shows you their names only, never their values.
+- **Remaining risk:** the earlier password was stored readable in up to 40
+  deployment snapshots. Deleting them, removing the variable and MFA reduce the
+  exposure. They do not invalidate a copy that may already exist, or a session
+  that is still open.
+- **What stays binding:** every other control. Gate F does not depend on the
+  rotation: it signs in to Garmin directly, with MFA, and seals the tokens in its
+  own vault.
+- **If there is any sign of misuse,** change the password at once.
 
-## B — Gate F: one real activity
+## B — Gate F: one real activity (Windows, no Docker, no administrator rights)
 
-Needs:
+**Needs:**
 
-- Docker Desktop on your computer
-- block A done (at least steps 1–8)
-- the qualified code commit **`7b63cbf`** (STRICT_GATE_F.md §3)
+- Windows 10 (1803 or later) or 11, x64.
+- A **normal Command Prompt**, not "Run as administrator".
+- About 3 GB of free space.
+- Internet access to nodejs.org, github.com, the npm registry and Neon.
+- On a work computer: only if its rules allow it. Nothing here bypasses them.
+  Otherwise use a personal computer.
 
-```bash
-git clone https://github.com/xantic21/hevy2garmin && cd hevy2garmin && git checkout 7b63cbf
-```
+Everything goes into `%LOCALAPPDATA%\hevy2garmin-gate-f`: local, not OneDrive.
+
+**Binding values** (STRICT_GATE_F.md §3c):
+
+- code commit **`73baaf4826b2a07863b169bc1c3d8aa4766a7786`**
+- `gate-f.cmd` SHA-256 **`e852c27d90aea218cd5208c10d8b450e7bc65f64de6cf383bde5f4fc0abb758a`**
+
+The file pins everything else: Node.js v22.23.5 (official ZIP, SHA-256
+`4a191082…a0e3`), `node.exe`, the source manifest and the launcher.
 
 | # | What |
 | --- | --- |
-| 10 | Record a strength workout with the watch and log it in Hevy. Wait until both apps show it. Note the **Hevy workout id** (in the workout's link) and the **Garmin activity id** (`connect.garmin.com/modern/activity/<id>`) |
-| 11 | Neon console → **New project** `hevy2garmin-live` (free plan) → copy the connection string |
-| 12 | In the checkout, run `bash tools/gate-f/prepare-env.sh` and answer the three questions. It writes `gate-f.env` (git-ignored) and prints the dashboard password and two `docker` commands. Run those commands |
-| 13 | Open `http://localhost:8096` → sign in → Setup: connect **Hevy** (the new key) and **Garmin** (email, password, MFA code) |
-| 14 | Dashboard → **Gate F** panel: **1 · Preview**. Check the activity id, set count, timing and name |
-| 15 | Type the confirmation shown (`GATE-F <hevyId> <activityId>`) → **2 · Run gate F** → expect "synced". The run is bound to the preview: if it says the plan differs, preview again |
-| 16 | **3 · Evidence** → expect "verdict OK (merged)" → save the JSON |
-| 17 | Garmin Connect, web and phone. Heart-rate graph, calories, training effect and duration must be unchanged. Exercises, reps and weights must match Hevy. Note whether the exercise **names** are shown or read "Unknown". "Unknown" is a known Garmin display limit on watch recordings (upstream #325), not a data fault: the read-back has already verified the stored exercises. Whether you accept it is your decision; say which in step 20 |
-| 18 | Not accepted? Gate F panel → type the restore confirmation shown (`RESTORE <journal id>`) → **4 · Restore original** → expect "restored" → **3 · Evidence** → expect "verdict OK (original)". This also works after the authorization expired. If the restore is refused or the verdict is not OK: Strict panel → **Stop all writes**, and tell Claude |
-| 19 | Stop the container (Ctrl-C). Put `gate-f.env` and the evidence JSON into your password manager; gate G needs `H2G_CREDENTIALS_KEY` from it. The gate F database now refuses every live write unless gate F mode or the gate G cutover is set |
-| 20 | Tell Claude "Gate F: akzeptiert" (or "abgelehnt", with what you saw) and share the evidence file. Claude records it. A rejection means a code fix in PR #11, a newly qualified commit, and block B again from step 10: a new workout, a new Neon project and a new `gate-f.env`. The old database stays locked by its gate F record; archive the old file. All of this comes before C |
+| 9 | Record a strength workout with the watch and log it in Hevy. Wait until both apps show it. Note the **Hevy workout id** (in the workout's link) and the **Garmin activity id** (`connect.garmin.com/modern/activity/<id>`) |
+| 10 | Neon console → **New project** `hevy2garmin-live` (free plan) → copy its connection string |
+| 11 | Start menu → "Command Prompt" (not as administrator). Run the three commands below. Then compare the printed hash with `e852c27d90aea218cd5208c10d8b450e7bc65f64de6cf383bde5f4fc0abb758a`; if it differs, stop |
+| 12 | `gate-f.cmd setup 73baaf4826b2a07863b169bc1c3d8aa4766a7786`. It downloads and checks Node.js and the source, then builds; this takes 10–20 minutes. Expect `build manifest SHA-256 …` at the end; note that value |
+| 13 | `gate-f.cmd selftest`. Expect `SELFTEST PASS … 127.0.0.1:8096 only`. It runs without any data |
+| 14 | `gate-f.cmd prepare`. Paste the Neon connection string (the input stays hidden), then type the Hevy workout id and the Garmin activity id. It checks the database over verified TLS and that it is empty, then writes `private\gate-f.env`, readable by you only. It prints the **dashboard password** |
+| 15 | `gate-f.cmd start`. Expect `READY http://127.0.0.1:8096`. Leave this window open |
+| 16 | Open `http://127.0.0.1:8096` in the browser → sign in → Setup: connect **Hevy** (the new key) and **Garmin** (email, password, MFA code) |
+| 17 | Dashboard → **Gate F** panel: **1 · Preview**. Check the activity id, set count, timing and name |
+| 18 | Type the confirmation shown (`GATE-F <hevyId> <activityId>`) → **2 · Run gate F** → expect "synced". If it says the plan differs, preview again |
+| 19 | **3 · Evidence** → expect "verdict OK (merged)" → save the JSON |
+| 20 | Garmin Connect, web and phone. Heart-rate graph, calories, training effect and duration must be unchanged. Exercises, reps and weights must match Hevy. Note whether the exercise **names** are shown or read "Unknown": a known Garmin display limit on watch recordings (upstream #325), not a data fault. Accepting it is your decision |
+| 21 | Not accepted? Type the restore confirmation shown (`RESTORE <journal id>`) → **4 · Restore original** → expect "restored" → **3 · Evidence** → expect "verdict OK (original)". If the restore is refused or the verdict is not OK: Strict panel → **Stop all writes**, and tell Claude |
+| 22 | Press Ctrl+C in the `start` window, or run `gate-f.cmd stop`. Put `private\gate-f.env`, the dashboard password and the evidence JSON into your password manager; gate G needs `H2G_CREDENTIALS_KEY` from that file |
+| 23 | Tell Claude "Gate F: akzeptiert" (or "abgelehnt", with what you saw), share the evidence file and the build manifest value from step 12. A rejection means a code fix in PR #11, a newly qualified commit, and block B again from step 9 in a new folder (`set GATE_F_HOME=…`), with a new workout and a new Neon project. All of this comes before C |
+
+The commands for step 11 (Command Prompt):
+
+```bat
+cd /d %LOCALAPPDATA%
+```
+
+```bat
+curl.exe -fsSLo gate-f.cmd https://raw.githubusercontent.com/xantic21/hevy2garmin/73baaf4826b2a07863b169bc1c3d8aa4766a7786/tools/gate-f-windows/gate-f.cmd
+```
+
+```bat
+certutil -hashfile gate-f.cmd SHA256
+```
+
+Steps 12–15 run in that same window, from `%LOCALAPPDATA%`.
+
+**If `setup` or `start` refuses**, it says why. The common cases:
+
+- an administrator window
+- a OneDrive folder
+- a variable such as `NODE_OPTIONS` or `DATABASE_URL` set in the window
+- port 8096 in use
+- a changed file
+
+Fix that and run the same command again; nothing has been written to Garmin at that point.
+Docker remains possible instead (STRICT_OPERATIONS.md §8, `tools/gate-f/prepare-env.sh`).
 
 ## C — Merge PR #11
 
@@ -75,8 +120,8 @@ Merging deploys nothing:
 
 | # | Where | What |
 | --- | --- | --- |
-| 21 | GitHub → PR #11 | Merge only when **every** check on the current head is green, not just the three the `main` ruleset requires ("Tests (SQLite, Python 3.10/3.12)", "Tests (Postgres)"), and Claude's last PR comment confirms that the head differs from the gate F commit in documentation only. Then **Ready for review**, and merge with **Create a merge commit**, not squash or rebase, so the upstream history and attribution are kept. The ruleset may ask for one extra approval for commits made by Claude; approve it yourself |
-| 22 | Claude | "#11 gemergt" → read-only check: CI on `main`, no new Vercel deployment, Dependabot alert #1 closed (vitest 5 with a lockfile). Then a handover to the governance lane: remove the `LANE_PENDING` exemption and re-baseline the PES entry for the fork's own code ([PES_EVIDENCE.md](PES_EVIDENCE.md)) |
+| 24 | GitHub → PR #11 | Merge only when **every** check on the current head is green, not just the three the `main` ruleset requires ("Tests (SQLite, Python 3.10/3.12)", "Tests (Postgres)"), and Claude's last PR comment confirms that the head differs from the gate F commit in documentation only. Then **Ready for review**, and merge with **Create a merge commit**, not squash or rebase, so the upstream history and attribution are kept. The ruleset may ask for one extra approval for commits made by Claude; approve it yourself |
+| 25 | Claude | "#11 gemergt" → read-only check: CI on `main`, no new Vercel deployment, Dependabot alert #1 closed (vitest 5 with a lockfile). Then a handover to the governance lane: remove the `LANE_PENDING` exemption and re-baseline the PES entry for the fork's own code ([PES_EVIDENCE.md](PES_EVIDENCE.md)) |
 
 ## D — Gate G (later, separate decision)
 

@@ -70,6 +70,33 @@ It was requalified in full on its own tree, on synthetic data only.
 | Dependencies | dashboard `npm audit` 0, with axe-core 4.13.0 as a development dependency; engine and Python unchanged (0) |
 | CI and the Vercel staging rehearsal of the pushed head | the PR #11 evidence comment. The head differs from 7b63cbf in Markdown files only. The Vercel staging preview of the documentation head 18d5243 (code a1e9a2d, `dpl_F2aSPGjMVpJ7mMBMtdJBFZSgadMb`): 38/38, with the bypass revoked right after (the revoked token gets 302) |
 
+### 3c. The Windows path: no Docker, no WSL, no administrator rights (code commit 73baaf4)
+
+The owner's computer runs Windows. Neither Docker nor administrator rights are
+available there, and the employer's policies stay binding. Commit `73baaf4`
+adds `tools/gate-f-windows` on top of `7b63cbf`. Its `typescript/` and `web/`
+are identical (`git diff 7b63cbf 73baaf4 -- typescript web` is empty), so the
+dashboard and engine evidence of §3 carries over.
+
+| Element | How |
+| --- | --- |
+| Chain of trust | The owner checks the SHA-256 of `gate-f.cmd` (OWNER_RUNBOOK.md, from the raw file at the commit). `gate-f.cmd` pins Node.js v22.23.5 `win-x64.zip` (`4a191082…a0e3`). That value comes from the release's `SHASUMS256.txt`, whose signature was verified against Node release key `5BE8A3F6…B168D356` (listed in the v22.23.5 README and in nodejs/release-keys). It also pins `node.exe` (`247e9693…f38a`), `SOURCE_MANIFEST.sha256` (`c3944f08…5281`) and `gate-f.mjs` (`40c794f9…7727`). The launcher then checks all 406 files of `typescript/`, `web/` and `tools/gate-f-windows/` in GitHub's archive of the commit: same bytes, nothing added |
+| Build | As `web/Dockerfile` does: `npm ci` with the lockfiles, the engine build and its stamp, `verify-engine`, then `next build` with a dummy database URL. It runs on the owner's computer, because the bundle carries platform binaries |
+| The built server | `app\` holds the standalone server with the links resolved: Next makes them junctions to absolute paths under Windows without administrator rights. The ACL is read-only for the user, except `.next\cache`. `BUILD_MANIFEST.json` lists the SHA-256 of every file and is checked before every start; Next's runtime route cache is discarded first |
+| Secrets | From the OS random generator. Written once (exclusive create) to `private\gate-f.env`, whose DACL is protected and holds the user's SID alone; this is read back from the SDDL. They never appear on a command line, in a log, in the repository or in CI |
+| The server's environment | Built empty: the platform's minimum, then exactly the env file. That file may hold only the gate F variables; any other key is refused. `NODE_ENV=production`, telemetry off, update check off, direct Garmin sign-in, `HEVY2GARMIN_COMMIT_SHA` from the build manifest |
+| Network | `127.0.0.1:8096` only, checked through `netstat` (locale-independent) before READY. The database runs on `sslmode=verify-full`: the driver accepts any certificate under Neon's default `require`, and the Docker path's `prepare-env.sh` now does the same |
+| Before READY | The server must answer `/api/version` with the build's commit. It must be in gate F mode for exactly the env file's pair (real or synthetic as written), the firewall must be installed, and the schema must be ready |
+| Refused | An administrator window. `NODE_OPTIONS` and any variable that could steer the server, Node or TLS (`VERCEL*`, `H2G_*`, `DATABASE_URL`, `PG*`, `NODE_EXTRA_CA_CERTS`, `NODE_TLS_REJECT_UNAUTHORIZED`, …). Other refusals: non-x64, another Node, a OneDrive folder, a second `prepare`, an env file readable by others, a changed `app\`, port 8096 in use. In `prepare`: a non-Neon host, a database that is not empty or not reached over verified TLS, synthetic ids |
+| Not covered | Windows on ARM. A managed computer whose policies block it (then a personal computer). TLS interception by a proxy: npm or Neon then refuse, which fails closed |
+
+| Check | Result |
+| --- | --- |
+| Launcher unit tests (`node --test`, Linux and Windows) | 11/11 |
+| Negative controls W01–W06 (`strict_mutations.py`) | 6/6 caught: `NODE_OPTIONS` let through, extra env keys accepted, a listener on every interface, an env file readable by others, TLS not verified, the server inheriting the window's variables |
+| Local end to end (Linux, folder with a space and an umlaut, Node v22.23.5) | the commit's archive, then build and `selftest` PASS. `prepare --rehearsal` (env file 600, folder 700), then `start` READY: 127.0.0.1 only, firewall installed, gate F state. The gate F HTTP rehearsal against that server passed 35/35. Refused: a second `prepare`, a hosting variable, a second start, an env file readable by others, a changed `app\`. `stop` freed the port, and the launcher exited |
+| Windows CI as a standard user (`check-gate-f-windows`, `C:\h2g Prüfung\gate f`) | the earlier runs found two Windows defects, both fixed: `fs.cpSync` aborts on non-ASCII paths, and Windows does not resolve `/` in link targets. Those runs passed: medium integrity, no administrator token; verified download and build; `selftest`; `prepare --rehearsal` with an ACL for the user alone; a second `prepare` refused. The full run of this head, through the HTTP rehearsal, every refusal and `stop`, is recorded in the PR #11 evidence comment |
+
 ### 3b. The previous candidate 8ebd30d
 
 The first candidate 6dd7002 passed the same checks (engine 610, dashboard 1044,

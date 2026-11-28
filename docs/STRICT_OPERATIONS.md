@@ -50,7 +50,7 @@ deliberately, and a missing or misspelled one keeps the safe state.
 | Gate | State | Evidence / what remains |
 | --- | --- | --- |
 | A snapshot and quarantine | done | `vercel.json` (both roots) deployment off, `next.config.ts` refuses Vercel builds, no publish path, `typescript/` private with `prepublishOnly` refusal |
-| B end-to-end strict mode | done (synthetic) | engine 617 tests, web 1081 tests incl. real Postgres, e2e through firewall + Postgres, 102 negative controls (STRICT_REAUDIT_ROUND2.md, STRICT_GATE_F.md); automated accessibility checks (axe WCAG 2.1 A/AA, reflow), page timing and the owner's gate F click path gated in CI (PES_EVIDENCE.md) |
+| B end-to-end strict mode | done (synthetic) | engine 617 tests, web 1081 tests incl. real Postgres, e2e through firewall + Postgres, 108 negative controls (STRICT_REAUDIT_ROUND2.md, STRICT_GATE_F.md); automated accessibility checks (axe WCAG 2.1 A/AA, reflow), page timing and the owner's gate F click path gated in CI (PES_EVIDENCE.md) |
 | C synthetic migration and full CI | done | `web/lib/db-qualification.db.test.ts` (fresh DB, previous fork-main schema, pg_dump/restore); all CI jobs |
 | D independent review | done: round 1 9/9 closed (`docs/STRICT_REAUDIT.md`); round 2 owner findings 1–7 and independent re-audit #2 closed (`docs/STRICT_REAUDIT_ROUND2.md`) | no upload/delete path found |
 | E isolated staging | **done (synthetic, on Vercel)**: separate project `hevy2garmin-staging` with its own Neon project; every code candidate rehearsed 38/38 on its protected preview (up to a1e9a2d here; the final candidate 7b63cbf in the PR #11 evidence comment); isolation verified independently; production project unchanged | §7a; the owner may click through the preview (§7 step 5) |
@@ -276,9 +276,9 @@ owner's own computer, and nothing else.
 
 | Question | Answer |
 | --- | --- |
-| Where it runs | The owner's computer, from the qualified container image of the exact candidate (`docker run`, `localhost:8096`). Never on Vercel: the runtime quarantine refuses a real gate F wherever `VERCEL`/`VERCEL_ENV` is set, and the build quarantine still builds only synthetic staging. On Vercel gate F exists only as a synthetic rehearsal inside staging. Signing in to Garmin from the owner's own connection also needs no Cloudflare Worker (`H2G_DIRECT_GARMIN_LOGIN=1`) |
+| Where it runs | The owner's computer: on Windows without Docker, WSL or administrator rights through `tools/gate-f-windows/gate-f.cmd` (pinned portable Node.js, every source file verified, the same standalone build as the image, read-only, a clean environment, 127.0.0.1:8096; STRICT_GATE_F.md §3c), or from the qualified container image of the exact candidate (`docker run`, `localhost:8096`). Never on Vercel: the runtime quarantine refuses a real gate F wherever `VERCEL`/`VERCEL_ENV` is set, and the build quarantine still builds only synthetic staging. On Vercel gate F exists only as a synthetic rehearsal inside staging. Signing in to Garmin from the owner's own connection also needs no Cloudflare Worker (`H2G_DIRECT_GARMIN_LOGIN=1`) |
 | Which database | A new, empty Neon database (free plan) used for nothing else. Enforced: before the schema bootstrap the server refuses any database that holds a row in any table of the app (the legacy production database, the staging database) and marks an empty one as the gate F database (`app_cache` key `h2g_gate_f`). At gate G this database, with the same `H2G_CREDENTIALS_KEY`, becomes the strict deployment's database, so the original backup and the journal of the gate F activity stay with it |
-| Authorization | `H2G_GATE_F=approved-by-owner`, `H2G_GATE_F_HEVY_ID`, `H2G_GATE_F_GARMIN_ACTIVITY_ID`, `H2G_GATE_F_EXPIRES` (at most 14 days ahead). `tools/gate-f/prepare-env.sh` writes them, with fresh secrets, into a private `gate-f.env` |
+| Authorization | `H2G_GATE_F=approved-by-owner`, `H2G_GATE_F_HEVY_ID`, `H2G_GATE_F_GARMIN_ACTIVITY_ID`, `H2G_GATE_F_EXPIRES` (at most 14 days ahead). `gate-f.cmd prepare` (Windows) or `tools/gate-f/prepare-env.sh` (Docker) writes them, with fresh secrets, into a private `gate-f.env`; both keep only the Neon user, password, host and database and set `sslmode=verify-full` (the driver accepts any certificate under Neon's default `require`) |
 | Refused at start (server answers 503) | an incomplete or malformed authorization (also an impossible expiry such as 31 November, 24:00 or an offset beyond ±14:00); `H2G_PRODUCTION_CUTOVER` or `H2G_STRICT_AUTOMATIC` (gate G); plain credentials in the environment (`HEVY_API_KEY`, `GARMIN_EMAIL`, `GARMIN_PASSWORD`, `GITHUB_PAT`, intervals.icu, collector); `DEMO_MODE`; legacy mode; no dashboard password; no `H2G_CREDENTIALS_KEY`; synthetic ids outside staging, real ids inside it; any hosting platform's variables (`VERCEL*`, AWS Lambda, Netlify, Render, Railway, Fly, Cloud Run, Heroku) |
 | After the expiry | The server stays readable; no new merge; preview, evidence, stop, reconcile and restore of the authorized activity stay available |
 
@@ -512,3 +512,27 @@ deletions and rotations):
 
 Until step 2–3 are done, do not push any branch other than
 `migration/strict-inplace-20261127`.
+
+**Outcome (28.11.2026).** The owner confirmed every step (PR #11 comments
+7238714843 and 7238742921), with one exception: the **Garmin password was not
+changed**.
+
+That is an **owner risk acceptance** for step 7 only, recorded as an exception
+and not as a passed rotation. The rotation this section classified as required
+therefore did not happen. Every other control stays binding, and gate F itself
+has no rotation precondition: it signs in to Garmin directly, with MFA, and
+seals the tokens in its own vault.
+
+Residual risk: a copy of the old password from a deleted snapshot, or a session
+that is still open. Neither is invalidated. On any sign of misuse, the password
+is changed at once.
+
+Read back by Claude:
+
+| Item | State |
+| --- | --- |
+| Deployments | one left, `dpl_4HByTtU3rQTNzMYgQCvnWkieSJe5` (production, main `5e36566`, redeployed 28.11. 11:21 UTC); no preview |
+| Neon variables | all 18 target Production only, re-issued 11:36 UTC |
+| `HEVY_API_KEY` | Production only |
+| `GITHUB_PAT`, `GARMIN_EMAIL`, `GARMIN_PASSWORD` | deleted |
+| Cron setting, token revocation, repository secret, Hevy key | not readable with the tools available; owner-attested |
