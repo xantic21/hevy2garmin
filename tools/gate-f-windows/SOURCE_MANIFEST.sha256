@@ -1,6 +1,6 @@
 106cb5c95640f0e272aa9f57ae60db673030203e2337fb64aa6ab6308569f465  tools/gate-f-windows/gate-f.mjs
 2bbe0ba69572be629591d1694749094450a23ca9ee1fc9068db0476117f2b4ad  tools/gate-f-windows/gate-f.test.mjs
-82f0d73697b02c163101da1392283b3b4182873fdf6be5847fba4903af3722bd  tools/gate-f-windows/make-manifest.mjs
+8aba1484d30c16c3f7895fd21be9aca1919f1e4ca1c5711f7c45358215f133c7  tools/gate-f-windows/make-manifest.mjs
 fbfc4745cad9a69bff0a4aaeaa1641ed694ae50822265268de8e8862dd9e9425  tools/gate-f-windows/module-guard.cjs
 790e3169bc19b046fe55ba1da6d13b976c28363c8c00462a2195fe5faf260910  typescript/.gitignore
 3215ef831a8f7b11e2909c6873e3869c1ffa18b59bf703f10268eb99ce563ebc  typescript/README.md

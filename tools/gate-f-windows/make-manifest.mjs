@@ -15,7 +15,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { MANIFEST_PATH, SCOPES, UNLISTED, sha256 } from "./gate-f.mjs";
+import { MANIFEST_PATH, SCOPES, UNLISTED, sha256, unsafeInherited } from "./gate-f.mjs";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const check = process.argv.includes("--check");
@@ -64,6 +64,10 @@ if (check) {
   if (current !== manifest) stale.push(MANIFEST_PATH);
   if (cmd !== nextCmd) stale.push("tools/gate-f-windows/gate-f.cmd pins");
   if (!/\r\n/.test(cmd) || /[^\r]\n/.test(cmd)) stale.push("tools/gate-f-windows/gate-f.cmd must use CRLF line endings");
+  // Node inherits every variable gate-f.cmd sets; none may be one the launcher refuses.
+  const setsVars = [...cmd.matchAll(/set "([A-Za-z_][A-Za-z0-9_]*)=/g)].map((m) => m[1]);
+  const clash = unsafeInherited(Object.fromEntries(setsVars.map((k) => [k, "x"])), "win32");
+  if (clash.length) stale.push(`gate-f.cmd sets variables the launcher refuses: ${clash.join(", ")}`);
   if (stale.length) {
     console.error(`stale: ${stale.join("; ")}. Run node tools/gate-f-windows/make-manifest.mjs and commit.`);
     process.exit(1);

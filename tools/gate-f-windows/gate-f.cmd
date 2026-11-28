@@ -16,10 +16,11 @@ rem  its node.exe, the source manifest and the launcher. The launcher then check
 rem  every source file against the manifest. Nothing else is trusted.
 rem ==========================================================================
 
-set "NODE_VERSION=v22.23.5"
-set "NODE_ZIP_SHA256=4a191082e9706866830379d577d2cc8a50c776fcd9436a8d061b063ed0d9a0e3"
-set "NODE_EXE_SHA256=247e9693d316da9857e44990e5e11709f596f18112251b8026ec6eed80bdf38a"
-set "MANIFEST_SHA256=ca35602210863e092cd6abf9c76d48935253a7ebd446a97ded78b9c8bba9d1a0"
+rem No variable here may start with NODE_ or OPENSSL_: Node inherits them, and the launcher refuses those.
+set "PIN_NODE_VERSION=v22.23.5"
+set "PIN_NODE_ZIP_SHA256=4a191082e9706866830379d577d2cc8a50c776fcd9436a8d061b063ed0d9a0e3"
+set "PIN_NODE_EXE_SHA256=247e9693d316da9857e44990e5e11709f596f18112251b8026ec6eed80bdf38a"
+set "MANIFEST_SHA256=3e5a862d49b73625866c77c19cdc345b7361b839d0bb82090bff42828a73a330"
 set "LAUNCHER_SHA256=106cb5c95640f0e272aa9f57ae60db673030203e2337fb64aa6ab6308569f465"
 set "REPO=xantic21/hevy2garmin"
 set "SYS=%SystemRoot%\System32"
@@ -124,16 +125,16 @@ popd
 exit /b %RC%
 
 :get_node
-echo Downloading Node.js %NODE_VERSION% (official ZIP from nodejs.org)...
-"%SYS%\curl.exe" -fsSL --retry 3 --proto =https --tlsv1.2 -o download\node.zip "https://nodejs.org/dist/%NODE_VERSION%/node-%NODE_VERSION%-win-x64.zip"
+echo Downloading Node.js %PIN_NODE_VERSION% (official ZIP from nodejs.org)...
+"%SYS%\curl.exe" -fsSL --retry 3 --proto =https --tlsv1.2 -o download\node.zip "https://nodejs.org/dist/%PIN_NODE_VERSION%/node-%PIN_NODE_VERSION%-win-x64.zip"
 if errorlevel 1 exit /b 1
-call :check download\node.zip %NODE_ZIP_SHA256%
+call :check download\node.zip %PIN_NODE_ZIP_SHA256%
 if errorlevel 1 exit /b 1
-if exist "download\node-%NODE_VERSION%-win-x64\" rmdir /s /q "download\node-%NODE_VERSION%-win-x64"
+if exist "download\node-%PIN_NODE_VERSION%-win-x64\" rmdir /s /q "download\node-%PIN_NODE_VERSION%-win-x64"
 "%SYS%\tar.exe" -xf download\node.zip -C download
 if errorlevel 1 exit /b 1
 if exist node\ rmdir /s /q node
-move "download\node-%NODE_VERSION%-win-x64" node >nul
+move "download\node-%PIN_NODE_VERSION%-win-x64" node >nul
 if errorlevel 1 exit /b 1
 call :verify_node
 exit /b
@@ -143,7 +144,7 @@ if not exist node\node.exe (
   if /i not "%~1"=="quiet" echo refusing: Node.js is not set up here; run gate-f.cmd setup first
   exit /b 1
 )
-call :check node\node.exe %NODE_EXE_SHA256%
+call :check node\node.exe %PIN_NODE_EXE_SHA256%
 exit /b
 
 rem :check <file> <expected sha256>
