@@ -729,6 +729,49 @@ M = [
         "  if (!entry) return null;",
         ("web", ["npx", "vitest", "run", "components/gate-f-panel.test.ts"]),
     ),
+    # The portable Windows gate F launcher (tools/gate-f-windows)
+    (
+        "W01 launcher lets NODE_OPTIONS through",
+        "tools/gate-f-windows/gate-f.mjs",
+        "  /^NODE_OPTIONS$/i, /^NODE_TLS_REJECT_UNAUTHORIZED$/i,",
+        "  /^NODE_TLS_REJECT_UNAUTHORIZED$/i,",
+        (".", ["node", "--test", "tools/gate-f-windows/gate-f.test.mjs"]),
+    ),
+    (
+        "W02 env file accepts extra variables",
+        "tools/gate-f-windows/gate-f.mjs",
+        "  if (unexpected.length) throw new Error(",
+        "  if (false) throw new Error(",
+        (".", ["node", "--test", "tools/gate-f-windows/gate-f.test.mjs"]),
+    ),
+    (
+        "W03 a listener on every interface passes",
+        "tools/gate-f-windows/gate-f.mjs",
+        'listeners.every((l) => l.address === "127.0.0.1")',
+        'listeners.some((l) => l.address === "127.0.0.1")',
+        (".", ["node", "--test", "tools/gate-f-windows/gate-f.test.mjs"]),
+    ),
+    (
+        "W04 env file readable by others passes",
+        "tools/gate-f-windows/gate-f.mjs",
+        "  if (others.length) return { ok: false,",
+        "  if (false) return { ok: false,",
+        (".", ["node", "--test", "tools/gate-f-windows/gate-f.test.mjs"]),
+    ),
+    (
+        "W05 database TLS not verified",
+        "tools/gate-f-windows/gate-f.mjs",
+        "?sslmode=verify-full`;",
+        "?sslmode=require`;",
+        (".", ["node", "--test", "tools/gate-f-windows/gate-f.test.mjs"]),
+    ),
+    (
+        "W06 the server inherits the window's variables",
+        "tools/gate-f-windows/gate-f.mjs",
+        "  return { ...env, ...extra };",
+        "  return { ...parent, ...env, ...extra };",
+        (".", ["node", "--test", "tools/gate-f-windows/gate-f.test.mjs"]),
+    ),
     # PES HEVY2GARMIN-F04: the config file holds the Hevy key and Garmin credentials
     (
         "P01 config written with default file rights",

@@ -629,3 +629,161 @@ jobs:
           H2G_A11Y_URL=http://127.0.0.1:8120 H2G_A11Y_PASSWORD="$H2G_PASSWORD" node scripts/a11y-scan.mjs
           H2G_A11Y_URL=http://127.0.0.1:8123 H2G_A11Y_PASSWORD="$H2G_PASSWORD" H2G_A11Y_PAGES=/dashboard node scripts/a11y-scan.mjs
           H2G_PERF_URL=http://127.0.0.1:8120 H2G_PERF_PASSWORD="$H2G_PASSWORD" node scripts/perf-probe.mjs
+
+  check-gate-f-windows:
+    # Gate F on the owner's Windows path (tools/gate-f-windows, OWNER_RUNBOOK.md
+    # block B), rehearsed as a STANDARD user without administrator rights, in a
+    # folder whose name has a space and an umlaut: gate-f.cmd downloads and
+    # verifies the pinned Node.js and THIS commit's source from GitHub, builds,
+    # self-tests, prepares a synthetic rehearsal against a local Postgres and
+    # starts; the gate F HTTP rehearsal runs against it; then every refusal.
+    # Synthetic only: no credential, no Garmin or Hevy, nothing leaves the runner
+    # but the downloads from nodejs.org, codeload.github.com and the npm registry.
+    name: Gate F on Windows (portable, no Docker, standard user)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Launcher unit tests and the manifest pins of this commit
+        shell: pwsh
+        run: |
+          node --test tools/gate-f-windows/gate-f.test.mjs
+          if ($LASTEXITCODE) { exit 1 }
+          node tools/gate-f-windows/make-manifest.mjs --check
+          if ($LASTEXITCODE) { exit 1 }
+
+      - name: The owner's path as a standard user, then every refusal
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $work = "C:\h2g Prüfung"
+          $gfHome = "$work\gate f"
+          $cmdFile = "$work\gate-f.cmd"
+          New-Item -ItemType Directory -Force -Path "$work\tmp", "$work\logs" | Out-Null
+          Copy-Item tools/gate-f-windows/gate-f.cmd $cmdFile
+
+          # A standard user (no group but Users), with a random password.
+          $pw = "H" + [guid]::NewGuid().ToString("N") + "!a1"
+          Write-Host "::add-mask::$pw"
+          $sec = ConvertTo-SecureString $pw -AsPlainText -Force
+          & net user h2gtester $pw /add /y | Out-Null
+          if ($LASTEXITCODE) { exit 1 }
+          & icacls $work /grant "h2gtester:(OI)(CI)M" /T /Q | Out-Null
+
+          $script:n = 0
+          function Tester([string]$args1, [hashtable]$extra = @{}, [switch]$Background) {
+            $script:n++
+            $log = "$work\logs\step$($script:n).log"
+            $psi = [System.Diagnostics.ProcessStartInfo]::new("$env:SystemRoot\System32\cmd.exe", "/d /s /c `"$args1 > `"$log`" 2>&1`"")
+            $psi.UserName = "h2gtester"; $psi.Domain = $env:COMPUTERNAME; $psi.Password = $sec
+            $psi.LoadUserProfile = $true; $psi.UseShellExecute = $false; $psi.WorkingDirectory = $work
+            # A typical user's window: none of the runner's variables (PG*, NODE_*, …).
+            $psi.Environment.Clear()
+            foreach ($k in "SystemRoot", "windir", "ComSpec", "PATHEXT", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS", "COMPUTERNAME") {
+              $psi.Environment[$k] = [Environment]::GetEnvironmentVariable($k)
+            }
+            $psi.Environment["PATH"] = "$env:SystemRoot\System32;$env:SystemRoot;$env:SystemRoot\System32\WindowsPowerShell\v1.0"
+            $psi.Environment["USERNAME"] = "h2gtester"
+            $psi.Environment["USERPROFILE"] = "C:\Users\h2gtester"
+            $psi.Environment["LOCALAPPDATA"] = "C:\Users\h2gtester\AppData\Local"
+            $psi.Environment["APPDATA"] = "C:\Users\h2gtester\AppData\Roaming"
+            $psi.Environment["TEMP"] = "$work\tmp"; $psi.Environment["TMP"] = "$work\tmp"
+            $psi.Environment["GATE_F_HOME"] = $gfHome
+            foreach ($k in $extra.Keys) { $psi.Environment[$k] = $extra[$k] }
+            $p = [System.Diagnostics.Process]::Start($psi)
+            if ($Background) { return @{ Process = $p; Log = $log } }
+            $p.WaitForExit()
+            $out = if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log -Encoding utf8 -Raw } else { "" }
+            Write-Host "---- [$($p.ExitCode)] $args1"
+            Write-Host $out
+            return @{ Code = $p.ExitCode; Out = $out }
+          }
+          function Expect([bool]$ok, [string]$what) {
+            if (-not $ok) { Write-Host "::error::FAILED: $what"; exit 1 }
+            Write-Host "PASS  $what"
+          }
+          $gf = "`"$cmdFile`""
+
+          # 1. Who runs it: a standard user, medium integrity, not an administrator.
+          $r = Tester "whoami /groups"
+          Expect ($r.Out -match "S-1-16-8192" -and $r.Out -notmatch "S-1-16-12288") "the steps run as a standard user (medium integrity, no administrator token)"
+          Expect (-not ((& net localgroup Administrators | Out-String) -match "h2gtester")) "h2gtester is not in Administrators"
+
+          # 2. Setup: pinned Node.js, this commit's source from GitHub, every file verified, build.
+          $r = Tester "$gf setup $env:COMMIT"
+          Expect ($r.Code -eq 0 -and $r.Out -match "build manifest  SHA-256 [0-9a-f]{64}") "setup: verified download and build as a standard user"
+          Expect ($r.Out -match "\d+ files identical") "setup: every source file matched the manifest"
+
+          # 3. Self-test: the bare server, no database, loopback only.
+          $r = Tester "$gf selftest"
+          Expect ($r.Code -eq 0 -and $r.Out -match "SELFTEST PASS: [0-9a-f]{12} answers on 127\.0\.0\.1:8096 only") "selftest"
+
+          # 4. A synthetic rehearsal against a local Postgres.
+          $svc = Get-Service -Name "postgresql*" | Select-Object -First 1
+          Set-Service -Name $svc.Name -StartupType Manual; Start-Service -Name $svc.Name
+          $env:PGPASSWORD = "root"
+          & "$env:PGBIN\psql.exe" -U postgres -h 127.0.0.1 -v ON_ERROR_STOP=1 -qc "CREATE DATABASE h2g_gate_f_win"
+          if ($LASTEXITCODE) { exit 1 }
+          $rpw = [guid]::NewGuid().ToString("N")
+          Write-Host "::add-mask::$rpw"
+          $rehearsalEnv = @{ GATE_F_REHEARSAL_DATABASE_URL = "postgres://postgres:root@127.0.0.1:5432/h2g_gate_f_win"; GATE_F_REHEARSAL_PASSWORD = $rpw }
+          $r = Tester "$gf prepare --rehearsal" $rehearsalEnv
+          Expect ($r.Code -eq 0 -and $r.Out -match "Wrote private\\gate-f.env \(synthetic rehearsal") "prepare --rehearsal"
+          $r = Tester "icacls `"$gfHome\private\gate-f.env`""
+          Expect ($r.Out -match "h2gtester:\(F\)" -and $r.Out -notmatch "(Administrators|SYSTEM|Users|Everyone|Jeder|Benutzer):") "the env file is readable by h2gtester only"
+          $r = Tester "$gf prepare --rehearsal" $rehearsalEnv
+          Expect ($r.Code -ne 0 -and $r.Out -match "already exists") "a second prepare is refused"
+
+          # 5. Start, then the gate F HTTP rehearsal against it.
+          $srv = Tester "$gf start" -Background
+          $deadline = (Get-Date).AddMinutes(4)
+          do { Start-Sleep 2; $t = Get-Content -LiteralPath $srv.Log -Encoding utf8 -Raw -ErrorAction SilentlyContinue } until (($t -match "READY|refusing|ERROR") -or $srv.Process.HasExited -or (Get-Date) -gt $deadline)
+          Write-Host $t
+          Expect ($t -match "READY \(synthetic rehearsal\) http://127\.0\.0\.1:8096") "start: identity, loopback, firewall and gate F state checked"
+          $listen = Get-NetTCPConnection -LocalPort 8096 -State Listen
+          Expect (($listen | Where-Object LocalAddress -ne "127.0.0.1").Count -eq 0 -and $listen.Count -ge 1) "port 8096 listens on 127.0.0.1 only"
+          $owner = (Get-CimInstance Win32_Process -Filter "ProcessId=$($listen[0].OwningProcess)" | Invoke-CimMethod -MethodName GetOwner).User
+          Expect ($owner -eq "h2gtester") "the server runs as h2gtester"
+          $env:H2G_REHEARSAL_URL = "http://127.0.0.1:8096"; $env:H2G_REHEARSAL_PASSWORD = $rpw
+          & "$gfHome\node\node.exe" "$gfHome\src\web\scripts\gate-f-rehearsal.mjs"
+          Expect ($LASTEXITCODE -eq 0) "gate F HTTP rehearsal against the Windows server (one write on the authorized pair only, refusals, evidence, restore)"
+
+          # 6. Refusals while it runs.
+          $r = Tester "$gf start"
+          Expect ($r.Code -ne 0 -and $r.Out -match "port 8096 is in use") "a second start is refused"
+          $r = Tester "$gf status" @{ VERCEL = "1" }
+          Expect ($r.Code -ne 0 -and $r.Out -match "could steer the server: VERCEL") "a hosting variable in the window is refused"
+          $r = Tester "$gf status" @{ NODE_OPTIONS = "--require=x" }
+          Expect ($r.Code -ne 0 -and $r.Out -match "NODE_OPTIONS is set") "NODE_OPTIONS is refused before Node starts"
+          $r = Tester "$gf status" @{ GATE_F_HOME = "$work\OneDrive\gate f" }
+          Expect ($r.Code -ne 0 -and $r.Out -match "inside OneDrive") "a OneDrive folder is refused"
+          $env:GATE_F_HOME = $gfHome
+          $r = & $cmdFile status 2>&1 | Out-String
+          Remove-Item Env:GATE_F_HOME
+          Expect ($r -match "runs as administrator") "an administrator window is refused"
+
+          # 7. Stop: the server ends, the port is free, the launcher exits.
+          $r = Tester "$gf stop"
+          Expect ($r.Code -eq 0 -and $r.Out -match "port 8096 is free") "stop"
+          Expect ($srv.Process.WaitForExit(30000)) "the launcher exited"
+          Expect ((Get-NetTCPConnection -LocalPort 8096 -State Listen -ErrorAction SilentlyContinue).Count -eq 0) "nothing listens on 8096 any more"
+          Write-Host (Get-Content -LiteralPath $srv.Log -Encoding utf8 -Raw)
+
+          # 8. Refusals of a widened env file and of a changed build.
+          $r = Tester "icacls `"$gfHome\private\gate-f.env`" /grant *S-1-1-0:(R)"
+          $r = Tester "$gf start"
+          Expect ($r.Code -ne 0 -and $r.Out -match "not private to you") "an env file readable by others is refused"
+          $r = Tester "icacls `"$gfHome\private\gate-f.env`" /remove *S-1-1-0"
+          $r = Tester "icacls `"$gfHome\app\server.js`" /grant h2gtester:(M) && echo // changed>> `"$gfHome\app\server.js`""
+          $r = Tester "$gf start"
+          Expect ($r.Code -ne 0 -and $r.Out -match "differs from its build") "a changed app\ is refused"
