@@ -781,36 +781,133 @@ jobs:
           $r = Tester "$gf prepare --rehearsal" $rehearsalEnv
           Expect ($r.Code -ne 0 -and $r.Out -cmatch "already exists") "a second prepare is refused"
 
-          # 5. Start, then the gate F HTTP rehearsal against it (run by h2gtester: the folder is private).
-          $srv = Tester "$gf start" -Background
-          $script:serverLog = $srv.Log
-          $deadline = (Get-Date).AddMinutes(4)
-          # Case-sensitive and anchored: Next itself prints "Ready in …".
-          do { Start-Sleep 2; $t = Get-Content -LiteralPath $srv.Log -Encoding utf8 -Raw -ErrorAction SilentlyContinue } until (($t -cmatch "(?m)^(READY |refusing|ERROR)") -or $srv.Process.HasExited -or (Get-Date) -gt $deadline)
+          # 5-7. The running server, in ONE standard-user session: Windows' secondary logon
+          # (how the runner acts as h2gtester) ends a user's processes when one of its sessions
+          # ends, so start, rehearsal, refusals and stop run from a single script. The
+          # administrator side checks the listener while the script waits at a flag.
+          $L = "$work\logs"
+          $phase = @'
+          @echo off
+          setlocal EnableExtensions
+          set "L=%WORK%\logs"
+          start "" /b cmd /d /c ""%WORK%\gate-f.cmd" start > "%L%\server.log" 2>&1"
+          set /a n=0
+          :wait
+          ping -n 3 127.0.0.1 >nul
+          findstr /b /c:"READY " "%L%\server.log" >nul && goto ready
+          findstr /c:"refusing" /c:"ERROR" "%L%\server.log" >nul && goto failed
+          set /a n+=1
+          if %n% lss 120 goto wait
+          :failed
+          >"%L%\phase.failed" echo failed
+          exit /b 1
+          :ready
+          >"%L%\ready.flag" echo ready
+          set /a n=0
+          :waitc
+          if exist "%L%\continue.flag" goto go
+          ping -n 2 127.0.0.1 >nul
+          set /a n+=1
+          if %n% lss 300 goto waitc
+          goto failed
+          :go
+          setlocal
+          set "H2G_REHEARSAL_URL=http://127.0.0.1:8096"
+          set "H2G_REHEARSAL_PASSWORD=%REHEARSAL_PW%"
+          "%GATE_F_HOME%\node\node.exe" "%GATE_F_HOME%\src\web\scripts\gate-f-rehearsal.mjs" > "%L%\rehearsal.log" 2>&1
+          >"%L%\rehearsal.rc" echo %errorlevel%
+          endlocal
+          call "%WORK%\gate-f.cmd" start > "%L%\start2.log" 2>&1
+          >"%L%\start2.rc" echo %errorlevel%
+          setlocal
+          set "VERCEL=1"
+          call "%WORK%\gate-f.cmd" status > "%L%\vercel.log" 2>&1
+          >"%L%\vercel.rc" echo %errorlevel%
+          endlocal
+          setlocal
+          set "NODE_OPTIONS=--require=x"
+          call "%WORK%\gate-f.cmd" status > "%L%\nodeopt.log" 2>&1
+          >"%L%\nodeopt.rc" echo %errorlevel%
+          endlocal
+          setlocal
+          set "OPENSSL_CONF=C:\x.cnf"
+          call "%WORK%\gate-f.cmd" status > "%L%\openssl.log" 2>&1
+          >"%L%\openssl.rc" echo %errorlevel%
+          endlocal
+          setlocal
+          set "NODE_USE_SYSTEM_CA=1"
+          call "%WORK%\gate-f.cmd" status > "%L%\sysca.log" 2>&1
+          >"%L%\sysca.rc" echo %errorlevel%
+          endlocal
+          setlocal
+          set "GATE_F_HOME=%WORK%\OneDrive\gate f"
+          call "%WORK%\gate-f.cmd" status > "%L%\onedrive.log" 2>&1
+          >"%L%\onedrive.rc" echo %errorlevel%
+          endlocal
+          call "%WORK%\gate-f.cmd" stop > "%L%\stop.log" 2>&1
+          >"%L%\stop.rc" echo %errorlevel%
+          set /a n=0
+          :waitstop
+          findstr /c:"Server stopped" "%L%\server.log" >nul && goto stopped
+          ping -n 2 127.0.0.1 >nul
+          set /a n+=1
+          if %n% lss 30 goto waitstop
+          :stopped
+          call "%WORK%\gate-f.cmd" stop > "%L%\stop2.log" 2>&1
+          >"%L%\stop2.rc" echo %errorlevel%
+          >"%L%\phase.done" echo done
+          '@
+          # ASCII only (cmd reads batch files in the OEM code page); the paths come from variables.
+          [IO.File]::WriteAllText("$work\phase.cmd", (($phase -split "`r?`n" | ForEach-Object { $_ -replace '^          ', '' }) -join "`r`n"), [Text.Encoding]::ASCII)
+          $script:serverLog = "$L\server.log"
+          # Only neutral names in the session: the launcher refuses H2G_* variables in its window.
+          $run = Tester "`"$work\phase.cmd`"" @{ WORK = $work; REHEARSAL_PW = $rpw } -Background
+          $deadline = (Get-Date).AddMinutes(5)
+          while (-not ((Test-Path "$L\ready.flag") -or (Test-Path "$L\phase.failed") -or $run.Process.HasExited -or (Get-Date) -gt $deadline)) { Start-Sleep 2 }
+          $t = Get-Content -LiteralPath "$L\server.log" -Encoding utf8 -Raw -ErrorAction SilentlyContinue
           Write-Host $t
           $script:last = "$t"
-          Expect ($t -cmatch "(?m)^READY \(synthetic rehearsal\) http://127\.0\.0\.1:8096") "start: Node, source and build verified; identity, loopback, firewall and gate F state checked"
+          Expect ((Test-Path "$L\ready.flag") -and $t -cmatch "(?m)^READY \(synthetic rehearsal\) http://127\.0\.0\.1:8096") "start: Node, source and build verified; identity, loopback, firewall and gate F state checked"
           $listen = Get-NetTCPConnection -LocalPort 8096 -State Listen
           Expect (($listen | Where-Object LocalAddress -ne "127.0.0.1").Count -eq 0 -and $listen.Count -ge 1) "port 8096 listens on 127.0.0.1 only"
           $owner = (Get-CimInstance Win32_Process -Filter "ProcessId=$($listen[0].OwningProcess)" | Invoke-CimMethod -MethodName GetOwner).User
           Expect ($owner -eq "h2gtester") "the server runs as h2gtester"
-          $r = Tester "`"$gfHome\node\node.exe`" `"$gfHome\src\web\scripts\gate-f-rehearsal.mjs`"" @{ H2G_REHEARSAL_URL = "http://127.0.0.1:8096"; H2G_REHEARSAL_PASSWORD = $rpw }
+          Set-Content -Path "$L\continue.flag" -Value "go"
+          $deadline = (Get-Date).AddMinutes(10)
+          while (-not ((Test-Path "$L\phase.done") -or (Test-Path "$L\phase.failed") -or (Get-Date) -gt $deadline)) { Start-Sleep 3 }
+          function Step([string]$name) {
+            $out = Get-Content -LiteralPath "$L\$name.log" -Encoding utf8 -Raw -ErrorAction SilentlyContinue
+            $rc = (Get-Content -LiteralPath "$L\$name.rc" -ErrorAction SilentlyContinue | Select-Object -First 1)
+            Write-Host "---- [$rc] $name"; Write-Host $out
+            $script:last = "$out"
+            return @{ Code = [int]("$rc".Trim() -replace '^$', '-1'); Out = "$out" }
+          }
+          $r = Step "rehearsal"
           Expect ($r.Code -eq 0 -and $r.Out -cmatch "35 passed, 0 failed") "gate F HTTP rehearsal against the Windows server (one write on the authorized pair only, refusals, evidence, restore)"
+          $r = Step "start2"
+          Expect ($r.Code -ne 0 -and $r.Out -cmatch "port 8096 is in use") "a second start is refused"
+          $r = Step "vercel"
+          Expect ($r.Code -ne 0 -and $r.Out -cmatch "could steer the server: VERCEL") "a hosting variable in the window is refused"
+          $r = Step "nodeopt"
+          Expect ($r.Code -ne 0 -and $r.Out -cmatch "NODE_OPTIONS is set") "NODE_OPTIONS is refused before Node starts"
+          $r = Step "openssl"
+          Expect ($r.Code -ne 0 -and $r.Out -cmatch "OPENSSL_CONF is set") "OPENSSL_CONF is refused before Node starts"
+          $r = Step "sysca"
+          Expect ($r.Code -ne 0 -and $r.Out -cmatch "NODE_USE_SYSTEM_CA is set") "NODE_USE_SYSTEM_CA is refused before Node starts"
+          $r = Step "onedrive"
+          Expect ($r.Code -ne 0 -and $r.Out -cmatch "inside OneDrive") "a OneDrive folder is refused"
+          $r = Step "stop"
+          Expect ($r.Code -eq 0 -and $r.Out -cmatch "port 8096 is free") "stop"
+          $t = Get-Content -LiteralPath "$L\server.log" -Encoding utf8 -Raw
+          $script:last = "$t"
+          Expect ($t -cmatch "Server stopped") "the launcher exited after stop"
+          Expect ((Get-NetTCPConnection -LocalPort 8096 -State Listen -ErrorAction SilentlyContinue).Count -eq 0) "nothing listens on 8096 any more"
+          $r = Step "stop2"
+          Expect ($r.Code -eq 0 -and $r.Out -cmatch "No server record") "a second stop kills nothing"
+          Expect (Test-Path "$L\phase.done") "the server phase ran to its end"
           NothingPlantedRan "start and rehearsal"
 
-          # 6. Refusals while it runs.
-          $r = Tester "$gf start"
-          Expect ($r.Code -ne 0 -and $r.Out -cmatch "port 8096 is in use") "a second start is refused"
-          $r = Tester "$gf status" @{ VERCEL = "1" }
-          Expect ($r.Code -ne 0 -and $r.Out -cmatch "could steer the server: VERCEL") "a hosting variable in the window is refused"
-          $r = Tester "$gf status" @{ NODE_OPTIONS = "--require=x" }
-          Expect ($r.Code -ne 0 -and $r.Out -cmatch "NODE_OPTIONS is set") "NODE_OPTIONS is refused before Node starts"
-          $r = Tester "$gf status" @{ OPENSSL_CONF = "C:\x.cnf" }
-          Expect ($r.Code -ne 0 -and $r.Out -cmatch "OPENSSL_CONF is set") "OPENSSL_CONF is refused before Node starts"
-          $r = Tester "$gf status" @{ NODE_USE_SYSTEM_CA = "1" }
-          Expect ($r.Code -ne 0 -and $r.Out -cmatch "NODE_USE_SYSTEM_CA is set") "NODE_USE_SYSTEM_CA is refused before Node starts"
-          $r = Tester "$gf status" @{ GATE_F_HOME = "$work\OneDrive\gate f" }
-          Expect ($r.Code -ne 0 -and $r.Out -cmatch "inside OneDrive") "a OneDrive folder is refused"
+          # Refusals that need no running server.
           $env:GATE_F_HOME = $gfHome
           $r = & $cmdFile status 2>&1 | Out-String
           $script:last = $r
@@ -818,15 +915,6 @@ jobs:
           Expect ($r -match "runs as administrator") "an administrator window is refused"
           $r = Tester "$gf status" -DefaultHome
           Expect ($r.Code -ne 0 -and $r.Out -cmatch "Node.js is not set up here") "the default folder %LOCALAPPDATA%\hevy2garmin-gate-f is found, created and made private"
-
-          # 7. Stop: the server ends, the port is free, the launcher exits.
-          $r = Tester "$gf stop"
-          Expect ($r.Code -eq 0 -and $r.Out -cmatch "port 8096 is free") "stop"
-          Expect ($srv.Process.WaitForExit(30000)) "the launcher exited"
-          Expect ((Get-NetTCPConnection -LocalPort 8096 -State Listen -ErrorAction SilentlyContinue).Count -eq 0) "nothing listens on 8096 any more"
-          $r = Tester "$gf stop"
-          Expect ($r.Code -eq 0 -and $r.Out -cmatch "No server record") "a second stop kills nothing"
-          Write-Host (Get-Content -LiteralPath $srv.Log -Encoding utf8 -Raw)
 
           # 8. Refusals of a widened env file and of a changed build.
           $r = Tester "icacls `"$gfHome\private\gate-f.env`" /grant *S-1-1-0:(R)"
