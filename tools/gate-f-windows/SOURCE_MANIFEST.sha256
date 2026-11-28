@@ -1,6 +1,7 @@
-40c794f974fb408afd9b78ad4f0ca70cdc9e122795cb7ff5f0c8e41f787f5727  tools/gate-f-windows/gate-f.mjs
-68e6f545ac84b91e4c92fb03d05d633f4eb79317074e0246fa2c4c23c77a1773  tools/gate-f-windows/gate-f.test.mjs
+106cb5c95640f0e272aa9f57ae60db673030203e2337fb64aa6ab6308569f465  tools/gate-f-windows/gate-f.mjs
+2bbe0ba69572be629591d1694749094450a23ca9ee1fc9068db0476117f2b4ad  tools/gate-f-windows/gate-f.test.mjs
 82f0d73697b02c163101da1392283b3b4182873fdf6be5847fba4903af3722bd  tools/gate-f-windows/make-manifest.mjs
+fbfc4745cad9a69bff0a4aaeaa1641ed694ae50822265268de8e8862dd9e9425  tools/gate-f-windows/module-guard.cjs
 790e3169bc19b046fe55ba1da6d13b976c28363c8c00462a2195fe5faf260910  typescript/.gitignore
 3215ef831a8f7b11e2909c6873e3869c1ffa18b59bf703f10268eb99ce563ebc  typescript/README.md
 6e10575f7826ff62f00e66491b06a8a944fdd04c5c337ca572489275afd4dd81  typescript/package-lock.json

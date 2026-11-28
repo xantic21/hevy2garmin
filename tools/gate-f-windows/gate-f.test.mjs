@@ -103,9 +103,10 @@ test("inherited variables that could steer the server or Node are refused", () =
     H2G_STRICT_AUTOMATIC: "1", GARMIN_PASSWORD: "x", DATABASE_URL: "x", PGPASSWORD: "x", NEON_DATABASE_URL: "x",
     NEXT_PUBLIC_X: "x", PORT: "1", HOSTNAME: "box", AWS_LAMBDA_FUNCTION_NAME: "x", EMPTY_IS_FINE: "",
   };
-  assert.deepEqual(unsafeInherited(env, "win32"), [
+  assert.deepEqual(unsafeInherited({ ...env, NODE_USE_SYSTEM_CA: "1", OPENSSL_CONF: "x", NODE_COMPILE_CACHE: "x", UV_THREADPOOL_SIZE: "64", UV_CACHE_DIR: "x" }, "win32"), [
     "AWS_LAMBDA_FUNCTION_NAME", "DATABASE_URL", "GARMIN_PASSWORD", "H2G_STRICT_AUTOMATIC", "HOSTNAME", "NEON_DATABASE_URL",
-    "NEXT_PUBLIC_X", "NODE_EXTRA_CA_CERTS", "NODE_OPTIONS", "NODE_TLS_REJECT_UNAUTHORIZED", "PGPASSWORD", "PORT", "VERCEL",
+    "NEXT_PUBLIC_X", "NODE_COMPILE_CACHE", "NODE_EXTRA_CA_CERTS", "NODE_OPTIONS", "NODE_TLS_REJECT_UNAUTHORIZED", "NODE_USE_SYSTEM_CA",
+    "OPENSSL_CONF", "PGPASSWORD", "PORT", "VERCEL",
   ]);
   assert.ok(!unsafeInherited(env, "linux").includes("HOSTNAME"), "bash exports HOSTNAME on Linux");
   assert.deepEqual(unsafeInherited({ PATH: "x", VERCEL: "" }, "win32"), []);
@@ -117,6 +118,7 @@ test("the server's environment starts empty: nothing inherited but what the plat
   assert.deepEqual(Object.keys(env).sort(), ["ComSpec", "PATH", "PORT", "SystemRoot", "TEMP", "TMP", "USERPROFILE"]);
   assert.equal(env.PATH, "C:\\n;C:\\Windows/System32".replace("/", process.platform === "win32" ? "\\" : "/"));
   assert.equal(env.USERPROFILE, "C:\\Users\\Jörg Müller");
+  assert.equal(env.ComSpec, join("C:\\Windows", "System32", "cmd.exe"), "ComSpec is pinned, not taken from the window");
 });
 
 test("manifest: format, duplicates and escapes refused; a tree verifies exactly", () => {
@@ -202,6 +204,72 @@ test("the standalone copy replaces links by their content, inside the build only
     symlinkSync("..", join(dir, "a", "node_modules", "loop"), "dir");
     assert.throws(() => copyResolved(join(dir, "a"), join(dir, "d")), /cycle/);
     assert.ok(existsSync(join(dir, "b")));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("module guard: nothing resolves from a node_modules above the gate F folder", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const { guardEnv } = await import("./gate-f.mjs");
+  const { fileURLToPath } = await import("node:url");
+  const top = mkdtempSync(join(tmpdir(), "h2g guard ü-"));
+  try {
+    const marker = join(top, "LOADED");
+    // A planted package in a parent folder (as C:\node_modules could be), and the gate F folder below it.
+    mkdirSync(join(top, "node_modules", "planted"), { recursive: true });
+    writeFileSync(join(top, "node_modules", "planted", "package.json"), '{"name":"planted","main":"index.js","exports":{"import":"./index.mjs","require":"./index.js"}}');
+    writeFileSync(join(top, "node_modules", "planted", "index.js"), `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "cjs"); module.exports = 1;`);
+    writeFileSync(join(top, "node_modules", "planted", "index.mjs"), `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(marker)}, "esm"); export default 1;`);
+    const root = join(top, "gate f");
+    mkdirSync(join(root, "node_modules", "inside"), { recursive: true });
+    writeFileSync(join(root, "node_modules", "inside", "index.js"), "module.exports = 'ok';");
+    writeFileSync(join(root, "cjs.js"), "try { require('planted'); console.log('LOADED'); } catch (e) { console.log(e.code); } console.log(require('inside'));");
+    writeFileSync(join(root, "esm.mjs"), "try { await import('planted'); console.log('LOADED'); } catch (e) { console.log(e.code ?? e.message); }");
+    const guard = join(fileURLToPath(new URL(".", import.meta.url)), "module-guard.cjs");
+    const env = { PATH: process.env.PATH, ...guardEnv(guard, root) };
+    const cjs = spawnSync(process.execPath, ["cjs.js"], { cwd: root, env, encoding: "utf8" });
+    assert.match(cjs.stdout, /MODULE_NOT_FOUND\s+ok/, cjs.stderr);
+    const esm = spawnSync(process.execPath, ["esm.mjs"], { cwd: root, env, encoding: "utf8" });
+    assert.doesNotMatch(esm.stdout, /LOADED/, esm.stderr);
+    assert.equal(existsSyncLocal(marker), false, "the planted module never ran");
+    // Control: without the guard the same script does load it.
+    const open = spawnSync(process.execPath, ["cjs.js"], { cwd: root, env: { PATH: process.env.PATH }, encoding: "utf8" });
+    assert.match(open.stdout, /LOADED/);
+  } finally {
+    rmSync(top, { recursive: true, force: true });
+  }
+});
+
+test("module guard: NODE_OPTIONS quoting survives spaces and backslashes", async () => {
+  const { guardEnv } = await import("./gate-f.mjs");
+  const e = guardEnv(["C:", "h2g Prüfung", "gate f", "app", "gate-f-module-guard.cjs"].join("\\"), "C:\\h2g Prüfung\\gate f\\app");
+  if (process.platform === "win32") assert.equal(e.NODE_OPTIONS, '--require "C:/h2g Prüfung/gate f/app/gate-f-module-guard.cjs"');
+  assert.match(e.NODE_OPTIONS, /^--require "[^"]+"$/);
+  assert.equal(e.H2G_MODULE_ROOT, "C:\\h2g Prüfung\\gate f\\app");
+});
+
+function existsSyncLocal(p) {
+  try {
+    return statSyncLocal(p) !== null;
+  } catch {
+    return false;
+  }
+}
+import { statSync as statSyncLocal } from "node:fs";
+
+test("manifest after the build: listed files must match, build products may exist", () => {
+  const dir = mkdtempSync(join(tmpdir(), "h2g-listed-"));
+  try {
+    mkdirSync(join(dir, "web", "node_modules", ".bin"), { recursive: true });
+    writeFileSync(join(dir, "web", "a.ts"), "a\n");
+    symlinkSync(join(dir, "web", "a.ts"), join(dir, "web", "node_modules", ".bin", "tool"), "file");
+    const manifest = `${sha256(Buffer.from("a\n"))}  web/a.ts\n`;
+    assert.equal(verifySource(dir, manifest, { listedOnly: true }).ok, true);
+    writeFileSync(join(dir, "web", "a.ts"), "changed\n");
+    assert.deepEqual(verifySource(dir, manifest, { listedOnly: true }).changed, ["web/a.ts"]);
+    rmSync(join(dir, "web", "a.ts"));
+    assert.deepEqual(verifySource(dir, manifest, { listedOnly: true }).missing, ["web/a.ts"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

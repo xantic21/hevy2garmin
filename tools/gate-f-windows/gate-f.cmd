@@ -19,8 +19,8 @@ rem ==========================================================================
 set "NODE_VERSION=v22.23.5"
 set "NODE_ZIP_SHA256=4a191082e9706866830379d577d2cc8a50c776fcd9436a8d061b063ed0d9a0e3"
 set "NODE_EXE_SHA256=247e9693d316da9857e44990e5e11709f596f18112251b8026ec6eed80bdf38a"
-set "MANIFEST_SHA256=c3944f083de5d2cfc50a3edff2549319e3499567631e79095fde9233b6ed5281"
-set "LAUNCHER_SHA256=40c794f974fb408afd9b78ad4f0ca70cdc9e122795cb7ff5f0c8e41f787f5727"
+set "MANIFEST_SHA256=ca35602210863e092cd6abf9c76d48935253a7ebd446a97ded78b9c8bba9d1a0"
+set "LAUNCHER_SHA256=106cb5c95640f0e272aa9f57ae60db673030203e2337fb64aa6ab6308569f465"
 set "REPO=xantic21/hevy2garmin"
 set "SYS=%SystemRoot%\System32"
 
@@ -32,9 +32,11 @@ if defined PROCESSOR_ARCHITEW6432 (
   echo refusing: use the 64-bit Command Prompt
   exit /b 1
 )
-if defined NODE_OPTIONS (
-  echo refusing: NODE_OPTIONS is set in this window; open a new Command Prompt without it
-  exit /b 1
+for %%v in (NODE_OPTIONS NODE_PATH NODE_USE_SYSTEM_CA NODE_EXTRA_CA_CERTS NODE_TLS_REJECT_UNAUTHORIZED NODE_COMPILE_CACHE NODE_ICU_DATA NODE_REPL_EXTERNAL_MODULE OPENSSL_CONF OPENSSL_MODULES OPENSSL_ENGINES SSL_CERT_FILE SSL_CERT_DIR) do (
+  if defined %%v (
+    echo refusing: %%v is set in this window; open a new Command Prompt without it
+    exit /b 1
+  )
 )
 for %%t in (curl.exe tar.exe certutil.exe whoami.exe icacls.exe netstat.exe findstr.exe taskkill.exe) do (
   if not exist "%SYS%\%%t" (
@@ -42,7 +44,7 @@ for %%t in (curl.exe tar.exe certutil.exe whoami.exe icacls.exe netstat.exe find
     exit /b 1
   )
 )
-"%SYS%\whoami.exe" /groups | "%SYS%\findstr.exe" /c:"S-1-16-12288" >nul
+"%SYS%\whoami.exe" /groups | "%SYS%\findstr.exe" /c:"S-1-16-12288" /c:"S-1-16-16384" >nul
 if not errorlevel 1 (
   echo refusing: this window runs as administrator; use a normal Command Prompt
   exit /b 1
@@ -59,6 +61,18 @@ if not exist "%ROOT%\" (
   echo refusing: cannot create "%ROOT%"
   exit /b 1
 )
+rem The whole folder belongs to this user alone, before anything is downloaded into it.
+set "SID="
+for /f "tokens=2 delims=," %%s in ('""%SYS%\whoami.exe" /user /fo csv /nh"') do set "SID=%%~s"
+if not defined SID (
+  echo refusing: cannot determine the current user
+  exit /b 1
+)
+"%SYS%\icacls.exe" "%ROOT%" /inheritance:r /grant:r "*%SID%:(OI)(CI)(F)" /C /Q >nul
+if errorlevel 1 (
+  echo refusing: cannot make "%ROOT%" private to you; use a folder on an NTFS drive under %%LOCALAPPDATA%%
+  exit /b 1
+)
 pushd "%ROOT%"
 if errorlevel 1 exit /b 1
 
@@ -66,6 +80,8 @@ if "%~1"=="" goto usage
 if /i "%~1"=="setup" goto setup
 
 call :verify_node
+if errorlevel 1 goto fail
+call :check "src\tools\gate-f-windows\SOURCE_MANIFEST.sha256" %MANIFEST_SHA256%
 if errorlevel 1 goto fail
 call :check "src\tools\gate-f-windows\gate-f.mjs" %LAUNCHER_SHA256%
 if errorlevel 1 goto fail

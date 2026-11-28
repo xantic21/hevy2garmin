@@ -37,7 +37,7 @@ import {
 } from "node:fs";
 import { createRequire } from "node:module";
 import net from "node:net";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { delimiter, dirname, join, relative, resolve, sep } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -87,10 +87,15 @@ export function parseManifest(text) {
   return map;
 }
 
-/** Compare a source tree with the manifest: every listed file identical, nothing else in the scopes. */
-export function verifySource(dir, manifestText) {
+/**
+ * Compare a source tree with the manifest: every listed file identical and, unless
+ * `listedOnly` (after the build, when node_modules, dist and .next exist), nothing else in the scopes.
+ */
+export function verifySource(dir, manifestText, { listedOnly = false } = {}) {
   const expected = parseManifest(manifestText);
-  const actual = SCOPES.flatMap((s) => listFiles(join(dir, s), dir)).filter((p) => !UNLISTED.includes(p));
+  const actual = listedOnly
+    ? [...expected.keys()].filter((p) => existsSync(join(dir, ...p.split("/"))))
+    : SCOPES.flatMap((s) => listFiles(join(dir, s), dir)).filter((p) => !UNLISTED.includes(p));
   const missing = [...expected.keys()].filter((p) => !existsSync(join(dir, ...p.split("/"))));
   const extra = actual.filter((p) => !expected.has(p));
   const changed = actual.filter((p) => expected.has(p) && sha256File(join(dir, ...p.split("/"))) !== expected.get(p));
@@ -101,9 +106,9 @@ const HOSTED = /^(VERCEL|NOW_|AWS_LAMBDA|LAMBDA_TASK_ROOT$|NETLIFY|RENDER|RAILWA
 const UNSAFE = [
   /^H2G_/i, /^HEVY/i, /^GARMIN/i, /^DATABASE_URL/i, /^POSTGRES/i, /^NEON_/i,
   /^PG(HOST|HOSTADDR|PORT|USER|USERNAME|PASSWORD|DATABASE|SSLMODE|SSLROOTCERT|SERVICE|PASSFILE|OPTIONS|APPNAME)$/i,
-  /^NODE_OPTIONS$/i, /^NODE_TLS_REJECT_UNAUTHORIZED$/i, /^NODE_EXTRA_CA_CERTS$/i, /^NODE_USE_ENV_PROXY$/i,
-  /^NODE_PATH$/i, /^NODE_ENV$/i, /^NODE_DEBUG$/i, /^NODE_REPL_EXTERNAL_MODULE$/i, /^NEXT_/i, /^CRON_SECRET$/i,
-  /^COLLECTOR_/i, /^SSL_CERT_(FILE|DIR)$/i, /^PORT$/i,
+  // Every NODE_* (options, CA store, compile cache, ICU, …) and OpenSSL variable.
+  /^NODE_OPTIONS$/i, /^NODE_TLS_REJECT_UNAUTHORIZED$/i, /^NODE_/i, /^OPENSSL_/i,
+  /^NEXT_/i, /^CRON_SECRET$/i, /^COLLECTOR_/i, /^SSL_CERT_(FILE|DIR)$/i, /^PORT$/i,
 ];
 
 /** Inherited variables that could steer the server, its TLS or Node itself. */
@@ -223,6 +228,7 @@ export function cleanEnv(parent, { root, nodeDir, platform = process.platform, e
   const tmp = join(root, "tmp");
   if (platform === "win32") {
     const sys = env.SystemRoot ?? "C:\\Windows";
+    env.ComSpec = join(sys, "System32", "cmd.exe");
     env.PATH = [nodeDir, join(sys, "System32")].join(";");
     env.TEMP = tmp;
     env.TMP = tmp;
@@ -329,8 +335,8 @@ function userSid() {
 
 function elevated() {
   if (!IS_WIN) return false;
-  // High mandatory level: an elevated (administrator) token.
-  return /S-1-16-12288\b/.test(capture(sys("whoami"), ["/groups"]).stdout ?? "");
+  // High or System mandatory level: an elevated (administrator) or SYSTEM token.
+  return /S-1-16-(12288|16384)\b/.test(capture(sys("whoami"), ["/groups"]).stdout ?? "");
 }
 
 /** Only the current user may use `p`; `mode` "full", "read" (read and execute) or "modify". */
@@ -357,7 +363,7 @@ function restrict(p, mode, { tree = false } = {}) {
 function listDirs(dir) {
   const out = [];
   for (const e of readdirSync(dir, { withFileTypes: true })) {
-    if (e.isDirectory()) {
+    if (e.isDirectory() && !e.isSymbolicLink()) {
       const full = join(dir, e.name);
       out.push(full, ...listDirs(full));
     }
@@ -369,8 +375,8 @@ function listDirs(dir) {
 function unlock(p) {
   if (!existsSync(p)) return;
   if (!IS_WIN) {
+    // Folders writable again, links left alone (rmSync removes a link, not its target).
     for (const d of [p, ...(statSync(p).isDirectory() ? listDirs(p) : [])]) chmodSync(d, 0o700);
-    if (statSync(p).isDirectory()) for (const f of listFiles(p)) chmodSync(join(p, ...f.split("/")), 0o600);
     return;
   }
   run(sys("icacls"), [p, "/grant", `*${userSid()}:(OI)(CI)(F)`, "/C", "/Q"], { stdio: "ignore" });
@@ -449,11 +455,19 @@ function preflight(L) {
     if (resolve(process.execPath).toLowerCase() !== resolve(L.node, "node.exe").toLowerCase()) refuse("refusing: not started by gate-f.cmd with the portable Node.js");
     if (process.arch !== "x64") refuse(`refusing: ${process.arch}; only Windows x64 is qualified`);
     if (elevated()) refuse("refusing: this window runs as administrator; use a normal (non-administrator) Command Prompt");
-    if (/\\onedrive/i.test(L.root)) refuse("refusing: the gate F folder is inside OneDrive; use a local, unsynced folder");
+    const synced = ["OneDrive", "OneDriveConsumer", "OneDriveCommercial"].map((k) => process.env[k]).filter(Boolean);
+    if (/\\onedrive/i.test(L.root) || synced.some((d) => L.root.toLowerCase().startsWith(resolve(d).toLowerCase()))) {
+      refuse("refusing: the gate F folder is inside OneDrive; use a local, unsynced folder");
+    }
   }
   const bad = unsafeInherited(process.env);
   if (bad.length) refuse(`refusing: these variables are set in this window and could steer the server: ${bad.join(", ")}. Open a new Command Prompt without them`);
   mkdirSync(L.tmp, { recursive: true });
+  if (!IS_WIN) restrict(L.root, "full");
+  // The whole folder is this user's alone (gate-f.cmd sets it; checked here): no other local
+  // account can swap a file between a check and its use.
+  const acl = ownerOnly(L.root, L.root);
+  if (!acl.ok) refuse(`refusing: the gate F folder is not private to you (${acl.reason})`);
 }
 
 function readBuild(L) {
@@ -478,6 +492,37 @@ function verifyApp(L, build) {
   if (sha256(JSON.stringify(build.files)) !== build.filesSha256) refuse("refusing: the build manifest is inconsistent");
 }
 
+const GUARD_IN_APP = "gate-f-module-guard.cjs";
+
+/** Node loads the module guard first; NODE_OPTIONS reaches npm, next build and its workers. */
+export function guardEnv(guardPath, ...moduleRoots) {
+  // Forward slashes: inside quotes NODE_OPTIONS treats a backslash as an escape.
+  return { NODE_OPTIONS: `--require "${guardPath.split(sep).join("/")}"`, H2G_MODULE_ROOT: moduleRoots.join(delimiter) };
+}
+
+/** Every file of the portable Node.js, hashed (a DLL next to node.exe would load first). */
+function nodeFiles(L) {
+  if (!IS_WIN) return [];
+  return listFiles(L.node).map((p) => [p, sha256File(join(L.node, ...p.split("/")))]);
+}
+
+/**
+ * Before the server starts: Node unchanged since the build, the source still the pinned
+ * one, and app\ built from it (source manifest and engine digest recorded at build time).
+ */
+async function verifyRuntime(L, build) {
+  if (IS_WIN) {
+    const now = nodeFiles(L);
+    if (sha256(JSON.stringify(now)) !== build.node.filesSha256) refuse("refusing: the portable Node.js differs from the one the build used");
+  }
+  const manifestText = readFileSync(join(L.src, MANIFEST_PATH), "utf8");
+  if (sha256(manifestText) !== build.sourceManifestSha256) refuse("refusing: app\\ was built from another source manifest");
+  const v = verifySource(L.src, manifestText, { listedOnly: true });
+  if (!v.ok) refuse(`refusing: src\\ differs from its manifest (${[...v.changed, ...v.extra, ...v.missing].slice(0, 3).join(", ")})`);
+  const { sourceDigest } = await import(pathToFileURL(join(L.src, "typescript", "scripts", "engine-stamp.mjs")).href);
+  if (sourceDigest(join(L.src, "typescript")) !== build.engineSourceSha256) refuse("refusing: app\\ was built from another engine source");
+}
+
 // ---------------------------------------------------------------- build
 
 function build(L, { commit, from }) {
@@ -496,13 +541,26 @@ function build(L, { commit, from }) {
   }
   for (const s of SCOPES) copyResolved(join(fromDir, s), join(L.src, s));
   copyFileSync(join(fromDir, MANIFEST_PATH), join(L.src, MANIFEST_PATH));
+  // What is built is what was checked: the copy itself is verified again.
+  const again = verifySource(L.src, manifestText);
+  if (!again.ok) refuse("refusing: the copied source differs from its manifest");
   mkdirSync(L.cache, { recursive: true });
 
   const npm = npmCli();
+  // npm reads no user or global .npmrc (they could set a script shell or node options).
+  const userRc = join(L.tmp, "user.npmrc");
+  const globalRc = join(L.tmp, "global.npmrc");
+  writeFileSync(userRc, "");
+  writeFileSync(globalRc, "");
+  const guard = join(L.src, "tools", "gate-f-windows", "module-guard.cjs");
   const base = cleanEnv(process.env, {
     root: L.root,
     nodeDir: dirname(process.execPath),
     extra: {
+      // npm's own folder: inside node\ on Windows; the system Node's on Linux (tests).
+      ...guardEnv(guard, L.root, dirname(dirname(npm))),
+      npm_config_userconfig: userRc,
+      npm_config_globalconfig: globalRc,
       npm_config_cache: L.cache,
       npm_config_update_notifier: "false",
       npm_config_fund: "false",
@@ -536,6 +594,7 @@ function build(L, { commit, from }) {
   // keep app\ self-contained, relocatable and fully covered by its manifest.
   copyResolved(standalone, L.app);
   copyResolved(join(web, ".next", "static"), join(L.app, ".next", "static"));
+  copyFileSync(guard, join(L.app, GUARD_IN_APP));
   mkdirSync(join(L.app, ".next", "cache"), { recursive: true });
 
   const files = listFiles(L.app).filter((p) => !p.startsWith(".next/cache/")).map((p) => [p, sha256File(join(L.app, ...p.split("/")))]);
@@ -545,12 +604,13 @@ function build(L, { commit, from }) {
     commit,
     builtAt: new Date().toISOString(),
     platform: `${process.platform}-${process.arch}`,
-    node: { version: process.version, sha256: sha256File(process.execPath) },
+    node: { version: process.version, sha256: sha256File(process.execPath), files: nodeFiles(L), filesSha256: null },
     sourceManifestSha256: sha256(manifestText),
     engineSourceSha256: stamp,
     files,
     filesSha256: sha256(JSON.stringify(files)),
   };
+  buildManifest.node.filesSha256 = sha256(JSON.stringify(buildManifest.node.files));
   writeFileSync(L.build, `${JSON.stringify(buildManifest, null, 1)}\n`);
   restrict(L.app, "read", { tree: true });
   restrict(join(L.app, ".next", "cache"), "modify");
@@ -574,6 +634,7 @@ function serverEnv(L, build, vars) {
       HOSTNAME: "127.0.0.1",
       PORT: String(PORT),
       HEVY2GARMIN_COMMIT_SHA: build.commit,
+      ...guardEnv(join(L.app, GUARD_IN_APP), L.app),
       ...vars,
     },
   });
@@ -658,8 +719,9 @@ async function waitPortFree() {
 
 async function selftest(L) {
   const build = readBuild(L);
-  say("Verifying app\\ against its build manifest…");
+  say("Verifying Node.js, the source and app\\ against the build…");
   verifyApp(L, build);
+  await verifyRuntime(L, build);
   if (await portBusy(PORT)) refuse(`refusing: port ${PORT} is in use; stop the other server first (gate-f.cmd stop)`);
   const password = randomBytes(15).toString("base64url");
   // No database, no credentials, no gate F: the bare server, to prove this computer runs it.
@@ -681,16 +743,18 @@ async function selftest(L) {
 
 async function start(L) {
   const build = readBuild(L);
-  say("Verifying app\\ against its build manifest…");
+  say("Verifying Node.js, the source and app\\ against the build…");
   verifyApp(L, build);
+  await verifyRuntime(L, build);
   if (!existsSync(L.env)) refuse("refusing: no private\\gate-f.env; run gate-f.cmd prepare first");
   const acl = ownerOnly(L.env, L.root);
   if (!acl.ok) refuse(`refusing: private\\gate-f.env is not private to you (${acl.reason}); run gate-f.cmd prepare again in a new folder`);
   const { vars, rehearsal, expired } = parseEnvFile(readFileSync(L.env, "utf8"));
   if (await portBusy(PORT)) refuse(`refusing: port ${PORT} is in use; stop the other server first (gate-f.cmd stop)`);
 
+  rmSync(L.pid, { force: true }); // a record left by a closed window: the port is free, so it is stale
   const child = launch(L, serverEnv(L, build, vars));
-  writeFileSync(L.pid, JSON.stringify({ pid: child.pid, launcher: process.pid, port: PORT, startedAt: new Date().toISOString() }));
+  writeFileSync(L.pid, JSON.stringify({ pid: child.pid, launcher: process.pid, port: PORT, startedAt: new Date().toISOString() }), { flag: "wx" });
   let stopping = false;
   const shutdown = async () => {
     if (stopping) return;
@@ -734,9 +798,15 @@ async function stop(L) {
     return;
   }
   const rec = JSON.parse(readFileSync(L.pid, "utf8"));
+  if (!(await portBusy(PORT))) {
+    // Window closed, reboot or crash: nothing of ours runs, and the PID may belong to anything now.
+    rmSync(L.pid, { force: true });
+    say("The server is not running (stale record removed).");
+    return;
+  }
   if (IS_WIN) {
     const owners = listeners(PORT).map((x) => x.pid);
-    if (owners.length && !owners.includes(rec.pid)) refuse(`refusing: port ${PORT} belongs to another process; not stopping it`);
+    if (!owners.length || owners.some((o) => o !== rec.pid)) refuse(`refusing: port ${PORT} is held by another process; not stopping anything`);
     spawnSync(sys("taskkill"), ["/PID", String(rec.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
   } else {
     try {
@@ -753,8 +823,7 @@ async function stop(L) {
 
 // ---------------------------------------------------------------- prepare
 
-async function ask(question, { hidden = false, env } = {}) {
-  if (env !== undefined && process.env[env]) return process.env[env];
+async function ask(question, { hidden = false } = {}) {
   if (!process.stdin.isTTY) refuse(`refusing: ${question.trim()} needs an interactive window`);
   process.stdout.write(question);
   return new Promise((res) => {
@@ -797,12 +866,13 @@ async function checkDatabase(L, url, { rehearsal }) {
   const postgres = require("postgres");
   const sql = postgres(url, { max: 1, prepare: false, connect_timeout: 20, idle_timeout: 2, onnotice: () => {} });
   try {
+    // TLS: the connection itself is the proof (sslmode=verify-full refuses anything but a
+    // verified certificate for the host). The server side may legitimately see no TLS behind
+    // Neon's proxy or pooler, so pg_stat_ssl is not asked.
     const [row] = await sql`
       SELECT current_database() AS db,
         (SELECT count(*)::int FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-          WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')) AS relations,
-        (SELECT ssl FROM pg_catalog.pg_stat_ssl WHERE pid = pg_catalog.pg_backend_pid()) AS ssl`;
-    if (!rehearsal && row.ssl !== true) refuse("refusing: the database connection is not encrypted");
+          WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')) AS relations`;
     if (row.relations !== 0) refuse(`refusing: database ${row.db} is not empty (${row.relations} objects in schema public); gate F needs a new, empty database`);
     return row.db;
   } catch (e) {
@@ -832,16 +902,19 @@ async function prepare(L, { rehearsal }) {
     expires = isoSeconds(Date.now() + 3 * 3600e3);
   } else {
     say("Gate F authorization: one Hevy workout into one Garmin activity, nothing else.");
-    url = normalizeDatabaseUrl(await ask("Connection string of the NEW, empty Neon database (input hidden): ", { hidden: true, env: "GATE_F_DATABASE_URL" }));
-    hevyId = await ask("Hevy workout id (from the workout's link): ", { env: "GATE_F_HEVY_ID" });
+    // Typed in this window only: never taken from a variable someone may have set beforehand.
+    const preset = ["GATE_F_DATABASE_URL", "GATE_F_HEVY_ID", "GATE_F_GARMIN_ACTIVITY_ID"].filter((k) => process.env[k]);
+    if (preset.length) refuse(`refusing: ${preset.join(", ")} set in this window; gate F asks for them itself`);
+    url = normalizeDatabaseUrl(await ask("Connection string of the NEW, empty Neon database (input hidden): ", { hidden: true }));
+    hevyId = await ask("Hevy workout id (from the workout's link): ");
     if (!ID_HEVY.test(hevyId) || hevyId.startsWith("syn-")) refuse("refusing: not a Hevy workout id");
-    activityId = await ask("Garmin activity id (connect.garmin.com/modern/activity/<id>): ", { env: "GATE_F_GARMIN_ACTIVITY_ID" });
+    activityId = await ask("Garmin activity id (connect.garmin.com/modern/activity/<id>): ");
     if (!ID_GARMIN.test(activityId)) refuse("refusing: not a Garmin activity id");
     const days = process.env.GATE_F_DAYS ?? "3";
     if (!/^([1-9]|1[0-4])$/.test(days)) refuse("refusing: GATE_F_DAYS must be 1-14");
     expires = isoSeconds(Date.now() + Number(days) * 86400e3);
   }
-  say("Checking the database (verified TLS, empty)…");
+  say(rehearsal ? "Checking the local rehearsal database (empty)…" : "Checking the database (verified TLS, empty)…");
   const db = await checkDatabase(L, url, { rehearsal });
   const secrets = newSecrets();
   if (password) secrets.H2G_PASSWORD = password;
@@ -875,7 +948,7 @@ async function prepare(L, { rehearsal }) {
   say("Next: gate-f.cmd start");
 }
 
-function status(L) {
+async function status(L) {
   if (!existsSync(L.build)) {
     say("No build yet.");
     return;
@@ -892,7 +965,7 @@ function status(L) {
       say(`Authorization file present but not usable: ${e.message}`);
     }
   } else say("Authorization: none yet (gate-f.cmd prepare).");
-  say(existsSync(L.pid) ? "Server: started (gate-f.cmd stop to stop it)." : "Server: not running.");
+  say(existsSync(L.pid) && (await portBusy(PORT)) ? "Server: running (gate-f.cmd stop to stop it)." : "Server: not running.");
 }
 
 // ---------------------------------------------------------------- main

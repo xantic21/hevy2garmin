@@ -691,8 +691,17 @@ jobs:
           if ($LASTEXITCODE) { exit 1 }
           & icacls $work /grant "h2gtester:(OI)(CI)M" /T /Q | Out-Null
 
+          # A planted package where any local user may create folders (C:\node_modules): Next
+          # asks for @opentelemetry/api, which gate F does not ship. It must never run.
+          $marker = "C:\h2g-planted\ran.txt"
+          New-Item -ItemType Directory -Force -Path "C:\node_modules\@opentelemetry\api", "C:\h2g-planted" | Out-Null
+          & icacls "C:\h2g-planted" /grant "h2gtester:(OI)(CI)M" /Q | Out-Null
+          Set-Content -Path "C:\node_modules\@opentelemetry\api\package.json" -Value '{"name":"@opentelemetry/api","version":"1.9.0","main":"index.js"}'
+          Set-Content -Path "C:\node_modules\@opentelemetry\api\index.js" -Value "require('fs').appendFileSync('C:/h2g-planted/ran.txt', process.argv.join(' ') + '\n'); module.exports = {};"
+
           $script:n = 0
-          function Tester([string]$args1, [hashtable]$extra = @{}, [switch]$Background) {
+          $script:serverLog = $null
+          function Tester([string]$args1, [hashtable]$extra = @{}, [switch]$Background, [int]$Minutes = 6, [switch]$DefaultHome) {
             $script:n++
             $log = "$work\logs\step$($script:n).log"
             $psi = [System.Diagnostics.ProcessStartInfo]::new("$env:SystemRoot\System32\cmd.exe", "/d /s /c `"$args1 > `"$log`" 2>&1`"")
@@ -709,11 +718,15 @@ jobs:
             $psi.Environment["LOCALAPPDATA"] = "C:\Users\h2gtester\AppData\Local"
             $psi.Environment["APPDATA"] = "C:\Users\h2gtester\AppData\Roaming"
             $psi.Environment["TEMP"] = "$work\tmp"; $psi.Environment["TMP"] = "$work\tmp"
-            $psi.Environment["GATE_F_HOME"] = $gfHome
+            if (-not $DefaultHome) { $psi.Environment["GATE_F_HOME"] = $gfHome }
             foreach ($k in $extra.Keys) { $psi.Environment[$k] = $extra[$k] }
             $p = [System.Diagnostics.Process]::Start($psi)
             if ($Background) { return @{ Process = $p; Log = $log } }
-            $p.WaitForExit()
+            if (-not $p.WaitForExit($Minutes * 60000)) {
+              $p.Kill($true)
+              $script:last = (Get-Content -LiteralPath $log -Encoding utf8 -Raw -ErrorAction SilentlyContinue) + "`n[server log]`n" + $(if ($script:serverLog) { Get-Content -LiteralPath $script:serverLog -Encoding utf8 -Raw -ErrorAction SilentlyContinue })
+              Expect $false "timed out after $Minutes min: $args1"
+            }
             $out = if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log -Encoding utf8 -Raw } else { "" }
             Write-Host "---- [$($p.ExitCode)] $args1"
             Write-Host $out
@@ -728,6 +741,10 @@ jobs:
             }
             Write-Host "PASS  $what"
           }
+          function NothingPlantedRan([string]$when) {
+            $script:last = if (Test-Path $marker) { Get-Content $marker -Raw } else { "" }
+            Expect (-not (Test-Path $marker)) "the planted C:\node_modules package never ran ($when)"
+          }
           $gf = "`"$cmdFile`""
 
           # 1. Who runs it: a standard user, medium integrity, not an administrator.
@@ -736,13 +753,17 @@ jobs:
           Expect (-not ((& net localgroup Administrators | Out-String) -match "h2gtester")) "h2gtester is not in Administrators"
 
           # 2. Setup: pinned Node.js, this commit's source from GitHub, every file verified, build.
-          $r = Tester "$gf setup $env:COMMIT"
+          $r = Tester "$gf setup $env:COMMIT" -Minutes 25
           Expect ($r.Code -eq 0 -and $r.Out -cmatch "build manifest  SHA-256 [0-9a-f]{64}") "setup: verified download and build as a standard user"
           Expect ($r.Out -match "\d+ files identical") "setup: every source file matched the manifest"
+          NothingPlantedRan "build"
+          $r = Tester "icacls `"$gfHome`""
+          Expect ($r.Out -match "h2gtester:\(OI\)\(CI\)\(F\)" -and $r.Out -notmatch "(Administrators|SYSTEM|Users|Everyone|Jeder|Benutzer|Authenticated)") "the gate F folder is h2gtester's alone"
 
           # 3. Self-test: the bare server, no database, loopback only.
           $r = Tester "$gf selftest"
           Expect ($r.Code -eq 0 -and $r.Out -cmatch "SELFTEST PASS: [0-9a-f]{12} answers on 127\.0\.0\.1:8096 only") "selftest"
+          NothingPlantedRan "selftest"
 
           # 4. A synthetic rehearsal against a local Postgres.
           $svc = Get-Service -Name "postgresql*" | Select-Object -First 1
@@ -760,22 +781,22 @@ jobs:
           $r = Tester "$gf prepare --rehearsal" $rehearsalEnv
           Expect ($r.Code -ne 0 -and $r.Out -cmatch "already exists") "a second prepare is refused"
 
-          # 5. Start, then the gate F HTTP rehearsal against it.
+          # 5. Start, then the gate F HTTP rehearsal against it (run by h2gtester: the folder is private).
           $srv = Tester "$gf start" -Background
+          $script:serverLog = $srv.Log
           $deadline = (Get-Date).AddMinutes(4)
           # Case-sensitive and anchored: Next itself prints "Ready in …".
           do { Start-Sleep 2; $t = Get-Content -LiteralPath $srv.Log -Encoding utf8 -Raw -ErrorAction SilentlyContinue } until (($t -cmatch "(?m)^(READY |refusing|ERROR)") -or $srv.Process.HasExited -or (Get-Date) -gt $deadline)
           Write-Host $t
           $script:last = "$t"
-          Expect ($t -cmatch "(?m)^READY \(synthetic rehearsal\) http://127\.0\.0\.1:8096") "start: identity, loopback, firewall and gate F state checked"
+          Expect ($t -cmatch "(?m)^READY \(synthetic rehearsal\) http://127\.0\.0\.1:8096") "start: Node, source and build verified; identity, loopback, firewall and gate F state checked"
           $listen = Get-NetTCPConnection -LocalPort 8096 -State Listen
           Expect (($listen | Where-Object LocalAddress -ne "127.0.0.1").Count -eq 0 -and $listen.Count -ge 1) "port 8096 listens on 127.0.0.1 only"
           $owner = (Get-CimInstance Win32_Process -Filter "ProcessId=$($listen[0].OwningProcess)" | Invoke-CimMethod -MethodName GetOwner).User
           Expect ($owner -eq "h2gtester") "the server runs as h2gtester"
-          $env:H2G_REHEARSAL_URL = "http://127.0.0.1:8096"; $env:H2G_REHEARSAL_PASSWORD = $rpw
-          $script:last = & "$gfHome\node\node.exe" "$gfHome\src\web\scripts\gate-f-rehearsal.mjs" 2>&1 | Out-String
-          Write-Host $script:last
-          Expect ($LASTEXITCODE -eq 0) "gate F HTTP rehearsal against the Windows server (one write on the authorized pair only, refusals, evidence, restore)"
+          $r = Tester "`"$gfHome\node\node.exe`" `"$gfHome\src\web\scripts\gate-f-rehearsal.mjs`"" @{ H2G_REHEARSAL_URL = "http://127.0.0.1:8096"; H2G_REHEARSAL_PASSWORD = $rpw }
+          Expect ($r.Code -eq 0 -and $r.Out -cmatch "35 passed, 0 failed") "gate F HTTP rehearsal against the Windows server (one write on the authorized pair only, refusals, evidence, restore)"
+          NothingPlantedRan "start and rehearsal"
 
           # 6. Refusals while it runs.
           $r = Tester "$gf start"
@@ -784,6 +805,10 @@ jobs:
           Expect ($r.Code -ne 0 -and $r.Out -cmatch "could steer the server: VERCEL") "a hosting variable in the window is refused"
           $r = Tester "$gf status" @{ NODE_OPTIONS = "--require=x" }
           Expect ($r.Code -ne 0 -and $r.Out -cmatch "NODE_OPTIONS is set") "NODE_OPTIONS is refused before Node starts"
+          $r = Tester "$gf status" @{ OPENSSL_CONF = "C:\x.cnf" }
+          Expect ($r.Code -ne 0 -and $r.Out -cmatch "OPENSSL_CONF is set") "OPENSSL_CONF is refused before Node starts"
+          $r = Tester "$gf status" @{ NODE_USE_SYSTEM_CA = "1" }
+          Expect ($r.Code -ne 0 -and $r.Out -cmatch "NODE_USE_SYSTEM_CA is set") "NODE_USE_SYSTEM_CA is refused before Node starts"
           $r = Tester "$gf status" @{ GATE_F_HOME = "$work\OneDrive\gate f" }
           Expect ($r.Code -ne 0 -and $r.Out -cmatch "inside OneDrive") "a OneDrive folder is refused"
           $env:GATE_F_HOME = $gfHome
@@ -791,12 +816,16 @@ jobs:
           $script:last = $r
           Remove-Item Env:GATE_F_HOME
           Expect ($r -match "runs as administrator") "an administrator window is refused"
+          $r = Tester "$gf status" -DefaultHome
+          Expect ($r.Code -ne 0 -and $r.Out -cmatch "Node.js is not set up here") "the default folder %LOCALAPPDATA%\hevy2garmin-gate-f is found, created and made private"
 
           # 7. Stop: the server ends, the port is free, the launcher exits.
           $r = Tester "$gf stop"
           Expect ($r.Code -eq 0 -and $r.Out -cmatch "port 8096 is free") "stop"
           Expect ($srv.Process.WaitForExit(30000)) "the launcher exited"
           Expect ((Get-NetTCPConnection -LocalPort 8096 -State Listen -ErrorAction SilentlyContinue).Count -eq 0) "nothing listens on 8096 any more"
+          $r = Tester "$gf stop"
+          Expect ($r.Code -eq 0 -and $r.Out -cmatch "No server record") "a second stop kills nothing"
           Write-Host (Get-Content -LiteralPath $srv.Log -Encoding utf8 -Raw)
 
           # 8. Refusals of a widened env file and of a changed build.
@@ -807,3 +836,8 @@ jobs:
           $r = Tester "icacls `"$gfHome\app\server.js`" /grant h2gtester:(M) && echo // changed>> `"$gfHome\app\server.js`""
           $r = Tester "$gf start"
           Expect ($r.Code -ne 0 -and $r.Out -cmatch "differs from its build") "a changed app\ is refused"
+
+          # 9. A second setup in the same folder rebuilds cleanly.
+          $r = Tester "$gf setup $env:COMMIT" -Minutes 25
+          Expect ($r.Code -eq 0 -and $r.Out -cmatch "build manifest  SHA-256 [0-9a-f]{64}") "a second setup in the same folder"
+          NothingPlantedRan "second build"

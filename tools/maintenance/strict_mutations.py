@@ -731,10 +731,10 @@ M = [
     ),
     # The portable Windows gate F launcher (tools/gate-f-windows)
     (
-        "W01 launcher lets NODE_OPTIONS through",
+        "W01 launcher lets NODE_* and OPENSSL_* variables through",
         "tools/gate-f-windows/gate-f.mjs",
-        "  /^NODE_OPTIONS$/i, /^NODE_TLS_REJECT_UNAUTHORIZED$/i,",
-        "  /^NODE_TLS_REJECT_UNAUTHORIZED$/i,",
+        "  /^NODE_OPTIONS$/i, /^NODE_TLS_REJECT_UNAUTHORIZED$/i, /^NODE_/i, /^OPENSSL_/i,",
+        "",
         (".", ["node", "--test", "tools/gate-f-windows/gate-f.test.mjs"]),
     ),
     (
@@ -770,6 +770,20 @@ M = [
         "tools/gate-f-windows/gate-f.mjs",
         "  return { ...env, ...extra };",
         "  return { ...parent, ...env, ...extra };",
+        (".", ["node", "--test", "tools/gate-f-windows/gate-f.test.mjs"]),
+    ),
+    (
+        "W07 module guard lets CommonJS search parent node_modules",
+        "tools/gate-f-windows/module-guard.cjs",
+        "  return nodeModulePaths.call(this, from).filter(inside);",
+        "  return nodeModulePaths.call(this, from);",
+        (".", ["node", "--test", "tools/gate-f-windows/gate-f.test.mjs"]),
+    ),
+    (
+        "W08 module guard lets ES modules resolve outside the root",
+        "tools/gate-f-windows/module-guard.cjs",
+        '      throw new Error("module-guard: refusing " + r.url + " (outside " + rootsN.join(path.delimiter) + ")");',
+        "      void 0;",
         (".", ["node", "--test", "tools/gate-f-windows/gate-f.test.mjs"]),
     ),
     # PES HEVY2GARMIN-F04: the config file holds the Hevy key and Garmin credentials
