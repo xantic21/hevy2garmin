@@ -724,8 +724,12 @@ jobs:
             if ($Background) { return @{ Process = $p; Log = $log } }
             if (-not $p.WaitForExit($Minutes * 60000)) {
               $p.Kill($true)
-              $script:last = (Get-Content -LiteralPath $log -Encoding utf8 -Raw -ErrorAction SilentlyContinue) + "`n[server log]`n" + $(if ($script:serverLog) { Get-Content -LiteralPath $script:serverLog -Encoding utf8 -Raw -ErrorAction SilentlyContinue })
-              Expect $false "timed out after $Minutes min: $args1"
+              if ($script:serverLog) {
+                $sl = "$(Get-Content -LiteralPath $script:serverLog -Encoding utf8 -Raw -ErrorAction SilentlyContinue)"
+                Write-Host "::warning::server log tail: $(($sl.Substring([Math]::Max(0, $sl.Length - 1200))) -replace '%', '%25' -replace "`r?`n", '%0A')"
+              }
+              $script:last = "$(Get-Content -LiteralPath $log -Encoding utf8 -Raw -ErrorAction SilentlyContinue)"
+              Expect $false "timed out after $Minutes min: $args1 (this step's own log follows)"
             }
             $out = if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log -Encoding utf8 -Raw } else { "" }
             Write-Host "---- [$($p.ExitCode)] $args1"
@@ -927,7 +931,10 @@ jobs:
           $txt = [Text.Encoding]::Unicode.GetString($raw)
           $sid = ([regex]::Match($r.Out, "S-1-5-[0-9-]+")).Value
           $parsed = & node -e "import('./tools/gate-f-windows/gate-f.mjs').then(m => console.log(JSON.stringify(m.sddlOwnerOnly(require('fs').readFileSync(process.argv[1], 'utf16le'), process.argv[2]))))" "$work\logs\acl-diag.txt" $sid 2>&1 | Out-String
-          Write-Host "::warning::acl-diag bytes=$($raw.Length) first=$(($raw[0..15] | ForEach-Object { $_.ToString('x2') }) -join ' ') text=$($txt -replace "`r", '\r' -replace "`n", '\n') sid=$sid parsed=$($parsed.Trim())"
+          # The launcher's own check, as h2gtester with the portable Node, in the gate F folder.
+          Set-Content -Path "$work\acl-probe.mjs" -Encoding ascii -Value "const m = await import('file:///' + process.env.GATE_F_HOME.replace(/\\/g, '/') + '/src/tools/gate-f-windows/gate-f.mjs'); console.log('probe=' + JSON.stringify(m.ownerOnly(process.env.GATE_F_HOME + '\\private\\gate-f.env', process.env.GATE_F_HOME)));"
+          $pr = Tester "cd /d `"$gfHome`" && `"$gfHome\node\node.exe`" `"$work\acl-probe.mjs`""
+          Write-Host "::warning::acl-diag bytes=$($raw.Length) text=$($txt -replace "`r", '\r' -replace "`n", '\n') sid=$sid parsed=$($parsed.Trim()) launcher=$(($pr.Out -replace "`r?`n", ' ').Trim())"
           $r = Tester "$gf start" -Minutes 3
           if ($r.Code -eq 0 -or $r.Out -cmatch "(?m)^READY ") { $null = Tester "$gf stop" }
           Expect ($r.Code -ne 0 -and $r.Out -cmatch "not private to you") "an env file readable by others is refused"

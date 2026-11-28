@@ -383,7 +383,7 @@ function unlock(p) {
 }
 
 /** Only this user can read `p`? */
-function ownerOnly(p, root) {
+export function ownerOnly(p, root) {
   if (!IS_WIN) {
     const st = statSync(p);
     const ok = (st.mode & 0o077) === 0 && (typeof process.getuid !== "function" || st.uid === process.getuid());
@@ -749,6 +749,7 @@ async function start(L) {
   if (!existsSync(L.env)) refuse("refusing: no private\\gate-f.env; run gate-f.cmd prepare first");
   const acl = ownerOnly(L.env, L.root);
   if (!acl.ok) refuse(`refusing: private\\gate-f.env is not private to you (${acl.reason}); run gate-f.cmd prepare again in a new folder`);
+  say("  private\\gate-f.env: readable by you only");
   const { vars, rehearsal, expired } = parseEnvFile(readFileSync(L.env, "utf8"));
   if (await portBusy(PORT)) refuse(`refusing: port ${PORT} is in use; stop the other server first (gate-f.cmd stop)`);
 
