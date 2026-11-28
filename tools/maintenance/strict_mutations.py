@@ -715,6 +715,20 @@ M = [
         "    if (false) {\n      throw new GateFDatabaseError(",
         web("lib/gate-f-guard.db.strict.test.ts"),
     ),
+    (
+        "G36 gate F panel offers no restore of the original",
+        "web/components/gate-f-panel.tsx",
+        '  if (!entry || (entry.phase !== "verified" && entry.phase !== "needs_review")) return null;',
+        "  return null;",
+        ("web", ["npx", "vitest", "run", "components/gate-f-panel.test.ts"]),
+    ),
+    (
+        "G37 gate F panel offers a restore that was already done",
+        "web/components/gate-f-panel.tsx",
+        '  if (!entry || (entry.phase !== "verified" && entry.phase !== "needs_review")) return null;',
+        "  if (!entry) return null;",
+        ("web", ["npx", "vitest", "run", "components/gate-f-panel.test.ts"]),
+    ),
     # PES HEVY2GARMIN-F04: the config file holds the Hevy key and Garmin credentials
     (
         "P01 config written with default file rights",
@@ -724,10 +738,10 @@ M = [
         PY_CONFIG,
     ),
     (
-        "P02 an existing world-readable config file is not narrowed",
+        "P02 the in-place fallback leaves the file readable by others",
         "src/hevy2garmin/config.py",
-        '        if hasattr(os, "fchmod"):\n            os.fchmod(fd, 0o600)\n',
-        "",
+        "    try:\n        os.chmod(path, 0o600)\n    except OSError:\n",
+        "    try:\n        pass\n    except OSError:\n",
         PY_CONFIG,
     ),
     (
@@ -735,6 +749,13 @@ M = [
         "src/hevy2garmin/config.py",
         "    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)",
         "    path.parent.mkdir(parents=True, exist_ok=True)",
+        PY_CONFIG,
+    ),
+    (
+        "P04 a failed config write leaves its temporary file behind",
+        "src/hevy2garmin/config.py",
+        "            with contextlib.suppress(OSError):\n                os.unlink(tmp)\n",
+        "            pass\n",
         PY_CONFIG,
     ),
 ]
@@ -777,7 +798,12 @@ def main() -> int:
             )
             txt = r.stdout + r.stderr
             m = re.search(r"Tests\s+(.*)", txt)
-            verdict = "CAUGHT" if r.returncode != 0 else "SURVIVED"
+            # pytest must report a failing test: a missing pytest or a collection
+            # error is no proof that a test noticed the mutation.
+            noticed = r.returncode != 0 and (
+                "pytest" not in cmd or re.search(r"\b\d+ failed\b", txt)
+            )
+            verdict = "CAUGHT" if noticed else "SURVIVED"
             detail = m.group(1).strip() if m else txt[-200:]
             out.append((name, verdict, detail))
             print(name, "->", verdict, "|", detail, flush=True)

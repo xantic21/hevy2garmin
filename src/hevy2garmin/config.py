@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -155,21 +157,43 @@ def load_config() -> dict[str, Any]:
     return config
 
 
-def _write_private(path: Path, text: str) -> None:
-    """Write ``text`` to ``path`` readable by the owner only.
+def _write_in_place(path: Path, data: bytes) -> None:
+    path.write_bytes(data)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        logger.warning("Could not restrict %s to owner-only access", path)
 
-    The config file holds the Hevy API key and Garmin credentials, so the
-    folder is created ``0700`` and the file ``0600``; an existing file with
-    wider rights is narrowed before the new content is written.
+
+def _write_private(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` readable by the owner only, without ever losing it.
+
+    The config file holds the Hevy API key and Garmin credentials. The new
+    content goes to a ``0600`` temporary file in the same folder, is flushed to
+    disk and then atomically replaces the old file, so a failure leaves the old
+    config or the new one, never an empty file. A new folder is created
+    ``0700``. Where that is impossible (a folder that takes no new file, a file
+    bind-mounted into a container) the file is rewritten in place as before and
+    narrowed to ``0600`` where the filesystem allows; that case is logged.
     """
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    data = text.encode("utf-8")
+    tmp: str | None = None
     try:
-        if hasattr(os, "fchmod"):
-            os.fchmod(fd, 0o600)
-        os.write(fd, text.encode("utf-8"))
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+        tmp = None
+    except OSError as e:
+        logger.warning("Rewriting %s in place (%s)", path, e.__class__.__name__)
+        _write_in_place(path, data)
     finally:
-        os.close(fd)
+        if tmp is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
 
 
 def save_config(config: dict[str, Any]) -> None:

@@ -10,16 +10,21 @@
  *
  * Optional: H2G_A11Y_PAGES (comma separated, default every page), H2G_A11Y_REPORT
  * (JSON path), H2G_A11Y_CHROMIUM (a Chromium binary, where Playwright's own is not
- * installed). Exit 1 on any WCAG A/AA violation; axe "best-practice" findings
- * are reported but do not fail. Sends nothing but the deployment's own
- * dashboard password.
+ * installed). Exit 1 on any WCAG A/AA violation or a page that did not load
+ * (HTTP 200 on the requested path); axe "best-practice" findings and the nodes
+ * axe could not decide ("incomplete", e.g. text over a gradient) are reported
+ * but do not fail. Automated checks of each page's initial state: dialogs,
+ * forms after input and messages after an action are not covered.
+ * Refuses a deployment that is not synthetic staging (browser-target.mjs).
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { chromium } from "@playwright/test";
+import { open, signIn } from "./browser-target.mjs";
 
 const require = createRequire(import.meta.url);
 const axeSource = readFileSync(require.resolve("axe-core/axe.min.js"), "utf8");
+const axeVersion = () => JSON.parse(readFileSync(require.resolve("axe-core/package.json"), "utf8")).version;
 const base = (process.env.H2G_A11Y_URL ?? "").replace(/\/+$/, "");
 const password = process.env.H2G_A11Y_PASSWORD ?? "";
 if (!base || !password) {
@@ -39,47 +44,55 @@ const viewports = [
 /** WCAG 1.4.10: at 320 CSS px the page itself must not scroll sideways. */
 async function reflow(page) {
   const r = await page.evaluate(() => ({ width: document.documentElement.scrollWidth, viewport: 320 }));
-  return r.width > r.viewport + 1
-    ? [{ id: "reflow-1.4.10", impact: "serious", wcag: true, help: "Content must reflow at 320 CSS px", nodes: [`page is ${r.width} px wide in a ${r.viewport} px viewport`] }]
-    : [];
+  return {
+    incomplete: [],
+    violations:
+      r.width > r.viewport + 1
+        ? [{ id: "reflow-1.4.10", impact: "serious", wcag: true, help: "Content must reflow at 320 CSS px", nodes: [`page is ${r.width} px wide in a ${r.viewport} px viewport`] }]
+        : [],
+  };
 }
 
 async function scan(page) {
   await page.addScriptTag({ content: axeSource });
   return page.evaluate(async (wcag) => {
     const r = await window.axe.run(document, { runOnly: { type: "tag", values: [...wcag, "best-practice"] } });
-    return r.violations.map((v) => ({
+    const incomplete = r.incomplete
+      .filter((v) => v.tags.some((t) => wcag.includes(t)))
+      .flatMap((v) => v.nodes.map((n) => ({ id: v.id, target: n.target.join(" "), why: (n.any[0]?.message ?? n.failureSummary ?? "").slice(0, 160) })));
+    return { incomplete, violations: r.violations.map((v) => ({
       id: v.id,
       impact: v.impact,
       wcag: v.tags.some((t) => wcag.includes(t)),
       help: v.help,
       nodes: v.nodes.slice(0, 5).map((n) => `${n.target.join(" ")}: ${(n.failureSummary ?? "").split("\n").slice(0, 2).join(" ")}`),
-    }));
+    })) };
   }, WCAG);
 }
 
-const report = { target: base, at: new Date().toISOString(), results: {} };
+const report = { target: base, at: new Date().toISOString(), axe: axeVersion(), results: {}, incomplete: {} };
 let failures = 0;
+let undecided = 0;
 const browser = await chromium.launch(process.env.H2G_A11Y_CHROMIUM ? { executablePath: process.env.H2G_A11Y_CHROMIUM } : {});
 try {
   for (const vp of viewports) {
     const context = await browser.newContext({ viewport: vp.viewport, isMobile: vp.isMobile, hasTouch: vp.hasTouch });
     const page = await context.newPage();
-    const record = (key, violations) => {
+    const record = (key, { violations, incomplete }) => {
       report.results[key] = violations;
+      report.incomplete[key] = incomplete;
+      undecided += incomplete.length;
       const wcag = violations.filter((v) => v.wcag);
       failures += wcag.length;
       console.log(`${wcag.length ? "FAIL" : "PASS"}  ${key}${violations.length ? `  ${violations.map((v) => `${v.id}${v.wcag ? "" : " (best practice)"}`).join(", ")}` : ""}`);
       for (const v of wcag) for (const n of v.nodes) console.log(`        ${v.id}: ${n}`);
     };
     const check = (p) => (vp.reflowOnly ? reflow(p) : scan(p));
-    await page.goto(`${base}/login`, { waitUntil: "networkidle" });
+    await open(page, base, "/login", { waitUntil: "networkidle" });
     record(`${vp.name} /login`, await check(page));
-    await page.fill('input[type="password"]', password);
-    await page.keyboard.press("Enter");
-    await page.waitForURL(/\/dashboard/, { timeout: 30_000 });
+    await signIn(page, base, password);
     for (const path of pages) {
-      await page.goto(`${base}${path}`, { waitUntil: "networkidle" });
+      await open(page, base, path, { waitUntil: "networkidle" });
       await page.waitForTimeout(500);
       record(`${vp.name} ${path}`, await check(page));
     }
@@ -89,5 +102,5 @@ try {
   await browser.close();
 }
 if (process.env.H2G_A11Y_REPORT) writeFileSync(process.env.H2G_A11Y_REPORT, JSON.stringify(report, null, 2));
-console.log(`\n${failures ? `${failures} WCAG violation(s)` : "no WCAG A/AA violation"} on ${Object.keys(report.results).length} page views`);
+console.log(`\n${failures ? `${failures} WCAG violation(s)` : "no WCAG A/AA violation"} on ${Object.keys(report.results).length} page views (axe ${report.axe}; ${undecided} node(s) axe could not decide, listed in the report)`);
 process.exit(failures ? 1 : 0);

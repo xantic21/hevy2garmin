@@ -4,10 +4,13 @@
  * Gate F: the one owner-authorized real activity.
  *
  * Shows exactly what is authorized and the state of every safeguard, then
- * offers three steps: a dry-run preview of that pair, the one live merge
- * (typed confirmation naming both ids), and the evidence bundle (before,
- * intended, after) to download. Recovery (stop, reconcile, restore) stays in
- * the strict panel below and is limited to the authorized activity.
+ * offers four steps: a dry-run preview of that pair, the one live merge
+ * (typed confirmation naming both ids), the evidence bundle (before, intended,
+ * after) to download, and, once the merge was written, the restore of the
+ * original (typed confirmation naming the journal entry) for when the result on
+ * Garmin Connect is not accepted. Stop, reconcile and the restore of an
+ * uncertain write stay in the strict panel below, limited to the authorized
+ * activity.
  */
 import { useCallback, useEffect, useState } from "react";
 import { withBasePath } from "@/lib/base-path";
@@ -26,7 +29,20 @@ interface GateFStatusView {
     credentials: { configured: boolean; plaintext: number; rows: number };
   };
   binding?: { state: string } | null;
+  journal?: { id: string; step: string; phase: string }[];
   originalBackup?: { sha256: string; intact: boolean } | null;
+}
+
+/**
+ * The write the owner can undo: the latest exercise-sets entry that reached
+ * Garmin (verified, or uncertain and awaiting review). Restoring it from the
+ * original backup puts back the sets, name and description as they were before
+ * gate F. Null when nothing was written or it was restored already.
+ */
+export function restoreTarget(journal: GateFStatusView["journal"]): { journalId: string; confirmation: string } | null {
+  const entry = [...(journal ?? [])].reverse().find((e) => e.step === "exercise_sets") ?? null;
+  if (!entry || (entry.phase !== "verified" && entry.phase !== "needs_review")) return null;
+  return { journalId: entry.id, confirmation: `RESTORE ${entry.id}` };
 }
 
 async function call(body: unknown) {
@@ -51,6 +67,7 @@ export function GateFPanel() {
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const [typed, setTyped] = useState("");
+  const [typedRestore, setTypedRestore] = useState("");
   // The plan the preview showed; the run is bound to it and refused if anything changed since.
   const [plan, setPlan] = useState<{ sha256: string; summary: string } | null>(null);
 
@@ -98,6 +115,7 @@ export function GateFPanel() {
   const a = s.authorization;
   const g = s.safeguards;
   const done = s.record?.state === "done";
+  const target = restoreTarget(s.journal);
   const ready = !a.expired && !done && !g.envStop && !g.writeBlock.blocked && g.schema.ready && g.schema.gateFTable && g.firewall.installed;
 
   const preview = () =>
@@ -146,6 +164,21 @@ export function GateFPanel() {
       return `Evidence downloaded (SHA-256 ${String(d.bundleSha256).slice(0, 16)}…): ${v?.ok ? `verdict OK (${v.expected})` : `verdict NOT OK (${v?.expected ?? "?"}${failed.length ? `; ${failed.join(", ")}` : ""})`}. Nothing was written.`;
     });
 
+  const restore = () =>
+    act("restore", async () => {
+      if (!target) return "Nothing to restore.";
+      const res = await fetch(withBasePath("/api/strict/restore"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ journalId: target.journalId, source: "original", confirm: typedRestore }),
+      });
+      const d = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; result?: { status: string; reason?: string | null } };
+      setTypedRestore("");
+      if (!res.ok || d.ok === false) throw new Error(String(d.error ?? `Request failed (${res.status})`));
+      const r = d.result;
+      return `Restore: ${r?.status ?? "?"}${r?.reason ? ` (${r.reason})` : ""}.${r?.status === "restored" ? " Download the evidence again: expect verdict OK (original)." : ""}`;
+    });
+
   return (
     <section className="oui-card mb-6 flex flex-col gap-4" aria-label="Gate F">
       <h2 className="t-title text-text">Gate F · one authorized activity{a.synthetic ? " (synthetic rehearsal)" : ""}</h2>
@@ -181,6 +214,26 @@ export function GateFPanel() {
           {busy === "evidence" ? "Reading…" : "3 · Evidence"}
         </button>
       </div>
+      {target && (
+        <div className="flex flex-col gap-2 rounded-xl bg-base/70 p-4">
+          <p className="text-sm text-text-secondary">
+            Not accepted on Garmin Connect? Restore the original: the sets, name and description from the backup taken before gate F wrote. Nothing else changes.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              className="min-w-[16rem] flex-1 rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text focus:border-teal focus:outline-none"
+              placeholder={`Type: ${target.confirmation}`}
+              value={typedRestore}
+              onChange={(e) => setTypedRestore(e.target.value)}
+              disabled={busy !== null}
+              aria-label="Restore confirmation"
+            />
+            <button type="button" className="oui-button oui-button-tonal" disabled={busy !== null || typedRestore !== target.confirmation} onClick={restore}>
+              {busy === "restore" ? "Restoring…" : "4 · Restore original"}
+            </button>
+          </div>
+        </div>
+      )}
       {plan && <p className="text-sm text-text-secondary">The run is bound to this preview: {plan.summary}. Anything that changes the plan before you run refuses the run.</p>}
       {message && <p className={`text-sm ${message.kind === "ok" ? "text-text" : "text-danger"}`}>{message.text}</p>}
     </section>

@@ -580,17 +580,6 @@ jobs:
           done
           H2G_REHEARSAL_URL=http://127.0.0.1:8122 H2G_REHEARSAL_PASSWORD="$H2G_PASSWORD" node scripts/gate-f-rehearsal.mjs || { cat gate-f.log; exit 1; }
 
-      - name: Accessibility (WCAG 2.1 A/AA, reflow) and page performance over the rehearsed pages
-        # Every dashboard page, desktop, mobile and 320 px reflow, on the staging
-        # data the rehearsal left behind, and the gate F panel: any WCAG A/AA
-        # violation fails. Then the page timing thresholds of docs/PES_EVIDENCE.md.
-        working-directory: web
-        run: |
-          npx playwright install --with-deps chromium
-          H2G_A11Y_URL=http://127.0.0.1:8120 H2G_A11Y_PASSWORD="$H2G_PASSWORD" node scripts/a11y-scan.mjs
-          H2G_A11Y_URL=http://127.0.0.1:8122 H2G_A11Y_PASSWORD="$H2G_PASSWORD" H2G_A11Y_PAGES=/dashboard node scripts/a11y-scan.mjs
-          H2G_PERF_URL=http://127.0.0.1:8120 H2G_PERF_PASSWORD="$H2G_PASSWORD" node scripts/perf-probe.mjs
-
       - name: Pointed at a database with a credential, staging refuses and creates nothing
         working-directory: web
         run: |
@@ -611,3 +600,32 @@ jobs:
           T=$(psql "$F" -tAc "SELECT string_agg(tablename, ',' ORDER BY tablename) FROM pg_tables WHERE schemaname = 'public'")
           [ "$T" = "platform_credentials" ] || { echo "staging created tables in a foreign database: $T"; exit 1; }
           echo "isolation proven: refused before any change"
+
+      - name: The owner's gate F path through the dashboard (fresh synthetic gate F database)
+        # Preview, typed confirmation, run, evidence, the restore of the original
+        # and the evidence again, clicked in Chromium as OWNER_RUNBOOK.md block B
+        # describes it.
+        working-directory: web
+        run: |
+          npx playwright install --with-deps chromium
+          psql postgresql://test:test@localhost:5432/postgres -v ON_ERROR_STOP=1 -qc "CREATE DATABASE h2g_gate_f_ui"
+          EXP=$(node -e 'console.log(new Date(Date.now() + 3 * 3600e3).toISOString())')
+          DATABASE_URL=postgresql://test:test@localhost:5432/h2g_gate_f_ui \
+          H2G_GATE_F=approved-by-owner H2G_GATE_F_HEVY_ID=syn-legs H2G_GATE_F_GARMIN_ACTIVITY_ID=9100001 H2G_GATE_F_EXPIRES="$EXP" \
+            npx next start --port 8123 --hostname 127.0.0.1 > gate-f-ui.log 2>&1 &
+          for i in $(seq 1 40); do
+            sleep 1
+            curl -sf -o /dev/null http://127.0.0.1:8123/login && break
+          done
+          H2G_UI_URL=http://127.0.0.1:8123 H2G_UI_PASSWORD="$H2G_PASSWORD" node scripts/gate-f-ui-check.mjs || { cat gate-f-ui.log; exit 1; }
+
+      - name: Accessibility (WCAG 2.1 A/AA, reflow) and page performance over the rehearsed pages
+        # Automated axe checks of every page's initial state, desktop, mobile and
+        # 320 px reflow, on the staging data the rehearsal left behind, and the
+        # gate F panel after its run: any WCAG A/AA violation or page that does
+        # not load fails. Then the page timing thresholds of docs/PES_EVIDENCE.md.
+        working-directory: web
+        run: |
+          H2G_A11Y_URL=http://127.0.0.1:8120 H2G_A11Y_PASSWORD="$H2G_PASSWORD" node scripts/a11y-scan.mjs
+          H2G_A11Y_URL=http://127.0.0.1:8123 H2G_A11Y_PASSWORD="$H2G_PASSWORD" H2G_A11Y_PAGES=/dashboard node scripts/a11y-scan.mjs
+          H2G_PERF_URL=http://127.0.0.1:8120 H2G_PERF_PASSWORD="$H2G_PASSWORD" node scripts/perf-probe.mjs

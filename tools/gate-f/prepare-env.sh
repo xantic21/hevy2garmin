@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Gate F: write the private environment file for the one owner-authorized run.
 #
-#   bash tools/gate-f/prepare-env.sh            (asks four questions)
+#   bash tools/gate-f/prepare-env.sh            (asks three questions)
 #
 # It generates the dashboard password and the two secrets, writes ./gate-f.env
 # (mode 600, never overwritten), and prints the two commands that start the

@@ -179,31 +179,62 @@ def test_default_has_grace_period() -> None:
     assert DEFAULT_CONFIG["sync"]["grace_period_minutes"] == 120
 
 
-@pytest.mark.skipif(not hasattr(os, "fchmod"), reason="POSIX file modes only")
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes only")
 class TestConfigFilePermissions:
     """The config file holds the Hevy key and Garmin credentials: owner-only (PES HEVY2GARMIN-F04)."""
 
-    def test_new_file_is_owner_only(self, tmp_path) -> None:
-        folder = tmp_path / "h2g"
+    @pytest.fixture(autouse=True)
+    def _usual_umask(self):
+        # 022 is the common default; the guarantees must not depend on a stricter one.
+        old = os.umask(0o022)
+        yield
+        os.umask(old)
+
+    @staticmethod
+    def _save(folder: Path, config: dict) -> Path:
         config_file = folder / "config.json"
         with (
             patch("hevy2garmin.config.CONFIG_DIR", folder),
             patch("hevy2garmin.config.CONFIG_FILE", config_file),
             patch("hevy2garmin.db.get_database_url", return_value=None),
         ):
-            save_config({"hevy_api_key": "synthetic-key"})
+            save_config(config)
+        return config_file
+
+    def test_new_file_is_owner_only(self, tmp_path) -> None:
+        folder = tmp_path / "h2g"
+        config_file = self._save(folder, {"hevy_api_key": "synthetic-key"})
         assert stat.S_IMODE(config_file.stat().st_mode) == 0o600
         assert stat.S_IMODE(folder.stat().st_mode) == 0o700
         assert json.loads(config_file.read_text())["hevy_api_key"] == "synthetic-key"
+        assert sorted(p.name for p in folder.iterdir()) == ["config.json"]
 
-    def test_existing_world_readable_file_is_narrowed(self, tmp_path) -> None:
+    def test_existing_world_readable_file_is_replaced_owner_only(self, tmp_path) -> None:
         config_file = tmp_path / "config.json"
         config_file.write_text("{}")
         config_file.chmod(0o644)
-        with (
-            patch("hevy2garmin.config.CONFIG_DIR", tmp_path),
-            patch("hevy2garmin.config.CONFIG_FILE", config_file),
-            patch("hevy2garmin.db.get_database_url", return_value=None),
-        ):
-            save_config({"hevy_api_key": "synthetic-key"})
+        self._save(tmp_path, {"hevy_api_key": "synthetic-key"})
         assert stat.S_IMODE(config_file.stat().st_mode) == 0o600
+        assert json.loads(config_file.read_text())["hevy_api_key"] == "synthetic-key"
+
+    def test_a_failed_write_keeps_the_old_config(self, tmp_path) -> None:
+        config_file = tmp_path / "config.json"
+        config_file.write_text('{"hevy_api_key": "old-key"}')
+        with (
+            patch("hevy2garmin.config.os.fsync", side_effect=OSError("disk full")),
+            patch("hevy2garmin.config._write_in_place", side_effect=OSError("disk full")),
+        ):
+            self._save(tmp_path, {"hevy_api_key": "new-key"})
+        assert json.loads(config_file.read_text())["hevy_api_key"] == "old-key"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["config.json"]
+
+    def test_without_a_temporary_file_it_still_writes_in_place(self, tmp_path) -> None:
+        # e.g. a folder that takes no new file, or a file bind-mounted into a container
+        config_file = tmp_path / "config.json"
+        config_file.write_text("{}")
+        config_file.chmod(0o644)
+        with patch("hevy2garmin.config.os.replace", side_effect=OSError("busy")):
+            self._save(tmp_path, {"hevy_api_key": "synthetic-key"})
+        assert json.loads(config_file.read_text())["hevy_api_key"] == "synthetic-key"
+        assert stat.S_IMODE(config_file.stat().st_mode) == 0o600
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["config.json"]
