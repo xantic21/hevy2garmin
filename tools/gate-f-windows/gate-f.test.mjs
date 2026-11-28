@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import {
   cleanEnv, envFileText, isoSeconds, loopbackOnly, newSecrets, normalizeDatabaseUrl, parseEnvFile, parseManifest,
-  parseNetstatListeners, parseProcNetListeners, sddlOwnerOnly, sha256, unsafeInherited, verifySource,
+  parseNetstatListeners, parseProcNetListeners, savedAclOwnerOnly, sddlOwnerOnly, sha256, unsafeInherited, verifySource,
 } from "./gate-f.mjs";
 
 const NEON = "postgresql://owner:Secr3tPw@ep-cool-river-a1b2c3.eu-central-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require";
@@ -273,4 +273,16 @@ test("manifest after the build: listed files must match, build products may exis
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("ACL: the saved answer must be about the file asked for (no stale save)", () => {
+  const me = "S-1-5-21-111-222-333-1001";
+  // Real icacls /save output on Windows (CI): the name line, then the SDDL.
+  const env = `gate-f.env\r\nD:PAI(A;;FR;;;WD)(A;;FA;;;${me})\r\n`;
+  assert.deepEqual(savedAclOwnerOnly(env, "gate-f.env", me), { ok: false, reason: "also readable by WD" });
+  // The folder's private ACL must never stand in for the env file's.
+  const folder = `gate f\r\nD:PAI(A;OICI;FA;;;${me})\r\n`;
+  assert.equal(savedAclOwnerOnly(folder, "gate f", me).ok, true);
+  assert.match(savedAclOwnerOnly(folder, "gate-f.env", me).reason, /could not be read reliably/);
+  assert.equal(savedAclOwnerOnly(`GATE-F.ENV\r\nD:P(A;;FA;;;${me})\r\n`, "gate-f.env", me).ok, true, "names compare case-insensitively");
 });

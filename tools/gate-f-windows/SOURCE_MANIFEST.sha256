@@ -1,5 +1,5 @@
-ffa8ca03475dba55762349ad3b9619891d3046adef2498c051c050c51d31275f  tools/gate-f-windows/gate-f.mjs
-2bbe0ba69572be629591d1694749094450a23ca9ee1fc9068db0476117f2b4ad  tools/gate-f-windows/gate-f.test.mjs
+b5257dbcb9479862d4c7f020de84490b0974733e2bace94ee29528284d73c77b  tools/gate-f-windows/gate-f.mjs
+e14a541e26fd2f267660e21623d444a80e213c9de1523fa0ee0df1b005e9cc44  tools/gate-f-windows/gate-f.test.mjs
 8aba1484d30c16c3f7895fd21be9aca1919f1e4ca1c5711f7c45358215f133c7  tools/gate-f-windows/make-manifest.mjs
 fbfc4745cad9a69bff0a4aaeaa1641ed694ae50822265268de8e8862dd9e9425  tools/gate-f-windows/module-guard.cjs
 790e3169bc19b046fe55ba1da6d13b976c28363c8c00462a2195fe5faf260910  typescript/.gitignore

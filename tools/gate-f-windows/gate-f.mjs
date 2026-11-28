@@ -37,7 +37,7 @@ import {
 } from "node:fs";
 import { createRequire } from "node:module";
 import net from "node:net";
-import { delimiter, dirname, join, relative, resolve, sep } from "node:path";
+import { basename, delimiter, dirname, join, relative, resolve, sep } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -272,7 +272,16 @@ export function parseProcNetListeners(text, port, v6 = false) {
 
 export const loopbackOnly = (listeners) => listeners.length > 0 && listeners.every((l) => l.address === "127.0.0.1");
 
-/** `icacls <path> /save <file>` output (UTF-16): the path line, then the SDDL. */
+/**
+ * `icacls <path> /save <file>` output (UTF-16): the name line, then the SDDL. The name must be
+ * the one asked about: an answer about another file (a stale save) is never taken.
+ */
+export function savedAclOwnerOnly(saved, expectedName, sid) {
+  const first = saved.replace(/^\uFEFF/, "").split(/\r?\n/)[0]?.trim() ?? "";
+  if (first.toLowerCase() !== String(expectedName).toLowerCase()) return { ok: false, reason: "its permissions could not be read reliably" };
+  return sddlOwnerOnly(saved, sid);
+}
+
 export function sddlOwnerOnly(saved, sid) {
   const sddl = saved.replace(/^\uFEFF/, "").split(/\r?\n/).map((l) => l.trim()).find((l) => l.startsWith("D:"));
   if (!sddl) return { ok: false, reason: "no DACL" };
@@ -389,12 +398,18 @@ export function ownerOnly(p, root) {
     const ok = (st.mode & 0o077) === 0 && (typeof process.getuid !== "function" || st.uid === process.getuid());
     return { ok, reason: ok ? null : `mode ${(st.mode & 0o777).toString(8)}` };
   }
-  const out = join(root, "tmp", `acl-${process.pid}.txt`);
+  // A fresh file per call: Windows may still hold a removed file of the same name, and a
+  // second save must never be read as the first one's answer.
+  const out = join(root, "tmp", `acl-${process.pid}-${randomBytes(8).toString("hex")}.txt`);
   try {
-    run(sys("icacls"), [p, "/save", out, "/C", "/Q"], { stdio: "ignore" });
-    return sddlOwnerOnly(readFileSync(out, "utf16le"), userSid());
+    run(sys("icacls"), [p, "/save", out, "/Q"], { stdio: "ignore" });
+    return savedAclOwnerOnly(readFileSync(out, "utf16le"), basename(p), userSid());
   } finally {
-    rmSync(out, { force: true });
+    try {
+      rmSync(out, { force: true });
+    } catch {
+      // left in tmp\; never read again (unique name)
+    }
   }
 }
 

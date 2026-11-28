@@ -786,6 +786,13 @@ M = [
         "      void 0;",
         (".", ["node", "--test", "tools/gate-f-windows/gate-f.test.mjs"]),
     ),
+    (
+        "W09 a saved ACL of another file is accepted (stale icacls save)",
+        "tools/gate-f-windows/gate-f.mjs",
+        "  if (first.toLowerCase() !== String(expectedName).toLowerCase()) return { ok: false,",
+        "  if (false) return { ok: false,",
+        (".", ["node", "--test", "tools/gate-f-windows/gate-f.test.mjs"]),
+    ),
     # PES HEVY2GARMIN-F04: the config file holds the Hevy key and Garmin credentials
     (
         "P01 config written with default file rights",
