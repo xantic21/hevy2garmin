@@ -49,5 +49,8 @@ fit_output/
 worker/.wrangler/
 worker-di/.wrangler/
 
-# Claude Code local instructions (never committed)
+# Claude Code local instructions (never committed). The root CLAUDE.md only
+# points to AGENTS.md (the repository's governance contract) and is committed.
 CLAUDE.md
+CLAUDE.local.md
+!/CLAUDE.md

@@ -50,10 +50,10 @@ deliberately, and a missing or misspelled one keeps the safe state.
 | Gate | State | Evidence / what remains |
 | --- | --- | --- |
 | A snapshot and quarantine | done | `vercel.json` (both roots) deployment off, `next.config.ts` refuses Vercel builds, no publish path, `typescript/` private with `prepublishOnly` refusal |
-| B end-to-end strict mode | done (synthetic) | engine 617 tests, web 1081 tests incl. real Postgres, e2e through firewall + Postgres, 96 negative controls (STRICT_REAUDIT_ROUND2.md, STRICT_GATE_F.md) |
+| B end-to-end strict mode | done (synthetic) | engine 617 tests, web 1081 tests incl. real Postgres, e2e through firewall + Postgres, 99 negative controls (STRICT_REAUDIT_ROUND2.md, STRICT_GATE_F.md); accessibility (WCAG 2.1 A/AA incl. reflow) and page timing gated in CI (PES_EVIDENCE.md) |
 | C synthetic migration and full CI | done | `web/lib/db-qualification.db.test.ts` (fresh DB, previous fork-main schema, pg_dump/restore); all CI jobs |
 | D independent review | done: round 1 9/9 closed (`docs/STRICT_REAUDIT.md`); round 2 owner findings 1–7 and independent re-audit #2 closed (`docs/STRICT_REAUDIT_ROUND2.md`) | no upload/delete path found |
-| E isolated staging | **done (synthetic, on Vercel)**: separate project `hevy2garmin-staging` with its own Neon project; every code candidate rehearsed 38/38 on its protected preview (latest 8ebd30d); isolation verified independently; production project unchanged | §7a; the owner may click through the preview (§7 step 5) |
+| E isolated staging | **done (synthetic, on Vercel)**: separate project `hevy2garmin-staging` with its own Neon project; every code candidate rehearsed 38/38 on its protected preview (8ebd30d here; the final candidate a1e9a2d on PR #11); isolation verified independently; production project unchanged | §7a; the owner may click through the preview (§7 step 5) |
 | F one owner-accepted real activity | **ready for the owner**: gate F mode built and qualified (`docs/STRICT_GATE_F.md`); production hardening prepared (§14) | owner steps in `docs/OWNER_RUNBOOK.md`; procedure and design §8 |
 | G production activation | **owner** | set `H2G_STRICT_AUTOMATIC` only after F; keep stop switches documented |
 
@@ -343,12 +343,12 @@ owner's own computer, and nothing else.
   when `COLLECTOR_URL` and `COLLECTOR_TOKEN` are both set.
 - No live credentials in CI: every secret there is a synthetic placeholder.
 
-## 10. Dependencies (npm audit / pip-audit, re-run 2026-11-27 on the gate F candidate)
+## 10. Dependencies (npm audit / pip-audit, re-run 2026-11-27 on the gate F candidate, the dashboard again on 2026-11-28)
 
 | Package set | Production | All | Note |
 | --- | --- | --- | --- |
 | `typescript/` engine | 0 | 0 | vitest 5.0.5 |
-| `web/` dashboard | 0 | 0 | vitest 4.1.12; soma-style removed (it pulled react-native/metro/image-size) |
+| `web/` dashboard | 0 | 0 | vitest 4.1.12; axe-core 4.10.3 (development, accessibility gate); soma-style removed (it pulled react-native/metro/image-size) |
 | Python (`requirements.txt`) | 0 | — | pip-audit |
 | `universal/` Expo app | 7 (4 high) | — | needs an Expo SDK major; not deployed, GET-only, never built or published by CI |
 

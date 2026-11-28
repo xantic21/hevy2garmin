@@ -21,7 +21,7 @@ This repository is an **independently held fork**, not an original xantform prod
 
 [Upstream project](https://github.com/drkostas/hevy2garmin) · [Original license](LICENSE) · [Project screenshots](docs/screenshots/)
 
-**Code status:** quarantined modernization candidate, based on upstream `b44bdc7c3a34a40fac77c5ec5dd18209f02f6d21`. Not approved for deployment. The existing production installation is not changed by this branch. See the [migration contract](docs/STRICT_MERGE_MIGRATION.md).
+**Code status:** strict in-place migration of upstream `b44bdc7c3a34a40fac77c5ec5dd18209f02f6d21`, quarantined: not approved for deployment until the owner's gates F (one real activity) and G (production cutover). See the [migration contract](docs/STRICT_MERGE_MIGRATION.md) and the [owner runbook](docs/OWNER_RUNBOOK.md). To use hevy2garmin today, install a current [upstream release](https://github.com/drkostas/hevy2garmin/releases).
 
 **Strict in-place mode (this fork's default):** Hevy sets are written only into the one activity your watch recorded, after a verified backup and with a full read-back. No FIT uploads, no deletions, no automatic runs until the owner approves them. Operations, gates and evidence: [STRICT_OPERATIONS.md](docs/STRICT_OPERATIONS.md).
 

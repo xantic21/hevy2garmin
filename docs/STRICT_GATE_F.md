@@ -40,7 +40,33 @@ its own owner authorization, separate from gate G:
 | Only from the dashboard itself (F9) | operator routes refuse another origin (403) and non-JSON bodies (415) | unit, HTTP | G32, G33 |
 | Evidence (F3) | original backup (before), journaled intents with integrity check, fresh read (after), comparisons of sets, name, description and native metrics, a verdict that is OK only when every comparison for the expected state ran and passed, SHA-256 | e2e (verdict fails when Garmin's name was changed elsewhere; OK again after a restore), HTTP | G29 |
 
-## 3. Qualification of the final candidate 8ebd30d
+## 3. Qualification of the final candidate a1e9a2d
+
+a1e9a2d is the gate F pin. Compared with 8ebd30d (section 3b) it changes:
+
+- the Python CLI's config file rights (owner-only, PES HEVY2GARMIN-F04)
+- dashboard presentation (contrast, focusable table regions)
+- the accessibility and performance gates
+- three negative controls
+
+It changes no file of the engine (`typescript/`), of gate F or of the strict
+dashboard logic. It was requalified in full on its own tree. Synthetic data only.
+
+| Check | Result |
+| --- | --- |
+| Engine (`typescript/`): tsc, vitest | clean; 617/617 |
+| Dashboard (`web/`): engine identity, tsc, eslint, vitest incl. Postgres and pg_dump/pg_restore | verified; clean; clean; 1081/1081 (110 files) |
+| Python: pytest SQLite / Postgres; ruff 0.16.7 check and format | 482 passed, 8 skipped / 489 passed, 1 skipped; clean |
+| Playwright smoke (desktop + mobile) | 6/6 |
+| Gate E over HTTP, production build (`staging-rehearsal.mjs`) | 38/38 |
+| Gate F over HTTP, same build (`gate-f-rehearsal.mjs`) | 35/35. Garmin writes: one sets PUT and one name/description PUT on activity 9100001 for the run, the same two for the restore. No other write, only the two simulated hosts |
+| Accessibility (`a11y-scan.mjs`, axe-core 4.10.3, WCAG 2.0/2.1 A/AA) | 0 violations on 30 page views: login plus 7 pages on staging data, each at desktop 1280 px, mobile 390 px and reflow 320 px; the gate F panel the same way |
+| Page performance (`perf-probe.mjs`, thresholds fixed beforehand in PES_EVIDENCE.md) | every page within them. Worst page: TTFB p95 69 ms (limit 800), DOMContentLoaded p95 87 ms (limit 1500). Cold start to the first `/login` 1.3 s (limit 15 s) |
+| Negative controls | the new P01–P03 (config file rights) all caught. The other 96 target files this delta does not touch, so their results (section 3b) carry over. Accessibility controls, run by hand on a rebuilt dashboard: without the focusable region the scan fails (`scrollable-region-focusable`), and without the mapping table's scroll container it fails on reflow. That second control first passed: under mobile emulation Chromium widens the viewport to fit the content, so the first reflow check could not fail. The check now measures against a fixed 320 px viewport without emulation, and the control is caught. Removing the history table's scroll container is an equivalent mutant: that table already fits at 320 px |
+| Dependencies | dashboard `npm audit` 0, with axe-core 4.10.3 as a development dependency; engine and Python unchanged since 8ebd30d (0) |
+| CI and the Vercel staging rehearsal of the pushed head | recorded on PR #11. The head differs from a1e9a2d only in documentation |
+
+### 3b. The previous candidate 8ebd30d
 
 The first candidate 6dd7002 passed the same checks (engine 610, dashboard 1044,
 CI 11/11, gate E on Vercel 38/38) before the independent re-audit (section 4);
@@ -50,7 +76,7 @@ CI 11/11, gate E on Vercel 38/38) before the independent re-audit (section 4);
 | --- | --- |
 | Engine (`typescript/`): tsc, vitest | clean; 617/617 (27 gate F) |
 | Dashboard (`web/`): engine identity, tsc, eslint, vitest incl. Postgres and pg_dump/pg_restore | verified; clean; clean; 1081/1081 (110 files, 0 skipped) |
-| Negative controls, all (`strict_mutations.py`, 96) | 94 caught; 2 equivalent and documented: R1e (the dashboard's restore check behind the engine's) and G09 (the quarantine's Vercel check behind the gate F hosting check, G31). G03 survived once (the new plan requirement refused first) and is caught since a test runs a batch/cron trigger with a valid plan |
+| Negative controls, all (`strict_mutations.py`, 96 at the time) | 94 caught; 2 equivalent and documented: R1e (the dashboard's restore check behind the engine's) and G09 (the quarantine's Vercel check behind the gate F hosting check, G31). G03 survived once (the new plan requirement refused first) and is caught since a test runs a batch/cron trigger with a valid plan |
 | Gate F over HTTP (production build, synthetic authorization, `gate-f-rehearsal.mjs`) | 35/35: every other sync path 423, five wrong confirmations, no plan, another plan, another origin (403), a non-JSON body (415) all refused without a write; one run synced; no repeat; verdict OK (merged); restore; verdict OK (original); only PUTs on the one activity |
 | Gate E over HTTP, same build (`staging-rehearsal.mjs`) | 38/38 |
 | Python: pytest SQLite / Postgres, ruff 0.16.7 | 480 passed, 8 skipped / 487 passed, 1 skipped (the read-only-folder test skips under root); clean |
